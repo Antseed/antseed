@@ -22,6 +22,12 @@ export interface ServiceApiResponseTransformOptions {
   includeReasoning?: boolean;
   /** The request's flattened namespace functions (see `namespacedTools` on transformRequest). */
   namespacedTools?: NamespacedToolNames;
+  /**
+   * A Messages client gets a `thinking` block only when it asked for thoughts (`includeThinking` of
+   * `transformRequest`'s result). Without it, thoughts a seller wrote on its own are left out, as they
+   * were before. Other client protocols are not affected.
+   */
+  includeThinking?: boolean;
 }
 
 type ResponseNormalizer = (
@@ -65,10 +71,13 @@ export function transformResponse(
     requestedModel: options.fallbackModel ?? null,
   }), options.fallbackModel ?? null);
   const { reasoning: _reasoning, reasoningModel: _reasoningModel, ...withoutReasoning } = normalized;
-  const canonical: CanonicalLlmResponse = withNamespacedCalls(
+  const shown = withNamespacedCalls(
     options.includeReasoning === true ? normalized : withoutReasoning,
     options.to === 'openai-responses' ? options.namespacedTools : undefined,
   );
+  const canonical: CanonicalLlmResponse = options.to === 'anthropic-messages' && options.includeThinking !== true
+    ? { ...shown, output: shown.output.filter((item) => item.type !== 'reasoning') }
+    : shown;
   const body = render(canonical);
 
   if (options.streamRequested) {
@@ -101,6 +110,17 @@ function withoutLeadingThinkMarkup(response: CanonicalLlmResponse, requestedMode
   const output = [...response.output];
   if (stripped.text.length > 0) output[first] = { ...item, text: stripped.text };
   else output.splice(first, 1);
+  // The block's thoughts join the answer's thoughts, as both kept forms: the output item (Messages thinking
+  // blocks, Chat `reasoning_content`) and the reasoning Responses clients get.
+  if (stripped.reasoning.length > 0) {
+    const thoughts = output.findIndex((other) => other.type === 'reasoning');
+    if (thoughts >= 0) {
+      const existing = output[thoughts] as Extract<CanonicalLlmResponse['output'][number], { type: 'reasoning' }>;
+      output[thoughts] = { ...existing, text: existing.text + stripped.reasoning };
+    } else {
+      output.unshift({ type: 'reasoning', text: stripped.reasoning });
+    }
+  }
   const reasoning = (response.reasoning ?? '') + stripped.reasoning;
   return {
     ...response,
@@ -222,21 +242,20 @@ function buildAnthropicMessagesStream(
   });
 
   for (const [index, block] of content.entries()) {
-    const isText = block.type === 'text';
-    pushEvent('content_block_start', {
-      type: 'content_block_start',
-      index,
-      content_block: isText
-        ? { type: 'text', text: '' }
-        : { type: 'tool_use', id: block.id, name: block.name, input: {} },
-    });
-    pushEvent('content_block_delta', {
-      type: 'content_block_delta',
-      index,
-      delta: isText
-        ? { type: 'text_delta', text: block.text }
-        : { type: 'input_json_delta', partial_json: JSON.stringify(block.input ?? {}) },
-    });
+    let contentBlock: Record<string, unknown>;
+    let delta: Record<string, unknown>;
+    if (block.type === 'thinking') {
+      contentBlock = { type: 'thinking', thinking: '' };
+      delta = { type: 'thinking_delta', thinking: block.thinking };
+    } else if (block.type === 'text') {
+      contentBlock = { type: 'text', text: '' };
+      delta = { type: 'text_delta', text: block.text };
+    } else {
+      contentBlock = { type: 'tool_use', id: block.id, name: block.name, input: {} };
+      delta = { type: 'input_json_delta', partial_json: JSON.stringify(block.input ?? {}) };
+    }
+    pushEvent('content_block_start', { type: 'content_block_start', index, content_block: contentBlock });
+    pushEvent('content_block_delta', { type: 'content_block_delta', index, delta });
     pushEvent('content_block_stop', { type: 'content_block_stop', index });
   }
 
@@ -273,6 +292,10 @@ function buildOpenAIChatStream(response: CanonicalLlmResponse): Uint8Array {
 
   let toolCallIndex = 0;
   for (const item of response.output) {
+    if (item.type === 'reasoning') {
+      pushChunk({ reasoning_content: item.text });
+      continue;
+    }
     if (item.type === 'text') {
       if (item.text.length > 0) pushChunk({ content: item.text });
       continue;

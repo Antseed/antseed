@@ -6,6 +6,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Added
+
+- API adapter (`@antseed/api-adapter`): the model's thoughts now cross between the protocols. Through `/v1/messages`, a Claude served by a Chat Completions seller returns its thoughts as a `thinking` block (`thinking_delta` events when streamed) ahead of the answer, as it already did through `/v1/chat/completions` as `reasoning_content`. The reverse holds too: a `thinking` block from a native Messages seller reaches a Chat client as `reasoning_content`. Responses clients are not covered here. A Messages request that switches thinking on (`enabled` or `adaptive`) now asks a Chat or Responses seller for `reasoning_effort: "medium"` (`reasoning.effort` for a Responses seller) unless it names an `output_config.effort`, which always wins; a thinking budget is never turned into a level. Some Claude models return empty thoughts below `high`, so a client that wants thoughts from them sets `output_config.effort: "high"`. A Messages client that did not switch thinking on (no `thinking`, or `disabled`) gets no `thinking` block, even from a seller that writes its own reasoning; its answer is as before. The translated `thinking` block carries no `signature`, because the OpenAI protocols have none; thinking blocks in a request's earlier turns are dropped, as before.
+
 ### Changed
 
 - Website: the `/brand/` page is rebuilt in the site's design, with sections for the logo, colour, type, the ant (its full spec and the $ANTS coin), example pieces, backgrounds and the watercolour prompt, and new downloads (ant examples, a profile picture, the pixel font and a one-file brand summary). The repo gains a brand kit for agents making Antseed pages and pictures outside the site: `apps/website/brand-kit/`, starting at `DESIGN.md`, with a starter page that renders whole on its own.

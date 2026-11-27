@@ -5768,6 +5768,7 @@ export class BuyerProxy {
           fallbackModel: transformed.requestedModel,
           includeReasoning: transformed.includeReasoning,
           namespacedTools: transformed.namespacedTools,
+          includeThinking: transformed.includeThinking,
         }) ?? response
       if (transformed.streamRequested) {
         streamResponseAdapter = createStreamingAdapter({
@@ -5776,6 +5777,7 @@ export class BuyerProxy {
           fallbackModel: transformed.requestedModel,
           includeReasoning: transformed.includeReasoning,
           namespacedTools: transformed.namespacedTools,
+          includeThinking: transformed.includeThinking,
         })
         if (!streamResponseAdapter) {
           res.writeHead(502, { 'content-type': 'text/plain' })

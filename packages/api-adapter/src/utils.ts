@@ -776,6 +776,8 @@ export interface ChatStreamFinishInfo {
 }
 
 export interface ChatStreamCallbacks {
+  /** A piece of the model's thoughts (`delta.reasoning_content`, or `delta.reasoning` where a seller names it so). Never called with an empty piece. */
+  onReasoning?(delta: string): void;
   onText(delta: string): void;
   onReasoning?(delta: string): void;
   onToolCallStart(index: number, id: string, name: string): void;
