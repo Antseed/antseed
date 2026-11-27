@@ -165,12 +165,13 @@ function wake() { if (!queued && live.size) { queued = true; requestAnimationFra
 
 if (!STILL && matchMedia('(hover: hover)').matches) {
   const all = [...document.querySelectorAll('.wash')].filter((el) => takes(el) && getComputedStyle(el).getPropertyValue('--wash').trim()).map(panel);
+  const byElement = new Map(all.map((w) => [w.el, w]));
   // off screen, a trail ends at once
-  const view = new IntersectionObserver((es) => { for (const e of es) if (!e.isIntersecting) all.find((w) => w.el === e.target)?.stop(); });
+  const view = new IntersectionObserver((es) => { for (const e of es) if (!e.isIntersecting) byElement.get(e.target)?.stop(); });
   all.forEach((w) => view.observe(w.el));
   // a new theme shows the other painting, a new size another grid: the trail ends, and the painting is read again on the next move
   const reset = (w) => { w.stop(); w.key = ''; w.ready = false; };
   new MutationObserver(() => all.forEach(reset)).observe(root, { attributes: true, attributeFilter: ['data-theme'] });
-  const sized = new ResizeObserver((es) => { for (const e of es) { const w = all.find((p) => p.el === e.target); if (w?.key) reset(w); } });
+  const sized = new ResizeObserver((es) => { for (const e of es) { const w = byElement.get(e.target); if (w?.key) reset(w); } });
   all.forEach((w) => sized.observe(w.el));
 }
