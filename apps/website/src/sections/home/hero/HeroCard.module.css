@@ -16,7 +16,8 @@
 :global(:root[data-theme='dark']) .puppet { filter: brightness(.84) saturate(.83) contrast(1.12); }   /* in the night's light */
 .fore { position: absolute; inset: 4px 2px 0; width: calc(100% - 4px); height: calc(100% - 4px); pointer-events: none; }
 
-/* the cursor: your request, as a seed, over the mascot and under the text */
+/* the cursor: your request, as a seed, over the mascot and under the text. Shown only while a mouse or a pen moves over the card
+   (.seeding), on a touch screen too; a finger never sets it (useSeedCursor), and the seed lies on the ground for it (MascotScene) */
 .cursor { position: absolute; z-index: 1; left: 0; top: 0; width: 64px; height: 89px; pointer-events: none; opacity: 0; transition: opacity .15s; }
 .cursor img { width: 100%; height: 100%; transform: rotate(180deg); filter: drop-shadow(0 6px 8px rgba(80, 40, 10, .28)); }
 .seeding .cursor { opacity: 1; }
@@ -59,9 +60,6 @@
   .groundSeed, .groundSeed::before, .puppet { transition: none; }
   .fed img { animation: none; }
 }
-
-/* a touch screen has no cursor: the seed lies on the ground (MascotScene) */
-@media (hover: none) { .card .cursor { display: none; } }
 
 /* a phone: the card (nav included) a portrait, the title in the sky, the meadow under it, and under the title room for the mascot
    at 60% of the card's width (73% of it tall above the bottom edge, MascotScene) */
