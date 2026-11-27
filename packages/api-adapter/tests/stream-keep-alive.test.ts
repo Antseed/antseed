@@ -65,7 +65,9 @@ describe('a keep-alive in a translated Responses stream', () => {
   it('leaves the answer as it is without keep-alives', () => {
     const plain = silentToolCallStream('openai-responses', 0).sse;
     const kept = silentToolCallStream('openai-responses', 2).sse;
-    const strip = (sse: string) => events(sse)
+    // Two adapters made a moment apart can straddle a second: the clock is not what is compared.
+    const withoutClock = (sse: string) => sse.replace(/"created_at":\d+/g, '"created_at":0');
+    const strip = (sse: string) => events(withoutClock(sse))
       .filter((e) => e.event !== 'response.in_progress')
       .map(({ event, data: { sequence_number: _n, ...data } }) => ({ event, data }));
     expect(strip(kept)).toEqual(strip(plain));
