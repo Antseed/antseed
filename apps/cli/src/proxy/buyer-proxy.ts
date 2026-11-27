@@ -1499,7 +1499,7 @@ export class BuyerProxy {
   /** After a network switch the DHT routing table can stay populated with stale
       nodes, so repeated empty sweeps are the reachability signal — not node count. */
   private _consecutiveEmptyDiscoveries = 0
-  private _lastModelNotFoundRefreshAtMs = 0
+  private _lastBackgroundPeerRefreshAtMs = 0
   private _bgRefreshHandle: ReturnType<typeof setInterval> | null = null
   /**
    * Per-peer failure streaks and cooldowns. Advisory only: a cooling-down peer
@@ -3171,10 +3171,10 @@ export class BuyerProxy {
   /** Refresh peer metadata without making a request wait for it, at most once per throttle window. */
   private _refreshPeersInBackground(reason: string): void {
     const now = this._now()
-    if (now - this._lastModelNotFoundRefreshAtMs < MODEL_NOT_FOUND_REFRESH_THROTTLE_MS) {
+    if (now - this._lastBackgroundPeerRefreshAtMs < MODEL_NOT_FOUND_REFRESH_THROTTLE_MS) {
       return
     }
-    this._lastModelNotFoundRefreshAtMs = now
+    this._lastBackgroundPeerRefreshAtMs = now
     log(`${reason[0]!.toUpperCase()}${reason.slice(1)}; refreshing peer metadata in background.`)
     void this._refreshPeersNow().catch(() => {})
   }
@@ -5002,8 +5002,14 @@ export class BuyerProxy {
       let selection = selectModelPeers(discoveredPeers)
       const cacheAgeMs = Date.now() - this._cacheLastUpdatedAtMs
       const cacheStale = cacheAgeMs > this._peerCacheTtlMs
+      // Whether any seller lists the model, for the peers it was last checked against.
+      let listing: { peers: PeerInfo[]; listed: boolean } | null = null
+      const isListed = (): boolean => {
+        if (listing?.peers !== discoveredPeers) listing = { peers: discoveredPeers, listed: isServiceListedByAnyPeer(discoveredPeers, requestedService) }
+        return listing.listed
+      }
       if ((selection.candidatePeers.length === 0 || cacheStale) && !this._initialDiscoveryRunning()) {
-        if (!cacheStale && !isServiceListedByAnyPeer(discoveredPeers, requestedService)) {
+        if (!cacheStale && !isListed()) {
           // No seller in a fresh cache lists the model at all, so a network
           // sweep (tens of seconds) would almost always end in the same miss.
           // Answer now; a background refresh catches a seller that just
@@ -5120,7 +5126,7 @@ export class BuyerProxy {
         }
         // 404 when no seller lists the model at all; 502 when one does but
         // none can take this request (routing policy, pricing, cooldowns).
-        const notFoundStatus = isServiceListedByAnyPeer(discoveredPeers, requestedService) ? 502 : 404
+        const notFoundStatus = isListed() ? 502 : 404
         return dispatchFailure(capabilityRequired ? 422 : notFoundStatus, { 'content-type': 'application/json' }, JSON.stringify({
           error: capabilityRequired
             ? {

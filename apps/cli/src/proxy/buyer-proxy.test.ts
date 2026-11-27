@@ -3735,6 +3735,36 @@ test('a model no discovered seller lists fails fast with 404 model_not_found and
   assert.equal(refreshes.background, 1, 'one throttled background refresh picks up a seller that just announced it')
 })
 
+test('a seller that announces no service list does not list the model: no attempt, and the answer is 404', async () => {
+  // It passes the candidate filter (its protocols are inferred), but routing has no service of it
+  // to buy, so no request reaches it, as before; only the status says "nobody lists it" now.
+  const bare = makePeer('a', ['openai'])
+  const proxy = makeBuyerProxyWithPeers([bare], [bare], permissiveRouter())
+  const refreshes = countPeerRefreshes(proxy, [bare])
+  let sent = 0
+  ;(proxy as any)._node.sendRequest = async () => { sent += 1; throw new Error('No purchase should be dispatched') }
+  const res = await invokeProxy(proxy, makeProxyRequest({ body: { model: 'any-model', messages: [{ role: 'user', content: 'Hi' }] } }))
+  assert.equal(res.statusCode, 404, res.body)
+  assert.equal(JSON.parse(res.body).error.code, 'model_not_found')
+  assert.equal(sent, 0)
+  assert.equal(refreshes.foreground, 0, 'a candidate was found, so nothing was refreshed or skipped')
+})
+
+test('the background refresh after an unknown model runs at most once per throttle window', async () => {
+  const clock = makeTestClock()
+  const peers = [makeCataloguePeer('a')]
+  const proxy = makeBuyerProxyWithPeers(peers, peers, permissiveRouter(), clock.now)
+  const refreshes = countPeerRefreshes(proxy, peers)
+  const ask = () => invokeProxy(proxy, makeProxyRequest({ body: { model: 'no-such-model', messages: [] } }))
+  assert.equal((await ask()).statusCode, 404)
+  clock.advance(29_000)
+  assert.equal((await ask()).statusCode, 404)
+  assert.equal(refreshes.background, 1, 'inside the window')
+  clock.advance(2_000)
+  assert.equal((await ask()).statusCode, 404)
+  assert.equal(refreshes.background, 2, 'the window reopened')
+})
+
 test('an unknown model against a stale peer cache is looked up once before the 404', async () => {
   const peers = [makeCataloguePeer('a')]
   const proxy = makeBuyerProxyWithPeers(peers, peers, permissiveRouter())
