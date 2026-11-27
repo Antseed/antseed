@@ -314,43 +314,6 @@ function buildOpenAIResponsesStream(body: Record<string, unknown>): Uint8Array {
       continue;
     }
 
-    if (outputItem.type === 'reasoning') {
-      pushEvent('response.output_item.added', {
-        output_index: outputIndex,
-        item: { ...outputItem, summary: [] },
-      });
-      const summary = Array.isArray(outputItem.summary) ? outputItem.summary as Record<string, unknown>[] : [];
-      for (const [summaryIndex, part] of summary.entries()) {
-        const text = typeof part.text === 'string' ? part.text : '';
-        pushEvent('response.reasoning_summary_part.added', {
-          output_index: outputIndex,
-          item_id: outputItem.id,
-          summary_index: summaryIndex,
-          part: { ...part, text: '' },
-        });
-        pushEvent('response.reasoning_summary_text.delta', {
-          output_index: outputIndex,
-          item_id: outputItem.id,
-          summary_index: summaryIndex,
-          delta: text,
-        });
-        pushEvent('response.reasoning_summary_text.done', {
-          output_index: outputIndex,
-          item_id: outputItem.id,
-          summary_index: summaryIndex,
-          text,
-        });
-        pushEvent('response.reasoning_summary_part.done', {
-          output_index: outputIndex,
-          item_id: outputItem.id,
-          summary_index: summaryIndex,
-          part,
-        });
-      }
-      pushEvent('response.output_item.done', { output_index: outputIndex, item: outputItem });
-      continue;
-    }
-
     if (outputItem.type === 'function_call') {
       const argumentsText = typeof outputItem.arguments === 'string' ? outputItem.arguments : '';
       pushEvent('response.output_item.added', {

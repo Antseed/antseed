@@ -3,7 +3,6 @@ import {
   mapFinishReasonToAnthropicStopReason,
   openAIResponsesFunctionCallId,
   openAIResponsesMessageId,
-  openAIResponsesReasoningId,
   parseJsonSafe,
   reasoningUsageFields,
   RESPONSES_FINAL_ANSWER_TOOL,
@@ -150,8 +149,7 @@ function assignToolsAndToolChoice(
 
 export type CanonicalOutputItem =
   /**
-   * The model's thoughts as text. A Messages `thinking` block, a Chat `reasoning_content` and a Responses
-   * `reasoning` summary all land here. No signature is kept or made up: the OpenAI protocols have none.
+   * The model's thoughts as text. A Messages `thinking` block and a Chat `reasoning_content` land here. No signature is kept or made up: the OpenAI protocols have none.
    */
   | { type: 'reasoning'; text: string }
   | { type: 'text'; text: string; phase?: CanonicalResponseMessagePhase }
@@ -181,22 +179,6 @@ function chatReasoningText(message: Record<string, unknown>): string {
     if (typeof value === 'string' && hasContent(value)) return value;
   }
   return '';
-}
-
-/** The thoughts of a Responses `reasoning` item: its summary parts, or its raw reasoning text parts. */
-function responsesReasoningText(item: Record<string, unknown>): string {
-  const parts: string[] = [];
-  for (const field of ['summary', 'content']) {
-    const list = item[field];
-    if (!Array.isArray(list)) continue;
-    for (const part of list) {
-      if (!part || typeof part !== 'object') continue;
-      const text = (part as Record<string, unknown>).text;
-      if (typeof text === 'string' && hasContent(text)) parts.push(text);
-    }
-    if (parts.length > 0) break;
-  }
-  return parts.join('\n\n');
 }
 
 /** All the thoughts of a canonical response, as one text. */
@@ -778,11 +760,6 @@ export function normalizeOpenAIResponsesResponseBody(
   for (const itemRaw of items) {
     if (!itemRaw || typeof itemRaw !== 'object') continue;
     const item = itemRaw as Record<string, unknown>;
-    if (item.type === 'reasoning') {
-      const text = responsesReasoningText(item);
-      if (text.length > 0) output.push({ type: 'reasoning', text });
-      continue;
-    }
     if (item.type === 'message') {
       const text = textFromResponsesContent(item.content);
       const phase = normalizeResponseMessagePhase(item.phase);
@@ -902,16 +879,6 @@ export function renderCanonicalResponseToOpenAIResponsesBody(response: Canonical
     .filter((item): item is Extract<CanonicalOutputItem, { type: 'text' }> => item.type === 'text');
   const text = textItems.map((item) => item.text).join('');
   const phase = textItems.find((item) => item.phase)?.phase;
-  const reasoning = canonicalReasoningText(response.output);
-
-  if (reasoning.length > 0) {
-    output.push({
-      type: 'reasoning',
-      id: openAIResponsesReasoningId(response.id),
-      summary: [{ type: 'summary_text', text: reasoning }],
-    });
-  }
-
   if (text.length > 0) {
     output.push({
       type: 'message',

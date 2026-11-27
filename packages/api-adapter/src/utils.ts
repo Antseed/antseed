@@ -39,10 +39,6 @@ export function openAIResponsesMessageId(responseId: string): string {
   return `msg_${responseId}_1`;
 }
 
-export function openAIResponsesReasoningId(responseId: string): string {
-  return `rs_${responseId}`;
-}
-
 export function openAIResponsesFunctionCallId(callId: string): string {
   return callId.startsWith('fc_') ? callId : `fc_${callId}`;
 }
