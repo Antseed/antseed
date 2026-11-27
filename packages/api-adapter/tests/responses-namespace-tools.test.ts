@@ -95,6 +95,31 @@ describe('Responses tools sent to a chat seller', () => {
     });
   });
 
+  it('keeps a renamed namespace function within the 64 characters a function name may have', () => {
+    const long = (label: string) => `mcp__${label.repeat(25)}__`;
+    const tools = [
+      fn('search'),
+      { type: 'namespace', name: long('ab'), description: 'One.', tools: [fn('search')] },
+      { type: 'namespace', name: long('cb'), description: 'Two.', tools: [fn('search')] },
+    ];
+    const { chat, namespacedTools } = translate(request(tools));
+    const names = toolNames(chat);
+    expect(names.map((name) => name.length <= 64)).toEqual([true, true, true]);
+    expect(new Set(names).size).toBe(3);
+    expect(names.slice(1).map((name) => /search(_2)?$/.test(name))).toEqual([true, true]);
+    expect(names.slice(1).map((name) => namespacedTools[name])).toEqual([
+      { namespace: long('ab'), name: 'search' },
+      { namespace: long('cb'), name: 'search' },
+    ]);
+  });
+
+  it('maps back a namespace function named like an Object.prototype member', () => {
+    const { namespacedTools } = translate(request([{ type: 'namespace', name: 'ns', description: 'Odd.', tools: [fn('__proto__'), fn('constructor')] }]));
+    expect(Object.keys(namespacedTools)).toEqual(['__proto__', 'constructor']);
+    expect(Object.hasOwn(namespacedTools, '__proto__')).toBe(true);
+    expect(namespacedTools['__proto__']).toEqual({ namespace: 'ns', name: '__proto__' });
+  });
+
   it('sends an earlier namespace call in the history under the name its tool has in this request', () => {
     const tools = [fn('spawn_agent'), { type: 'namespace', name: 'multi_agent_v1', description: 'Agents.', tools: [fn('spawn_agent'), fn('wait_agent')] }];
     const { chat } = translate(request(tools, {
@@ -110,6 +135,14 @@ describe('Responses tools sent to a chat seller', () => {
     }));
     const calls = chat.messages.flatMap((message: Json) => message.tool_calls ?? []).map((call: Json) => call.function.name);
     expect(calls).toEqual(['multi_agent_v1__spawn_agent', 'wait_agent', 'spawn_agent']);
+  });
+
+  it('forces the flattened function when tool_choice names a namespace function', () => {
+    const tools = [fn('spawn_agent'), { type: 'namespace', name: 'multi_agent_v1', description: 'Agents.', tools: [fn('spawn_agent'), fn('wait_agent')] }];
+    const forced = (choice: Json) => translate(request(tools, { tool_choice: choice })).chat.tool_choice;
+    expect(forced({ type: 'function', name: 'spawn_agent', namespace: 'multi_agent_v1' })).toEqual({ type: 'function', function: { name: 'multi_agent_v1__spawn_agent' } });
+    expect(forced({ type: 'function', name: 'wait_agent', namespace: 'multi_agent_v1' })).toEqual({ type: 'function', function: { name: 'wait_agent' } });
+    expect(forced({ type: 'function', name: 'spawn_agent' })).toEqual({ type: 'function', function: { name: 'spawn_agent' } });
   });
 
   it('maps nothing for a request without namespaces', () => {

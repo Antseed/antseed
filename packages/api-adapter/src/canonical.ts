@@ -35,11 +35,15 @@ export interface NamespacedToolName {
 /** The functions a request flattened out of its namespace tools, by the flat name the seller sees. */
 export type NamespacedToolNames = Record<string, NamespacedToolName>;
 
+/** The function a seller's call to the flat `name` is for, when it was flattened out of a namespace. */
+export function namespacedToolFor(namespacedTools: NamespacedToolNames | undefined, name: string): NamespacedToolName | undefined {
+  return namespacedTools && Object.hasOwn(namespacedTools, name) ? namespacedTools[name] : undefined;
+}
+
 /** The flat names a request's tools were given, for mapping a seller's calls back (see `origin`). */
 export function namespacedToolNames(request: CanonicalLlmRequest): NamespacedToolNames {
-  const names: NamespacedToolNames = {};
-  for (const tool of request.tools ?? []) if (tool.origin) names[tool.name] = { ...tool.origin };
-  return names;
+  // fromEntries, so a function named like an Object.prototype member is a key like any other.
+  return Object.fromEntries((request.tools ?? []).flatMap((tool) => (tool.origin ? [[tool.name, { ...tool.origin }]] : [])));
 }
 
 export type CanonicalToolChoice =
@@ -671,7 +675,7 @@ export function normalizeOpenAIResponsesRequestBody(body: Record<string, unknown
   if (typeof body.temperature === 'number') request.temperature = body.temperature;
   if (typeof body.top_p === 'number') request.topP = body.top_p;
   if (typeof body.stop === 'string' || Array.isArray(body.stop)) request.stop = body.stop as string | string[];
-  const toolChoice = normalizeResponsesToolChoice(body.tool_choice);
+  const toolChoice = normalizeResponsesToolChoice(body.tool_choice, request.tools);
   if (toolChoice !== undefined) request.toolChoice = toolChoice;
   if (typeof body.parallel_tool_calls === 'boolean') request.parallelToolCalls = body.parallel_tool_calls;
   if (body.metadata && typeof body.metadata === 'object' && !Array.isArray(body.metadata)) {
@@ -1229,7 +1233,8 @@ function normalizeChatTools(tools: unknown[]): CanonicalFunctionTool[] | undefin
  *
  * - A `namespace` tool's functions become plain functions where the namespace was. Each keeps its own name,
  *   which the client's instructions use, unless a plain function or an earlier namespace has it; then it is
- *   `<namespace>__<name>`. `origin` keeps the namespace, so a call goes back as the client defined the tool.
+ *   `<namespace>__<name>` (see prefixedToolName). `origin` keeps the namespace, so a call goes back as the
+ *   client defined the tool.
  * - Built-in tools the provider runs (`web_search`, `file_search`, `code_interpreter`, `image_generation`,
  *   `computer_use_preview`, `mcp`, `local_shell`, ...) and freeform `custom` tools are dropped: a Chat
  *   Completions or Messages seller can run none of them, and an unknown tool type would fail the request.
@@ -1258,8 +1263,8 @@ function normalizeResponsesTools(tools: unknown[]): CanonicalFunctionTool[] | un
       const inner = functionTool(raw as Record<string, unknown>);
       if (!inner) continue;
       const origin = { namespace: tool.name, name: inner.name };
-      let name = taken.has(inner.name) ? `${tool.name}__${inner.name}` : inner.name;
-      for (let n = 2; taken.has(name); n++) name = `${tool.name}__${inner.name}_${n}`;
+      let name = taken.has(inner.name) ? prefixedToolName(tool.name, inner.name) : inner.name;
+      for (let n = 2; taken.has(name); n++) name = prefixedToolName(tool.name, inner.name, `_${n}`);
       taken.add(name);
       out.push({ ...inner, name, origin });
     }
@@ -1270,7 +1275,15 @@ function normalizeResponsesTools(tools: unknown[]): CanonicalFunctionTool[] | un
 /** The flat name a request gave the function `name` of `namespace`; one it no longer offers keeps a prefixed name. */
 function flatToolName(tools: CanonicalFunctionTool[] | undefined, namespace: string, name: string): string {
   const tool = tools?.find((candidate) => candidate.origin?.namespace === namespace && candidate.origin.name === name);
-  return tool?.name ?? `${namespace}__${name}`;
+  return tool?.name ?? prefixedToolName(namespace, name);
+}
+
+/** The longest function name Chat Completions and Messages accept. */
+const MAX_FUNCTION_NAME_LENGTH = 64;
+
+/** `<namespace>__<name><suffix>`, with the front cut off when it is longer than a function name may be. */
+function prefixedToolName(namespace: string, name: string, suffix = ''): string {
+  return `${namespace}__${name}`.slice(-(MAX_FUNCTION_NAME_LENGTH - suffix.length)) + suffix;
 }
 
 function renderCanonicalToolsToAnthropic(
@@ -1336,7 +1349,7 @@ function normalizeChatToolChoice(toolChoice: unknown): CanonicalToolChoice | und
   return undefined;
 }
 
-function normalizeResponsesToolChoice(toolChoice: unknown): CanonicalToolChoice | undefined {
+function normalizeResponsesToolChoice(toolChoice: unknown, tools: CanonicalFunctionTool[] | undefined): CanonicalToolChoice | undefined {
   if (typeof toolChoice === 'string') {
     if (toolChoice === 'auto' || toolChoice === 'none' || toolChoice === 'required') return toolChoice;
     return undefined;
@@ -1344,7 +1357,11 @@ function normalizeResponsesToolChoice(toolChoice: unknown): CanonicalToolChoice 
   if (!toolChoice || typeof toolChoice !== 'object' || Array.isArray(toolChoice)) return undefined;
   const choice = toolChoice as Record<string, unknown>;
   if (choice.type === 'function' && typeof choice.name === 'string') {
-    return { type: 'function', name: choice.name };
+    // A namespace function goes by the flat name its tool has in this request.
+    const name = typeof choice.namespace === 'string' && choice.namespace.length > 0
+      ? flatToolName(tools, choice.namespace, choice.name)
+      : choice.name;
+    return { type: 'function', name };
   }
   return undefined;
 }

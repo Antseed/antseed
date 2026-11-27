@@ -1,4 +1,4 @@
-import type { NamespacedToolNames } from './canonical.js';
+import { namespacedToolFor, type NamespacedToolNames } from './canonical.js';
 import { createLeadingThinkMarkupFilter, type LeadingThinkMarkupFilter, type ThinkMarkupPiece } from './think-markup.js';
 import type { SerializedHttpResponseChunk, ServiceApiProtocol } from './types.js';
 import {
@@ -118,9 +118,8 @@ export function createStreamingAdapter(
 /** A call to a flattened namespace function as the client defined it: the tool's own name and its namespace. */
 function withNamespacedCalls(events: CanonicalStreamEvent[], namespacedTools: NamespacedToolNames): CanonicalStreamEvent[] {
   return events.map((event) => {
-    if (event.type !== 'tool_call_start' || !Object.hasOwn(namespacedTools, event.name)) return event;
-    const origin = namespacedTools[event.name]!;
-    return { ...event, name: origin.name, namespace: origin.namespace };
+    const origin = event.type === 'tool_call_start' ? namespacedToolFor(namespacedTools, event.name) : undefined;
+    return origin ? { ...event, name: origin.name, namespace: origin.namespace } : event;
   });
 }
 

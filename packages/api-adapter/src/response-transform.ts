@@ -6,6 +6,7 @@ import {
   renderCanonicalResponseToAnthropicMessagesBody,
   renderCanonicalResponseToOpenAIChatBody,
   renderCanonicalResponseToOpenAIResponsesBody,
+  namespacedToolFor,
   type CanonicalLlmResponse,
   type NamespacedToolNames,
 } from './canonical.js';
@@ -116,7 +117,7 @@ function withNamespacedCalls(response: CanonicalLlmResponse, namespacedTools: Na
   return {
     ...response,
     output: response.output.map((item) => {
-      const origin = item.type === 'function_call' && Object.hasOwn(namespacedTools, item.name) ? namespacedTools[item.name] : undefined;
+      const origin = item.type === 'function_call' ? namespacedToolFor(namespacedTools, item.name) : undefined;
       return origin ? { ...item, name: origin.name, namespace: origin.namespace } : item;
     }),
   };
