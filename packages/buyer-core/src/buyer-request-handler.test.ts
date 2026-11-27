@@ -173,7 +173,8 @@ describe('BuyerRequestHandler payment negotiation', () => {
       }, 5);
       await expect(pending).rejects.toThrow();
       expect(estimateCostFromPartialResponse, ending).toHaveBeenCalledTimes(ending === 'caller abort' ? 1 : 0);
-      expect(negotiator.bpm.endPaidRequest, ending).toHaveBeenCalledWith(makePeer().peerId, request.requestId, false);
+      // Sent, then ended with no answer.
+      expect(negotiator.bpm.endPaidRequest, ending).toHaveBeenCalledWith(makePeer().peerId, request.requestId, false, true);
     }
   });
 
@@ -194,9 +195,10 @@ describe('BuyerRequestHandler payment negotiation', () => {
     const abort = new AbortController();
     abort.abort();
     await expect(handler.sendRequest(makePeer(), makeRequest(), undefined, { signal: abort.signal })).rejects.toThrow(/aborted/);
-    // The seller never saw it, so it has nothing to bill.
+    // The seller never saw it, so it has nothing to bill, and a video create's fee is not reported.
     expect(sendProxyRequest).not.toHaveBeenCalled();
     expect(estimateCostFromPartialResponse).not.toHaveBeenCalled();
+    expect(negotiator.bpm.endPaidRequest).toHaveBeenCalledWith(makePeer().peerId, expect.any(String), false, false);
   });
 
   const catchUp = (required: string, accepted: string) => response(402, {
