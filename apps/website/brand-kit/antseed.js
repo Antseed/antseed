@@ -65,16 +65,34 @@
       const acts = document.createElement('div'); acts.className = 'sm-acts';
       nav.querySelectorAll('.acts > .cta').forEach((c) => { const k = c.cloneNode(true); k.removeAttribute('id'); acts.append(k); });
       menu.append(links, acts); document.body.append(menu);
+      // while the sheet is open, the page it covers is inert (no focus, hidden from screen readers) and Tab cycles through the sheet's
+      // links and the close button; closing hands focus back to the button if it was in the sheet
+      const covered = [];
+      const cover = (on) => {
+        if (on) { for (const el of document.body.children) if (el !== menu && !el.contains(nav) && !el.inert) { el.inert = true; covered.push(el); } }
+        else covered.splice(0).forEach((el) => { el.inert = false; });
+      };
+      const stops = () => [...menu.querySelectorAll('a[href], button'), btn].filter((el) => el.getClientRects().length);
       const open = (on) => {
         if (on) { menu.style.setProperty('--sm-top', `${Math.max(0, nav.getBoundingClientRect().bottom)}px`);
           menu.style.setProperty('--sm-x', `${Math.max(16, nav.querySelector('a').getBoundingClientRect().left)}px`); }
+        const inside = menu.contains(document.activeElement);
         menu.hidden = !on; btn.setAttribute('aria-expanded', String(on)); btn.setAttribute('aria-label', on ? 'Close menu' : 'Menu');
         root.classList.toggle('menu-open', on);
-        if (on) menu.querySelector('a')?.focus();   // keyboard users land in the sheet, not behind it
+        cover(on);
+        if (on) menu.querySelector('a[href]')?.focus();   // keyboard users land in the sheet, not behind it
+        else if (inside) btn.focus();
       };
       btn.addEventListener('click', () => open(menu.hidden));
       menu.addEventListener('click', (e) => { if (e.target.closest('a')) open(false); });
-      document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !menu.hidden) { open(false); btn.focus(); } });
+      document.addEventListener('keydown', (e) => {
+        if (menu.hidden) return;
+        if (e.key === 'Escape') { open(false); btn.focus(); return; }
+        if (e.key !== 'Tab') return;
+        const list = stops(), i = list.indexOf(document.activeElement);
+        e.preventDefault();
+        list[i < 0 ? 0 : (i + (e.shiftKey ? -1 : 1) + list.length) % list.length]?.focus();
+      });
       matchMedia('(min-width: 1080px)').addEventListener('change', (e) => { if (e.matches) open(false); });
     }
 
