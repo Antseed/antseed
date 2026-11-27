@@ -45,17 +45,8 @@ const OPENAI_LOWEST_EFFORT = 'minimal';
 const MESSAGES_LOWEST_EFFORT = 'low';
 
 /**
- * The effort a Messages request that switches thinking on (`enabled` or `adaptive`) gets when it names none.
- * A client's own `output_config.effort` always wins over it. Known limit: some models answer with
- * empty thoughts below `high`, so a client that wants thoughts from them must name
- * `output_config.effort: "high"`. A thinking budget is never turned into a level of its own.
- */
-const THINKING_DEFAULT_EFFORT = 'medium';
-
-/**
- * The reasoning effort a Messages request names: its `output_config.effort`, or, when only thinking is
- * switched on (`enabled` with a budget, or `adaptive`), `THINKING_DEFAULT_EFFORT`. A `budget_tokens` names
- * no level of its own, and none is made up from it.
+ * The reasoning effort a Messages request names. A thinking budget names no effort, and none is
+ * made up from it.
  *
  * With thinking switched off, no effort is carried at all. Off is the Messages default, which a
  * client may only be restating, so it is not turned into the OpenAI protocols' `none`: that is a
@@ -63,16 +54,14 @@ const THINKING_DEFAULT_EFFORT = 'medium';
  * either, since the one field the OpenAI protocols have would switch reasoning on.
  */
 function reasoningEffortFromAnthropic(body: Record<string, unknown>): string | undefined {
-  const thinking = body.thinking && typeof body.thinking === 'object' && !Array.isArray(body.thinking)
-    ? body.thinking as Record<string, unknown>
-    : undefined;
-  if (thinking?.type === 'disabled') return undefined;
-  const config = body.output_config;
-  if (config && typeof config === 'object' && !Array.isArray(config)) {
-    const effort = (config as Record<string, unknown>).effort;
-    if (typeof effort === 'string' && effort.length > 0) return effort;
+  const thinking = body.thinking;
+  if (thinking && typeof thinking === 'object' && (thinking as Record<string, unknown>).type === 'disabled') {
+    return undefined;
   }
-  return thinking?.type === 'enabled' || thinking?.type === 'adaptive' ? THINKING_DEFAULT_EFFORT : undefined;
+  const config = body.output_config;
+  if (!config || typeof config !== 'object' || Array.isArray(config)) return undefined;
+  const effort = (config as Record<string, unknown>).effort;
+  return typeof effort === 'string' && effort.length > 0 ? effort : undefined;
 }
 
 /**

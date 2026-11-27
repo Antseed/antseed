@@ -4866,7 +4866,7 @@ async function messagesStreamThroughChatSeller(thinking: Record<string, unknown>
 test('a Messages client that asked for thinking gets the thoughts of a Chat Completions seller as a thinking block', async () => {
   const { res, capturedRequestBody } = await messagesStreamThroughChatSeller({ type: 'enabled', budget_tokens: 2000 })
   assert.equal(res.statusCode, 200)
-  assert.equal(capturedRequestBody?.['reasoning_effort'], 'medium')
+  assert.equal(capturedRequestBody?.['reasoning_effort'], undefined)
   assert.match(res.body, /"content_block":\{"type":"thinking"/)
   assert.match(res.body, /"thinking_delta","thinking":"Own thoughts\."/)
   assert.match(res.body, /"index":1,"content_block":\{"type":"text"/)

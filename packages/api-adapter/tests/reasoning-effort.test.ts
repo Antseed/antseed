@@ -114,26 +114,10 @@ describe('reasoning effort from an Anthropic Messages client to an OpenAI seller
       expect(reasoningFields(translated(MESSAGES, to, { max_tokens: 4096, output_config: { effort: level } }))).toEqual(effort(level));
     });
 
-    it(`names the default effort medium for switched-on thinking, never one derived from the budget, for a ${to} seller`, () => {
-      for (const budget_tokens of [500, 1024, 2000, 8000, 16000, 32000, 64000]) {
-        for (const stream of [false, true]) {
-          const fields = { max_tokens: 4096, thinking: { type: 'enabled', budget_tokens } };
-          expect(reasoningFields(translated(MESSAGES, to, fields, stream))).toEqual(effort('medium'));
-        }
-      }
-      for (const stream of [false, true]) {
-        expect(reasoningFields(translated(MESSAGES, to, { max_tokens: 4096, thinking: { type: 'adaptive' } }, stream))).toEqual(effort('medium'));
-      }
+    it(`invents no effort from a thinking budget or from adaptive thinking alone for a ${to} seller`, () => {
+      expect(reasoningFields(translated(MESSAGES, to, { max_tokens: 4096, thinking: { type: 'enabled', budget_tokens: 2000 } }))).toEqual({});
+      expect(reasoningFields(translated(MESSAGES, to, { max_tokens: 4096, thinking: { type: 'adaptive' } }))).toEqual({});
       expect(reasoningFields(translated(MESSAGES, to, { max_tokens: 4096 }))).toEqual({});
-    });
-
-    it(`lets an explicit effort beat the medium default of enabled or adaptive thinking for a ${to} seller`, () => {
-      for (const level of ['low', 'high']) {
-        const enabled = { max_tokens: 4096, thinking: { type: 'enabled', budget_tokens: 2000 }, output_config: { effort: level } };
-        const adaptive = { max_tokens: 4096, thinking: { type: 'adaptive' }, output_config: { effort: level } };
-        expect(reasoningFields(translated(MESSAGES, to, enabled))).toEqual(effort(level));
-        expect(reasoningFields(translated(MESSAGES, to, adaptive))).toEqual(effort(level));
-      }
     });
 
     it(`ignores an output_config with no usable effort for a ${to} seller`, () => {
@@ -158,14 +142,8 @@ describe('reasoning effort in the Chat Completions body a routing service is ask
 
   it('names no effort for a Messages request with thinking disabled or with no effort', () => {
     expect(reasoningFields(renderRequestBodyAsOpenAIChat(MESSAGES, { ...prompt, thinking: { type: 'disabled' } })!)).toEqual({});
+    expect(reasoningFields(renderRequestBodyAsOpenAIChat(MESSAGES, { ...prompt, thinking: { type: 'adaptive' } })!)).toEqual({});
     expect(reasoningFields(renderRequestBodyAsOpenAIChat(MESSAGES, prompt)!)).toEqual({});
-  });
-
-  it('names the default effort medium for a Messages request with thinking switched on', () => {
-    expect(reasoningFields(renderRequestBodyAsOpenAIChat(MESSAGES, { ...prompt, thinking: { type: 'adaptive' } })!))
-      .toEqual({ reasoning_effort: 'medium' });
-    expect(reasoningFields(renderRequestBodyAsOpenAIChat(MESSAGES, { ...prompt, thinking: { type: 'enabled', budget_tokens: 2000 } })!))
-      .toEqual({ reasoning_effort: 'medium' });
   });
 });
 
