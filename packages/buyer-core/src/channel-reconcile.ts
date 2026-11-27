@@ -39,8 +39,8 @@ export interface LivePaymentSessions {
   mayEndSession(peerId: string, closure: ChannelClosure): boolean;
   /** The seller's current row was retired and it has no active row left: drop its in-memory state. */
   sessionEnded(peerId: string): void;
-  /** A one-off row was retired: drop its in-memory state. */
-  oneOffEnded(channelId: string): void;
+  /** A one-off row was retired, with how the chain says it ended: drop its in-memory state. */
+  oneOffEnded(channelId: string, closure: ChannelClosure): void;
 }
 
 export interface ReconcileStoredChannelsOptions {
@@ -123,7 +123,7 @@ function applyReadings(o: ReconcileStoredChannelsOptions, readings: Map<string, 
     const closure = closureOf(row);
     if (!closure) continue;
     retire(row, closure);
-    o.sessions?.oneOffEnded(row.sessionId);
+    o.sessions?.oneOffEnded(row.sessionId, closure);
   }
 
   const paidByPeer = new Map<string, StoredChannel[]>();
