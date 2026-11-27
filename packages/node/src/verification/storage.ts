@@ -3,6 +3,16 @@ import type { ResponseAuthPayload } from '../types/protocol.js';
 import { runMigrations } from '../storage/migrate.js';
 import { verificationMigrations } from '../storage/migrations/verification/index.js';
 
+/** Rows one prune statement deletes; the prune yields to the event loop between batches. */
+const DEFAULT_PRUNE_BATCH_SIZE = 500;
+
+export interface PruneResponseAuthsOptions {
+  /** Rows deleted per statement. Default: 500. */
+  batchSize?: number;
+  /** Checked between batches: an aborted prune stops at the next batch. */
+  signal?: AbortSignal;
+}
+
 export interface StoredResponseAuth extends ResponseAuthPayload {
   receivedAt: number;
   verified: boolean;
@@ -16,6 +26,7 @@ export class VerificationStorage {
   private readonly _insertResponseAuth: Database.Statement;
   private readonly _getResponseAuth: Database.Statement;
   private readonly _listResponseAuthsBySeller: Database.Statement;
+  private readonly _pruneResponseAuths: Database.Statement;
 
   constructor(dbPath: string) {
     this._db = new Database(dbPath);
@@ -26,6 +37,7 @@ export class VerificationStorage {
     this._insertResponseAuth = statements.insertResponseAuth;
     this._getResponseAuth = statements.getResponseAuth;
     this._listResponseAuthsBySeller = statements.listResponseAuthsBySeller;
+    this._pruneResponseAuths = statements.pruneResponseAuths;
   }
 
   private _prepareStatements(): VerificationStorageStatements {
@@ -35,6 +47,13 @@ export class VerificationStorage {
       listResponseAuthsBySeller: this._db.prepare(
         'SELECT * FROM response_auths WHERE seller_peer_id = ? ORDER BY received_at DESC LIMIT ?',
       ),
+      // Walks idx_response_auths_received from the oldest row, so one batch
+      // costs the rows it deletes, not a scan of the table.
+      pruneResponseAuths: this._db.prepare(`
+        DELETE FROM response_auths WHERE rowid IN (
+          SELECT rowid FROM response_auths WHERE received_at < ? ORDER BY received_at LIMIT ?
+        )
+      `),
     };
   }
 
@@ -105,6 +124,25 @@ export class VerificationStorage {
     return rows.map(rowToResponseAuth);
   }
 
+  /**
+   * Deletes the rows received before `cutoffMs`, oldest first, in batches of
+   * `batchSize`, yielding to the event loop between batches so a large
+   * backlog never holds the loop for more than one batch. Returns the number
+   * of rows deleted. Stops early when `signal` is aborted or the database is
+   * closed.
+   */
+  async pruneResponseAuthsOlderThan(cutoffMs: number, options: PruneResponseAuthsOptions = {}): Promise<number> {
+    const batchSize = Math.max(1, Math.floor(options.batchSize ?? DEFAULT_PRUNE_BATCH_SIZE));
+    let deleted = 0;
+    while (this._db.open && !options.signal?.aborted) {
+      const { changes } = this._pruneResponseAuths.run(cutoffMs, batchSize);
+      deleted += changes;
+      if (changes < batchSize) break;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    return deleted;
+  }
+
   close(): void {
     this._db.close();
   }
@@ -114,6 +152,7 @@ interface VerificationStorageStatements {
   insertResponseAuth: Database.Statement;
   getResponseAuth: Database.Statement;
   listResponseAuthsBySeller: Database.Statement;
+  pruneResponseAuths: Database.Statement;
 }
 
 interface ResponseAuthRow {
