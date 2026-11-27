@@ -12,7 +12,7 @@ import {
   encodeJson,
   isAdapterReasoningItem,
   openAIResponsesFunctionCallId,
-  RESPONSES_REASONING_TAG,
+  ADAPTER_REASONING_TAG,
   openAIResponsesMessageId,
   parseJsonObject,
 } from './utils.js';
@@ -214,7 +214,7 @@ function repairLegacyResponsesItemIds(body: Record<string, unknown>): Record<str
  * them is returned unchanged.
  */
 export function withoutAdapterReasoningItems(request: SerializedHttpRequest): SerializedHttpRequest {
-  if (!new TextDecoder().decode(request.body).includes(RESPONSES_REASONING_TAG)) return request;
+  if (!new TextDecoder().decode(request.body).includes(ADAPTER_REASONING_TAG)) return request;
   const body = parseJsonObject(request.body);
   if (!body || !Array.isArray(body.input)) return request;
   const input = body.input.filter((item) => !isAdapterReasoningInput(item));

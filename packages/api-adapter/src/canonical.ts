@@ -1,4 +1,5 @@
 import {
+  adapterThinkingSignature,
   chatReasoningText,
   extractReportedUsage,
   mapFinishReasonToAnthropicStopReason,
@@ -878,7 +879,11 @@ export function renderCanonicalResponseToOpenAIResponsesBody(response: Canonical
 }
 
 export function renderCanonicalResponseToAnthropicMessagesBody(response: CanonicalLlmResponse): Record<string, unknown> {
-  const content: Record<string, unknown>[] = response.reasoning ? [{ type: 'thinking', thinking: response.reasoning }] : [];
+  const content: Record<string, unknown>[] = [];
+  if (response.reasoning) {
+    const signature = adapterThinkingSignature(response.reasoningModel ?? response.model, response.id);
+    content.push({ type: 'thinking', thinking: response.reasoning, signature });
+  }
   for (const item of response.output) {
     if (item.type === 'text') {
       content.push({ type: 'text', text: item.text });

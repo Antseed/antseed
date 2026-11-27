@@ -102,8 +102,9 @@ function blockLog(events: Json[]): string[] {
     else if (event.type === 'content_block_delta') {
       const delta = event.delta;
       const body = delta.type === 'thinking_delta' ? delta.thinking
-        : delta.type === 'text_delta' ? delta.text
-          : delta.partial_json;
+        : delta.type === 'signature_delta' ? delta.signature
+          : delta.type === 'text_delta' ? delta.text
+            : delta.partial_json;
       log.push(`${delta.type} ${event.index} ${body}`);
     } else if (event.type === 'content_block_stop') log.push(`stop ${event.index}`);
   }
@@ -146,14 +147,9 @@ describe('Chat Completions reasoning, translated to a Messages response', () => 
   it.each(['reasoning_content', 'reasoning'])('puts %s in a thinking block before the text', (field) => {
     const body = translateBody(CHAT, MESSAGES, reply({ [field]: 'Light scatters.' })) as Json;
     expect(body.content).toEqual([
-      { type: 'thinking', thinking: 'Light scatters.' },
+      { type: 'thinking', thinking: 'Light scatters.', signature: 'antseed.reasoning.v1:example-model#chatcmpl-1' },
       { type: 'text', text: 'Because of Rayleigh scattering.' },
     ]);
-  });
-
-  it('invents no signature', () => {
-    const body = translateBody(CHAT, MESSAGES, reply({ reasoning_content: 'Light scatters.' })) as Json;
-    expect(body.content[0]).not.toHaveProperty('signature');
   });
 
   it.each([{ reasoning_content: '' }, { reasoning_content: null }, { reasoning_content: '  \n' }, {}])(
@@ -182,6 +178,7 @@ describe('Chat Completions reasoning, translated to a Messages response', () => 
     expect(blockLog(sseEvents(sse))).toEqual([
       'start 0 thinking',
       'thinking_delta 0 Light scatters.',
+      'signature_delta 0 antseed.reasoning.v1:example-model#chatcmpl-1',
       'stop 0',
       'start 1 text',
       'text_delta 1 Because of Rayleigh scattering.',
@@ -205,6 +202,7 @@ describe('Chat Completions reasoning stream, translated to a Messages stream', (
       'start 0 thinking',
       'thinking_delta 0 Light ',
       'thinking_delta 0 scatters.',
+      'signature_delta 0 antseed.reasoning.v1:example-model#chatcmpl-1',
       'stop 0',
       'start 1 text',
       'text_delta 1 Because ',
@@ -237,6 +235,7 @@ describe('Chat Completions reasoning stream, translated to a Messages stream', (
     expect(blockLog(thinkingThenTool)).toEqual([
       'start 0 thinking',
       'thinking_delta 0 Need a tool.',
+      'signature_delta 0 antseed.reasoning.v1:example-model#chatcmpl-1',
       'stop 0',
       'start 1 tool_use',
       'input_json_delta 1 {"q":1}',
@@ -253,6 +252,7 @@ describe('Chat Completions reasoning stream, translated to a Messages stream', (
     expect(blockLog(thinkingTextTool)).toEqual([
       'start 0 thinking',
       'thinking_delta 0 Hmm.',
+      'signature_delta 0 antseed.reasoning.v1:example-model#chatcmpl-1',
       'stop 0',
       'start 1 text',
       'text_delta 1 Checking.',
@@ -265,7 +265,12 @@ describe('Chat Completions reasoning stream, translated to a Messages stream', (
 
   it('closes a thinking block that no text follows', () => {
     const events = translateStream(CHAT, MESSAGES, [chatFrame({ reasoning_content: 'Only thoughts.' }), chatFrame({}, 'length'), CHAT_DONE]);
-    expect(blockLog(events)).toEqual(['start 0 thinking', 'thinking_delta 0 Only thoughts.', 'stop 0']);
+    expect(blockLog(events)).toEqual([
+      'start 0 thinking',
+      'thinking_delta 0 Only thoughts.',
+      'signature_delta 0 antseed.reasoning.v1:example-model#chatcmpl-1',
+      'stop 0',
+    ]);
   });
 
   it('does not reopen or renumber blocks for thoughts that arrive after the text began', () => {
@@ -579,5 +584,62 @@ describe('thinking blocks only for a Messages request that switched thinking on'
     expect(includeReasoning).toBe(true);
     expect((translateBody(CHAT, MESSAGES, reply, false, { includeReasoning }) as Json).content[0].type).toBe('thinking');
     expect(blockLog(translateStream(CHAT, MESSAGES, frames, { includeReasoning }))[0]).toBe('start 0 thinking');
+  });
+});
+
+describe('the signature of a thinking block the adapter made', () => {
+  const TAG = 'antseed.reasoning.v1:';
+  const reply = (id: string): Json => ({
+    id,
+    model: 'seller-label',
+    choices: [{ index: 0, message: { role: 'assistant', content: 'Hi', reasoning_content: 'Light scatters.' }, finish_reason: 'stop' }],
+  });
+  const frames = (id: string): string[] => [
+    `data: ${JSON.stringify({ id, model: 'seller-label', choices: [{ index: 0, delta: { reasoning_content: 'Light scatters.' }, finish_reason: null }] })}\n\n`,
+    `data: ${JSON.stringify({ id, model: 'seller-label', choices: [{ index: 0, delta: { content: 'Hi' }, finish_reason: 'stop' }] })}\n\n`,
+    CHAT_DONE,
+  ];
+  const translate = (requestedModel: string, id: string) => {
+    const result = transformResponse({
+      requestId: 'req-signature',
+      statusCode: 200,
+      headers: { 'content-type': 'application/json' },
+      body: encoder.encode(JSON.stringify(reply(id))),
+    }, { from: CHAT, to: MESSAGES, fallbackModel: requestedModel, includeReasoning: true })!;
+    const adapter = createStreamingAdapter({ from: CHAT, to: MESSAGES, fallbackModel: requestedModel, includeReasoning: true })!;
+    let sse = '';
+    for (const frame of frames(id)) {
+      for (const out of adapter.adaptChunk({ requestId: 'r', data: encoder.encode(frame), done: false })) sse += decoder.decode(out.data);
+    }
+    return { buffered: JSON.parse(decoder.decode(result.body)) as Json, streamed: sseEvents(sse) };
+  };
+
+  it('starts empty, gets one signature_delta before the block stops, and matches the buffered answer', () => {
+    const { buffered, streamed } = translate('example-model', 'chatcmpl-1');
+    const thinking = streamed.filter((event) => event.index === 0);
+    expect(thinking[0]).toMatchObject({ type: 'content_block_start', content_block: { type: 'thinking', thinking: '', signature: '' } });
+    const signatures = thinking.filter((event) => event.delta?.type === 'signature_delta');
+    expect(signatures).toHaveLength(1);
+    expect(thinking.at(-2)).toBe(signatures[0]);
+    expect(thinking.at(-1)!.type).toBe('content_block_stop');
+    expect(signatures[0]!.delta.signature).toBe(buffered.content[0].signature);
+  });
+
+  it('names the model the request asked for, after the tag, with the response id after a #', () => {
+    const model = 'moonshotai/Kimi-K3.1-Pro:free';
+    const { buffered } = translate(model, 'chatcmpl-1');
+    expect(buffered.content[0].signature).toBe(`${TAG}${model}#chatcmpl-1`);
+  });
+
+  it('differs for every answer', () => {
+    const first = translate('example-model', 'chatcmpl-1');
+    const second = translate('example-model', 'chatcmpl-2');
+    expect(first.buffered.content[0].signature).not.toBe(second.buffered.content[0].signature);
+  });
+
+  it('is short and cannot be read as base64', () => {
+    const { buffered } = translate('example-model', 'chatcmpl-1');
+    expect(buffered.content[0].signature.length).toBeLessThan(80);
+    expect(() => atob(buffered.content[0].signature)).toThrow();
   });
 });

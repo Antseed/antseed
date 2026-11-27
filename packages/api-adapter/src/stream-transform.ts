@@ -1,5 +1,6 @@
 import type { SerializedHttpResponseChunk, ServiceApiProtocol } from './types.js';
 import {
+  adapterThinkingSignature,
   createChatStreamParser,
   encodeSseEvents,
   extractReportedUsage,
@@ -528,6 +529,13 @@ function createAnthropicStreamRenderer(options: StreamTransformInternals): Proto
   const closeThinking = (emitted: Array<{ event?: string; data: unknown | string }>): void => {
     if (thinkingBlockState !== 'open') return;
     thinkingBlockState = 'closed';
+    // A stream with no id of its own still gets a signature no other block has.
+    const answerId = responseId || `${fallbackAnthropicId(options.fallbackModel)}_${Math.random().toString(36).slice(2, 10)}`;
+    const signature = adapterThinkingSignature(options.fallbackModel || responseModel, answerId);
+    emitted.push({
+      event: 'content_block_delta',
+      data: { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature } },
+    });
     emitted.push({ event: 'content_block_stop', data: { type: 'content_block_stop', index: 0 } });
   };
 
@@ -639,7 +647,7 @@ function createAnthropicStreamRenderer(options: StreamTransformInternals): Proto
             thinkingBlockState = 'open';
             emitted.push({
               event: 'content_block_start',
-              data: { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } },
+              data: { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '', signature: '' } },
             });
           }
           emitted.push({

@@ -178,19 +178,19 @@ function buildAnthropicMessagesStream(
 
   for (const [index, block] of content.entries()) {
     let contentBlock: Record<string, unknown>;
-    let delta: Record<string, unknown>;
+    const deltas: Record<string, unknown>[] = [];
     if (block.type === 'thinking') {
-      contentBlock = { type: 'thinking', thinking: '' };
-      delta = { type: 'thinking_delta', thinking: block.thinking };
+      contentBlock = { type: 'thinking', thinking: '', signature: '' };
+      deltas.push({ type: 'thinking_delta', thinking: block.thinking }, { type: 'signature_delta', signature: block.signature });
     } else if (block.type === 'text') {
       contentBlock = { type: 'text', text: '' };
-      delta = { type: 'text_delta', text: block.text };
+      deltas.push({ type: 'text_delta', text: block.text });
     } else {
       contentBlock = { type: 'tool_use', id: block.id, name: block.name, input: {} };
-      delta = { type: 'input_json_delta', partial_json: JSON.stringify(block.input ?? {}) };
+      deltas.push({ type: 'input_json_delta', partial_json: JSON.stringify(block.input ?? {}) });
     }
     pushEvent('content_block_start', { type: 'content_block_start', index, content_block: contentBlock });
-    pushEvent('content_block_delta', { type: 'content_block_delta', index, delta });
+    for (const delta of deltas) pushEvent('content_block_delta', { type: 'content_block_delta', index, delta });
     pushEvent('content_block_stop', { type: 'content_block_stop', index });
   }
 
