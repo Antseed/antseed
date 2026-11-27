@@ -7,7 +7,7 @@ import { selectVerifier, verifierSupportFingerprint, type VerifierPolicy, type V
 type Peer = { peerId: string; capabilities?: string[] }
 type Entry = { outcome?: Omit<VerifyOutcome, 'ok'>; checkedAt: number; failures?: number; expiresAt?: number }
 
-const TEE_FAILURE_MAX_AGE_MS = 6 * 60 * 60 * 1_000
+const TEE_FAILURE_MAX_RETRY_DELAY_MS = 6 * 60 * 60 * 1_000
 
 export class TeeVerification {
   readonly sessionId = randomUUID()
@@ -86,7 +86,7 @@ export class TeeVerification {
           if (chosen !== TEE_VERIFIER_ID || outcome.verified === true) return { checkedAt, outcome }
           const failures = (entry?.failures ?? 0) + 1
           const jitter = failures === 1 ? 1 : 1 + (this.random() - 0.5) * 0.4
-          const delay = Math.round(Math.min(TEE_MAX_AGE_MS * 2 ** (failures - 1) * jitter, TEE_FAILURE_MAX_AGE_MS))
+          const delay = Math.round(Math.min(TEE_MAX_AGE_MS * 2 ** (failures - 1) * jitter, TEE_FAILURE_MAX_RETRY_DELAY_MS))
           return { checkedAt, outcome, failures, expiresAt: checkedAt + delay }
         } catch (error: unknown) {
           return { checkedAt, failures: entry?.failures, outcome: {
