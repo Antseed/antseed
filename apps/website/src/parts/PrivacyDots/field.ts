@@ -1,7 +1,7 @@
 /* What moves over the still mosaic: a few dots twinkling lime or near white, the dots round the cursor warming and slowly cooling, and
    a few ants (small lime dots) walking the grid a cell at a time, the cells they cross tinted behind them. A click calls the nearest
    ants: they head for it, mill about, then wander again. Ants keep clear of the band's title. */
-import {DOT_RADIUS, STEP, type Layout} from './mosaic';
+import {DOT_RADIUS, STEP, type Box, type Layout} from './mosaic';
 
 const ANT_RADIUS = 1.9;
 const WARM_RADIUS = 110;
@@ -14,7 +14,7 @@ const TWINKLE_WHITE = '#f4fbe2';
 const FRAME_MS = 32;
 const DIRS: readonly [number, number][] = [[1, 0], [0, 1], [-1, 0], [0, -1]];
 
-export type Box = {l: number; r: number; t: number; b: number};
+export type {Box};
 type Ant = {i: number; j: number; pi: number; pj: number; t: number; dur: number; dir: number; born: number; life: number;
   trail: [number, number][]; goal: [number, number] | null; until: number};
 
@@ -41,8 +41,8 @@ export class DotField {
 
   constructor(private readonly ctx: CanvasRenderingContext2D) {}
 
-  /** A new layout (size or theme); `quiet` is the box the ants avoid, in band coordinates; `step` is the grid the dots sit on. */
-  reset(layout: Layout, width: number, height: number, quiet: Box | null, step = STEP): void {
+  /** A new layout (size or theme); `quiet` are the boxes the ants avoid, in band coordinates; `step` is the grid the dots sit on. */
+  reset(layout: Layout, width: number, height: number, quiet: Box[], step = STEP): void {
     const {xs, ys} = layout;
     this.w = width; this.h = height; this.quiet = quiet; this.pitch = step;
     const n = xs.length;
@@ -107,7 +107,7 @@ export class DotField {
     ctx.shadowBlur = 0;
   }
 
-  private quiet: Box | null = null;
+  private quiet: Box[] = [];
   private layers(): Path2D[] { return [new Path2D(), new Path2D(), new Path2D(), new Path2D()]; }
   private fill(layers: Path2D[], color: string): void {
     this.ctx.fillStyle = color;
@@ -162,10 +162,9 @@ export class DotField {
   }
 
   private clearOfTitle(x: number, y: number): number {
-    const q = this.quiet;
-    if (!q) return 1;
-    const d = Math.max(q.l - x, x - q.r, q.t - y, y - q.b);
-    return Math.min(1, Math.max(0, d / 28));
+    let a = 1;
+    for (const q of this.quiet) a = Math.min(a, Math.max(0, Math.max(q.l - x, x - q.r, q.t - y, y - q.b) / 28));
+    return a;
   }
 
   private spawn(now: number): Ant {

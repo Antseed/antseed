@@ -26,8 +26,8 @@ export default function Interface(): JSX.Element {
       <PointsRow className={styles.row}>
         <Point className={styles.point}>
           <Actions className={styles.demo}>
-            <Button href="/#desktop">Get Antseed Desktop</Button>
-            <Button href="/docs/" variant="ghost">Learn more</Button>
+            <Button href="/#desktop" size="page">Get Antseed Desktop</Button>
+            <Button href="/docs/" variant="ghost" size="page">Learn more</Button>
           </Actions>
           <PointCaption name="One green button.">Everything else in the row is a ghost or a link. A verb and two or three words.</PointCaption>
         </Point>

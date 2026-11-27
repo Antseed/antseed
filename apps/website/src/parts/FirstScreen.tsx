@@ -73,6 +73,8 @@ type Props = {
   below?: ReactNode;
   /** Below 1200px, stack inside a rail instead of across the whole width. */
   railStack?: RailStack;
+  /** On phones the title as large as lets its longest line hold (at most 40px), as `railStack.fluidPhoneTitle`. */
+  fluidPhoneTitle?: boolean;
   /** The offer's spacing side by side under 1200px (default 16, 12, 36), stacked on a tablet (default: as side by side) and on
    *  phones (default 16, 16, 28). */
   gaps?: {side?: OfferGaps; stacked?: OfferGaps; phone?: OfferGaps};
@@ -88,8 +90,9 @@ type Props = {
 
 const MIN_HEIGHT = 520;
 
-/** The offer on the pages for one audience (agents, apps, coding, privacy): a black title, a narrower column. */
-export const AUDIENCE_OFFER = {strong: true, textWidth: 560, subWidth: 500} as const;
+/** The offer on the pages for one audience (agents, apps, coding, privacy): a black title, a narrower column, and on phones the
+ *  buttons sharing the full row, as on the other first screens. */
+export const AUDIENCE_OFFER = {strong: true, textWidth: 560, subWidth: 500, fillActions: true} as const;
 
 const px = (n: number) => `${n}px`;
 
@@ -152,6 +155,7 @@ export function FirstScreen({
   onRail,
   below,
   railStack,
+  fluidPhoneTitle,
   gaps,
   tabletRatio,
   className,
@@ -165,7 +169,7 @@ export function FirstScreen({
         railStack && styles.railStack,
         railStack?.inset && styles.inset,
         railStack?.tabletTitle && styles[`${railStack.tabletTitle}Tablet`],
-        railStack?.fluidPhoneTitle && styles.fluidPhone,
+        (fluidPhoneTitle || railStack?.fluidPhoneTitle) && styles.fluidPhone,
         className,
       )}
       style={screenVars({minHeight, textWidth, gaps, tabletRatio, railStack, focus: painting.focus})}>
@@ -189,8 +193,8 @@ export function FirstScreen({
             className={styles.offer}
             titleClassName={clsx(styles.title, titleSize !== 'default' && styles[titleSize], titleClassName)}
             subClassName={clsx(styles.sub, subClassName)}>
-            <Actions fill={fillActions} className={styles.actions}>{actions}</Actions>
-            {note && <p className={styles.note}>{note}</p>}
+            <Actions reveal="lead" fill={fillActions} className={styles.actions}>{actions}</Actions>
+            {note && <p className={styles.note} data-rv="lead">{note}</p>}
           </SectionHead>
         </div>
         <div className={styles.panel}>

@@ -1,4 +1,4 @@
-import type {CSSProperties, JSX, ReactNode} from 'react';
+import type {CSSProperties, JSX, MouseEvent, ReactNode} from 'react';
 import clsx from 'clsx';
 import Head from '@docusaurus/Head';
 import Link from '@docusaurus/Link';
@@ -57,11 +57,30 @@ export function Faq({cmp, items, title = DEFAULT_TITLE, id = 'faq', titleId = `$
   );
 }
 
+/** How long a tapped question is held in place: the answer closing above it shrinks over .25s (Faq.module.css). */
+const HOLD_MS = 400;
+
+/**
+ * Opening a question closes the open one; when that one sits above, the page shrinks above the tapped question and pulls it from
+ * under the finger. Until the closing answer settles, the scroll follows it so the tapped question stays where it was.
+ */
+function holdInPlace(e: MouseEvent<HTMLElement>) {
+  const summary = e.currentTarget;
+  const top = summary.getBoundingClientRect().top;
+  const until = performance.now() + HOLD_MS;
+  const follow = () => {
+    const moved = summary.getBoundingClientRect().top - top;
+    if (moved) window.scrollBy({top: moved, behavior: 'instant'});
+    if (performance.now() < until) requestAnimationFrame(follow);
+  };
+  requestAnimationFrame(follow);
+}
+
 function Question({item, open, group}: {item: FaqItem; open: boolean; group: string}): JSX.Element {
   useBrokenLinks().collectAnchor(item.id);
   return (
     <details id={item.id} name={group} open={open} className={styles.question} data-rv="">
-      <summary className={styles.summary}>{item.question}</summary>
+      <summary className={styles.summary} onClick={holdInPlace}>{item.question}</summary>
       <div className={styles.answer}>
         <p className={styles.text}>{item.answer}</p>
         {item.link && <Link className={styles.link} to={item.link.href}>{item.link.label}</Link>}

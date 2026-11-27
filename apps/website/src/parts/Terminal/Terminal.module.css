@@ -71,11 +71,17 @@
   .body { padding: 16px 16px 20px; }
   .code { font-size: 12px; line-height: 20px; }
 }
-/* on a phone the lines wrap instead of scrolling, so they are shown whole rather than typed */
+/* on a phone the lines are shown whole rather than typed; a long one scrolls sideways, as in the docs, so indented code keeps its shape */
 @media (max-width: 560px) {
-  .code { white-space: pre-wrap; overflow-wrap: anywhere; }
-  .typed .line, .typed.pending .line { width: auto; transition: none; }
+  .typed .line, .typed.pending .line { width: max-content; transition: none; }
   .typed .cursor, .typed.pending .cursor { visibility: visible; transition: none; }
+  .window .body { padding-right: 32px; mask-image: linear-gradient(to left, transparent 0, #000 32px); }   /* a line too long fades out at the edge */
+  .window .body:focus-visible { outline: none; }
+  .window:has(.body:focus-visible) { outline: 2px solid #c8f53c; outline-offset: 2px; }   /* on the window, which the mask does not fade */
+}
+/* the narrowest phones: a little smaller, so the usual commands fit whole */
+@media (max-width: 380px) {
+  .window .code { font-size: 11.5px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .typed .line, .typed .cursor { transition: none; }

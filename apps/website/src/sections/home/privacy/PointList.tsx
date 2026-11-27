@@ -41,7 +41,7 @@ export function PointList({points, current, choose, labelledBy, listRef, stacked
     return (
       <div ref={listRef} className={styles.list} data-rv="">
         {points.map((p, i) => (
-          <h3 key={p.id} className={styles.tab} id={tabId(p)} style={stackIndex(i)}><PointName point={p} /></h3>
+          <h3 key={p.id} className={styles.tab} id={tabId(p)} style={stackIndex(i)} data-rv=""><PointName point={p} /></h3>
         ))}
       </div>
     );

@@ -24,7 +24,7 @@ export function CodeBlock({code, label, output, className}: Props): JSX.Element 
         {!output && (
           <button type="button" className={styles.copy} onClick={() => copy(code)} aria-label={copied ? 'Copied' : 'Copy code'}>
             <CopyMark done={copied} size={14} />
-            <span aria-live="polite">{copied ? 'Copied' : 'Copy'}</span>
+            <span className={styles.copyText} aria-live="polite">{copied ? 'Copied' : 'Copy'}</span>
           </button>
         )}
       </div>

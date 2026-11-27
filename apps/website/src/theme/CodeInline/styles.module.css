@@ -1,0 +1,26 @@
+.whole {
+  white-space: nowrap;
+}
+/* a short chip on one line (on a phone a table cell's may still break, so the columns stay narrow) */
+.short {
+  white-space: nowrap;
+}
+.short wbr {
+  display: none;   /* nowrap leaves a <wbr> its break */
+}
+/* a break between camelCase or hyphenated words, off except in a phone's tables */
+.soft {
+  display: none;
+}
+/* a phone: a table's chips may also break between those words, so every column fits the screen */
+@media (max-width: 760px) {
+  :global(.markdown) td .short {
+    white-space: normal;
+  }
+  :global(.markdown) td .short wbr {
+    display: inline;
+  }
+  :global(.markdown) td .soft {
+    display: inline;
+  }
+}

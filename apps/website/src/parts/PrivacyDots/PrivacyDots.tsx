@@ -12,15 +12,19 @@ const MAX_DPR = 2;
 /** Room the ants leave round the title, px. */
 const QUIET_X = 40;
 const QUIET_Y = 32;
+/** Room the dots leave round the cards, px: one row. */
+const CLEAR = 16;
 
 type Props = {
   /** The band's title block: the ants keep clear of it. */
   quietRef?: RefObject<HTMLElement | null>;
+  /** The band's cards: no dot sits within a row of them, and the ants keep clear. */
+  clearRef?: RefObject<HTMLElement | null>;
 };
 
 /** The dot mosaic behind a dark privacy band: fills its positioned parent. The still dots are drawn once per size and theme; the moving
  *  layer runs only while the band is on screen, the tab visible and motion allowed. The cursor warms the dots; a click calls the ants. */
-export function PrivacyDots({quietRef}: Props): JSX.Element {
+export function PrivacyDots({quietRef, clearRef}: Props): JSX.Element {
   const hostRef = useRef<HTMLDivElement>(null);
   const stillRef = useRef<HTMLCanvasElement>(null);
   const liveRef = useRef<HTMLCanvasElement>(null);
@@ -40,7 +44,7 @@ export function PrivacyDots({quietRef}: Props): JSX.Element {
     return () => { current = false; };
   }, [theme]);
 
-  useDotLayout(hostRef, stillRef, liveRef, fieldRef, groups, quietRef, setReady);
+  useDotLayout(hostRef, stillRef, liveRef, fieldRef, groups, quietRef, clearRef, setReady);
   usePointerAndCalls(hostRef, fieldRef);
   useFrameLoop(ready && onScreen && visible && !still, (now) => fieldRef.current?.frame(now));
 
@@ -56,7 +60,7 @@ export function PrivacyDots({quietRef}: Props): JSX.Element {
 function useDotLayout(
   hostRef: RefObject<HTMLDivElement | null>, stillRef: RefObject<HTMLCanvasElement | null>, liveRef: RefObject<HTMLCanvasElement | null>,
   fieldRef: RefObject<DotField | null>, groups: DotGroup[] | null, quietRef: RefObject<HTMLElement | null> | undefined,
-  setReady: (v: boolean) => void,
+  clearRef: RefObject<HTMLElement | null> | undefined, setReady: (v: boolean) => void,
 ): void {
   useEffect(() => {
     const host = hostRef.current;
@@ -77,22 +81,31 @@ function useDotLayout(
       bg.setTransform(dpr, 0, 0, dpr, 0, 0);
       fg.setTransform(dpr, 0, 0, dpr, 0, 0);
       bg.clearRect(0, 0, w, h);
-      const layout = layOut(groups, w, h);
+      const clear = boxIn(host, clearRef?.current ?? null, CLEAR, CLEAR);
+      const layout = layOut(groups, w, h, clear ? [clear] : []);
       for (const {fill, path} of layout.paths) { bg.fillStyle = fill; bg.fill(path); }
-      field.reset(layout, w, h, quietBox(host, quietRef?.current ?? null));
+      const quiet = [boxIn(host, quietRef?.current ?? null, QUIET_X, QUIET_Y), clear].filter((b): b is Box => b !== null);
+      field.reset(layout, w, h, quiet);
       setReady(true);
     };
     const ro = new ResizeObserver(draw);
     ro.observe(host);
     return () => { ro.disconnect(); bg.clearRect(0, 0, bgCanvas.width, bgCanvas.height); };
-  }, [hostRef, stillRef, liveRef, fieldRef, groups, quietRef, setReady]);
+  }, [hostRef, stillRef, liveRef, fieldRef, groups, quietRef, clearRef, setReady]);
 }
 
-function quietBox(host: HTMLElement, quiet: HTMLElement | null): Box | null {
-  if (!quiet) return null;
-  const b = host.getBoundingClientRect();
-  const q = quiet.getBoundingClientRect();
-  return {l: q.left - b.left - QUIET_X, r: q.right - b.left + QUIET_X, t: q.top - b.top - QUIET_Y, b: q.bottom - b.top + QUIET_Y};
+/** An element's layout box in the host's coordinates, grown by the given room; null when it has no box (display: contents).
+ *  Read from offsets, so a reveal's transform does not move it. */
+function boxIn(host: HTMLElement, el: HTMLElement | null, dx: number, dy: number): Box | null {
+  if (!el || !el.offsetWidth || !el.offsetHeight) return null;
+  let x = 0;
+  let y = 0;
+  let n: HTMLElement | null = el;
+  while (n && n !== host.offsetParent) { x += n.offsetLeft; y += n.offsetTop; n = n.offsetParent as HTMLElement | null; }
+  if (!n) return null;
+  x -= host.offsetLeft;
+  y -= host.offsetTop;
+  return {l: x - dx, r: x + el.offsetWidth + dx, t: y - dy, b: y + el.offsetHeight + dy};
 }
 
 /** The cursor over the band warms the dots; a click on its background (not on a card, link or the title) calls the ants. */

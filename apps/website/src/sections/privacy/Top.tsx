@@ -18,10 +18,11 @@ export default function Top(): JSX.Element {
       {...AUDIENCE_OFFER}
       eyebrow="For privacy"
       title={['So private, we have', 'no idea who you are.']}
+      secondLine="block"
       sub="No account. No email. Your identity stays private and with a TEE-verified provider, so does your prompt."
       actions={<>
-        <DownloadButton />
-        <Button href="/docs/install/" variant="ghost">Install the CLI&nbsp;→</Button>
+        <DownloadButton size="page" />
+        <Button href="/docs/install/" variant="ghost" size="page">Install the CLI&nbsp;→</Button>
       </>}
       note="Free models to start. Install, point your tool at it, done."
       painting={{

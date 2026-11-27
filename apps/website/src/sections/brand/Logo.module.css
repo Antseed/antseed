@@ -24,6 +24,11 @@
 .files { display: flex; flex-wrap: wrap; gap: 4px 16px; font: 400 13px/20px var(--site-font-mono); }
 .files a { color: var(--site-accent); }
 .files a:hover { color: var(--site-accent); text-decoration: underline; text-underline-offset: 3px; }
+/* touch screens: a 44px tall touch area, the text where it was */
+@media (max-width: 1079px) {
+  .files a { position: relative; }
+  .files a::after { content: ''; position: absolute; inset: -12px -4px; }
+}
 
 .section .rules { margin-top: 40px; }
 

@@ -13,6 +13,10 @@
 .theirs .icon { color: var(--site-text-muted); }
 .list a { color: var(--site-accent); text-decoration: underline; text-underline-offset: 3px; }
 
+/* side by side, the two titles share a row, so both lists start on one line however each title wraps */
+@media (min-width: 900px) {
+  .case { display: grid; grid-row: span 2; grid-template-rows: subgrid; }
+}
 @media (max-width: 1199px) {
   .case { padding-inline: 64px; }
 }

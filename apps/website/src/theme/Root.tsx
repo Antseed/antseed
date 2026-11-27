@@ -160,8 +160,50 @@ function useClickTracking() {
   }, []);
 }
 
+/** How long after hydration a hash landing is kept on its target while the page settles. */
+const HASH_SETTLE_MS = 3000;
+
+/**
+ * Landing on a #hash: in-page scrolling turns smooth (`data-smooth`, custom.css) only at the first press or key, so the browser's
+ * jump to the hash is instant. Sections that change height on hydration (the home Privacy stage) move the target after that jump,
+ * so until the visitor acts, and for a few seconds at most, it is put back at the top of the screen whenever the page resizes.
+ */
+function useHashLanding() {
+  useEffect(() => {
+    const root = document.documentElement;
+    const smooth = () => {
+      root.dataset.smooth = '';
+    };
+    window.addEventListener('pointerdown', smooth, {once: true, capture: true});
+    window.addEventListener('keydown', smooth, {once: true, capture: true});
+    const removeSmooth = () => {
+      window.removeEventListener('pointerdown', smooth, {capture: true});
+      window.removeEventListener('keydown', smooth, {capture: true});
+    };
+    let target: HTMLElement | null = null;
+    try {
+      target = window.location.hash ? document.getElementById(decodeURIComponent(window.location.hash.slice(1))) : null;
+    } catch {
+      // a malformed hash: nothing to land on
+    }
+    if (!target) return removeSmooth;
+    const land = () => {
+      if (!root.hasAttribute('data-smooth')) target.scrollIntoView({block: 'start', behavior: 'instant'});
+    };
+    const resized = new ResizeObserver(land);
+    resized.observe(document.getElementById('__docusaurus') ?? document.body);
+    const stop = window.setTimeout(() => resized.disconnect(), HASH_SETTLE_MS);
+    return () => {
+      removeSmooth();
+      resized.disconnect();
+      window.clearTimeout(stop);
+    };
+  }, []);
+}
+
 export default function Root({children}: {children: React.ReactNode}) {
   useScrollState();
+  useHashLanding();
   useClickTracking();
   useDocumentReveal();
   return <>{children}</>;

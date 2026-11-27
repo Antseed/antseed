@@ -21,6 +21,8 @@
   font: 400 18px/var(--sub-line, 27px) var(--site-font);
   color: var(--site-text-body);
 }
+/* no word alone on the last line; weaker than any page's own wrap on its sub line */
+:where(.sub) { text-wrap: pretty; }
 
 .head {
   --head-gap: 20px;
@@ -44,6 +46,13 @@
   .sub { max-width: none; font-size: 16px; line-height: 24px; }
   .sub br { display: none; }
   .head.page { --title-size-phone: 40px; --title-line-phone: 40px; }
+  /* a title that wraps on a phone never leaves one word alone */
+  .head .title { text-wrap: balance; }
+}
+/* under the desktop, a grey part after a line break is a block of its own (the break is already there: no line is added), so a
+   title that balances balances it too; Chrome's balance stops at a <br> */
+@media (max-width: 1199px) {
+  .title > br + .second { display: block; }
 }
 
 @media (min-width: 1200px) {

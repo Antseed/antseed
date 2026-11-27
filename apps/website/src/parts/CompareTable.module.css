@@ -7,8 +7,9 @@
   grid-template-columns: minmax(0, .8fr) repeat(var(--columns), minmax(0, 1fr));
   column-gap: 24px;
   border: 0;
-  background: none;
 }
+/* stronger than Infima's dark-theme zebra (table tr:nth-child(2n)): rows have no fill in either theme */
+.table .row { background: none; }
 .table tbody .row:last-child { --dots-bottom: 2px; }
 .row.head { --dots-top: 0px; }
 .row th, .row td { padding: 20px 0 21px; border: 0; background: none; text-align: left; }
@@ -20,12 +21,13 @@
 .row td.good::before { content: ''; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--site-accent); translate: 0 -2px; }
 .hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 
+/* phones: each row is a block, every value under its column's label */
 @media (max-width: 760px) {
   .row.head { display: none; }
-  .row { grid-template-columns: 1fr; row-gap: 8px; padding: 20px 0; }
+  .row { grid-template-columns: 1fr; row-gap: 12px; padding: 20px 0; }
   .row th, .row td { padding: 0; }
   .row th[scope='row'] { margin-bottom: 4px; }
-  .row td, .row td.good { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: 12px; }
+  .row td, .row td.good { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; }
   .row td[data-col]::before {
     content: attr(data-col);
     width: auto;
@@ -33,8 +35,29 @@
     border-radius: 0;
     background: none;
     translate: none;
-    font: 400 14px/24px var(--site-font);
+    font: 400 14px/20px var(--site-font);
     color: var(--site-text-small);
   }
   .row td.good[data-col]::before { color: var(--site-accent); }
+}
+/* tablets too, unless the table keeps its columns there (stack="phone") */
+@media (min-width: 761px) and (max-width: 899px) {
+  .tablet .row.head { display: none; }
+  .tablet .row { grid-template-columns: 1fr; row-gap: 12px; padding: 20px 0; }
+  .tablet .row th, .tablet .row td { padding: 0; }
+  .tablet .row th[scope='row'] { margin-bottom: 4px; }
+  .tablet .row td, .tablet .row td.good { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .tablet .row td[data-col]::before {
+    content: attr(data-col);
+    width: auto;
+    height: auto;
+    border-radius: 0;
+    background: none;
+    translate: none;
+    font: 400 14px/20px var(--site-font);
+    color: var(--site-text-small);
+  }
+  .tablet .row td.good[data-col]::before { color: var(--site-accent); }
+  .phone .row { grid-template-columns: minmax(max-content, .8fr) repeat(var(--columns), minmax(0, 1fr)); }   /* the row labels on one line */
+  .phone .head th { text-wrap: balance; }
 }

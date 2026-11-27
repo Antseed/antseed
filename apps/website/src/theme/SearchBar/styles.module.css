@@ -47,9 +47,17 @@
 
 @media (hover: none), (max-width: 1180px) {
   .trigger {
+    position: relative;
     width: 36px;
     padding: 0;
     justify-content: center;
+  }
+
+  /* a 44px tap target around the 36px icon, inside the margin and gap beside it */
+  .trigger::after {
+    content: '';
+    position: absolute;
+    inset: -4px;
   }
 
   .triggerKbd {
@@ -136,6 +144,36 @@
 
 .kbdButton {
   cursor: pointer;
+}
+
+.closeIcon {
+  display: none;
+  width: 16px;
+  height: 16px;
+}
+
+/* a touch screen or a phone: the Esc key becomes a 44px cross */
+@media (max-width: 640px), (hover: none) {
+  .kbdButton {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    width: 44px;
+    height: 44px;
+    margin: -10px -12px -10px 0;
+    padding: 0;
+    border: 0;
+    background: none;
+  }
+
+  .kbdButton .closeKey {
+    display: none;
+  }
+
+  .kbdButton .closeIcon {
+    display: block;
+  }
 }
 
 .body {

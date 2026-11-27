@@ -59,12 +59,16 @@
   font-size: .88em;
   color: var(--site-text);
   overflow-wrap: anywhere;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
 }
+.card :is(.terms, .hint, .fields) code[data-whole] { white-space: nowrap; }
 :global(:root[data-theme='dark']) .card :is(.terms, .hint, .fields) code { background: rgba(190, 228, 170, .08); }
 .card :is(.terms, .hint, .fields) a { color: var(--site-accent); text-decoration: underline; text-decoration-color: color-mix(in srgb, currentColor 35%, transparent); text-underline-offset: 3px; }
 
 @media (max-width: 760px) {
   .summary { flex-direction: column; gap: 12px; padding: 20px; }
   .content { padding: 0 16px 24px; }
+  .glossary { padding: 0; background: none; box-shadow: none; }   /* no box inside the card: the text gets the card's width */
   .item { grid-template-columns: 1fr; gap: 12px; }
 }

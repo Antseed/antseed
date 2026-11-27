@@ -6,8 +6,13 @@
 .tabs { width: calc(100% + 2 * var(--site-pad)); margin: 0 calc(-1 * var(--site-pad)); }
 
 /* 100vw, centred on the rail; the rail's surface runs on behind the lanes over the dotted margins */
-.flow, .carriedFlow { display: flex; flex-direction: column; overflow: hidden; width: 100vw; margin: 32px 0 0 calc(50% - 50vw); background: var(--site-surface); }
+.flow, .carriedFlow { --card-size: 176px; display: flex; flex-direction: column; overflow: hidden; width: 100vw; margin: 32px 0 0 calc(50% - 50vw); background: var(--site-surface); }
 .flow { gap: 12px; padding: 12px 0; }
+/* until the ants take over (after hydration), the plain lanes stand where the carried cards will, so nothing moves:
+   each carried card sits 6px into a lane that keeps room under it for the feet (4.5% of the card, laneBelow) and 6px more */
+@media (prefers-reduced-motion: no-preference) {
+  .flow { gap: calc(var(--card-size) * .045 + 40px); padding: 36px 0 calc(var(--card-size) * .045 + 30px); }
+}
 /* room for the hop over the first lane and the shadows under the last */
 .carriedFlow { gap: 28px; padding: 30px 0 24px; }
 
@@ -16,6 +21,7 @@
 
 @media (max-width: 760px) {
   .rail { gap: 40px; }
+  .flow, .carriedFlow { --card-size: 152px; }
 }
 /* a touch screen: the link keeps its look in a 44px tall touch area */
 @media (max-width: 1079px) { .allModels::after { content: ''; position: absolute; inset: -10px 0; } }

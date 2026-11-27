@@ -13,8 +13,7 @@
   display: flex;
   flex-direction: column;
   gap: 20px;
-  font: 400 26px/36px var(--site-font);
-  letter-spacing: -.01em;
+  font: 400 20px/28px var(--site-font);
   color: var(--site-text);
 }
 .dim { max-width: 581px; color: var(--site-text-muted); }
@@ -23,11 +22,11 @@
 
 @media (min-width: 1200px) {
   .intro .rail { padding-block: 124px; }
-  .lede p { max-width: 638px; font-size: 20px; line-height: 28px; letter-spacing: 0; }
+  .lede p { max-width: 638px; }
 }
 @media (max-width: 1199px) { .split { grid-template-columns: 220px minmax(0, 1fr); } }
 @media (max-width: 760px) {
   .split { grid-template-columns: 1fr; gap: var(--intro-phone-gap, 20px); }
-  .lede { font-size: 20px; line-height: 28px; gap: 16px; }
+  .lede { gap: 16px; letter-spacing: -.01em; }   /* as live: phones keep the old tracking */
   .dim { max-width: none; }
 }

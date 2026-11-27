@@ -23,4 +23,5 @@
 }
 @media (max-width: 760px) {
   .text { font-size: 20px; line-height: 28px; }
+  .use { text-wrap: pretty; }   /* never one short word on its last line */
 }

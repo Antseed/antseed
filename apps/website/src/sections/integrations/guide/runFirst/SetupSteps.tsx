@@ -1,6 +1,7 @@
 import type {JSX} from 'react';
 import Link from '@docusaurus/Link';
 import {CodeBlock} from '../../../../parts/CodeBlock';
+import {Code} from '../../../../parts/Ticks';
 import {LIST_MODELS_COMMAND} from '../../../../integrations/integrations';
 import styles from './RunFirst.module.css';
 
@@ -26,12 +27,12 @@ export function SetupSteps(): JSX.Element {
           />
           <p className={styles.hint}>
             <strong>Just trying it out?</strong> Run the gateway on your own computer
-            with <code>curl -fsSL https://antseed.com/install.sh | bash</code> and use{' '}
-            <code>http://localhost:8379/v1</code>. Its keys only work while the computer
+            with <Code>curl -fsSL https://antseed.com/install.sh | bash</Code> and use{' '}
+            <Code>http://localhost:8379/v1</Code>. Its keys only work while the computer
             is on, and other machines can't reach it unless you publish it with a{' '}
-            <Link to="/docs/tunnels/">tunnel</Link> (<code>antseed tunnel start</code>)
+            <Link to="/docs/tunnels/">tunnel</Link> (<Code>antseed tunnel start</Code>)
             or, on a network you trust, start it
-            with <code>--host 0.0.0.0</code>. You can{' '}
+            with <Code>--host 0.0.0.0</Code>. You can{' '}
             <Link to="/docs/gateway/migrate/">move it to a server</Link> later with its
             keys and wallets. See the <Link to="/docs/quickstart/">quickstart</Link>.
           </p>
@@ -46,8 +47,8 @@ export function SetupSteps(): JSX.Element {
           <p className={styles.hint}>
             The buyer proxy only listens on localhost and spends from your deposit
             without checking a key. Never publish port 8377 (port forward,{' '}
-            <code>socat</code>, reverse proxy); put a gateway in front of it instead.
-            Back up <code>~/.antseed/identity.key</code>: it is the buyer wallet key.
+            <Code>socat</Code>, reverse proxy); put a gateway in front of it instead.
+            Back up <Code>~/.antseed/identity.key</Code>: it is the buyer wallet key.
           </p>
         </div>
       </li>
@@ -59,14 +60,14 @@ export function SetupSteps(): JSX.Element {
             Browse the network as JSON - see who's selling what.
           </p>
           <p className={styles.hint}>
-            Pretty TUI table: <code>antseed network browse</code>. For docs and
+            Pretty TUI table: <Code>antseed network browse</Code>. For docs and
             scripts we use the JSON form instead - it's compact, agent-readable, and
             tells you exactly which fields exist.
           </p>
           <p className={styles.hint}>
             Each peer advertises a list of <strong>services</strong> (model ids).
             Each service has its own native protocol list in{' '}
-            <code>providerServiceApiProtocols</code> and pricing in USD per 1M
+            <Code>providerServiceApiProtocols</Code> and pricing in USD per 1M
             tokens. The jq below
             projects the raw response down to just those fields.
           </p>
@@ -111,22 +112,22 @@ export function SetupSteps(): JSX.Element {
           />
           <p className={styles.hint}>
             <strong>How to read it:</strong> each row is a model you can pass as{' '}
-            <code>model</code> in your tool's config. <code>protocols</code> is the
+            <Code>model</Code> in your tool's config. <Code>protocols</Code> is the
             field to match against your tool's wire format - if your tool sends
-            Anthropic Messages, look for <code>anthropic-messages</code>; if it
-            sends OpenAI Chat, look for <code>openai-chat-completions</code>; etc.
-            <code>in</code> / <code>cachedIn</code> / <code>out</code> are USD per
+            Anthropic Messages, look for <Code>anthropic-messages</Code>; if it
+            sends OpenAI Chat, look for <Code>openai-chat-completions</Code>; etc.
+            <Code>in</Code> / <Code>cachedIn</Code> / <Code>out</Code> are USD per
             1M tokens (fresh input / cached input / output) -{' '}
-            <code>cachedIn</code> is what you pay when prompt prefixes are reused
+            <Code>cachedIn</Code> is what you pay when prompt prefixes are reused
             (system prompts, tool schemas, prior turns), typically 4–10× cheaper
-            than <code>in</code> and often the dominant cost line for long agents.
+            than <Code>in</Code> and often the dominant cost line for long agents.
             Names and ids in the example are fictional; your real output will list
             the operators currently online.
           </p>
           <p className={styles.hint}>
-            Prefer the visual version? <code>antseed network browse</code> (no flags)
+            Prefer the visual version? <Code>antseed network browse</Code> (no flags)
             prints a table with prices, sessions, on-chain volume, and a{' '}
-            <code>✓</code> for vouched peers. Or open the same view in a browser:{' '}
+            <Code>✓</Code> for vouched peers. Or open the same view in a browser:{' '}
             <a href="https://antseedstats.com/network" target="_blank" rel="noopener noreferrer">live network page</a>.
           </p>
         </div>
@@ -181,46 +182,46 @@ export function SetupSteps(): JSX.Element {
           </p>
           <ul className={styles.fields}>
             <li>
-              <code>service</code> - the model id. This is what you put in your
-              tool's <code>model</code> field.
+              <Code>service</Code> - the model id. This is what you put in your
+              tool's <Code>model</Code> field.
             </li>
             <li>
-              <code>protocols</code> - projected from{' '}
-              <code>providerServiceApiProtocols</code>; the wire formats this
+              <Code>protocols</Code> - projected from{' '}
+              <Code>providerServiceApiProtocols</Code>; the wire formats this
               service accepts <em>natively</em>. Match your tool's wire format
               against this list: if it's in there, the request passes through untouched; if not,{' '}
-              <code>@antseed/api-adapter</code> translates on the fly. Note:{' '}
-              <code>openai-responses</code>-only services require streaming.
+              <Code>@antseed/api-adapter</Code> translates on the fly. Note:{' '}
+              <Code>openai-responses</Code>-only services require streaming.
             </li>
             <li>
-              <code>in</code> / <code>out</code> - USD per <strong>1M tokens</strong>{' '}
-              (fresh input / output). <code>0 / 0</code> = free.
+              <Code>in</Code> / <Code>out</Code> - USD per <strong>1M tokens</strong>{' '}
+              (fresh input / output). <Code>0 / 0</Code> = free.
             </li>
             <li>
-              <code>cachedIn</code> - USD per 1M <em>cached</em> input tokens.
+              <Code>cachedIn</Code> - USD per 1M <em>cached</em> input tokens.
               When a request reuses prefix tokens (the system prompt, tool
               schemas, prior turns of a conversation, a long file you keep
               re-asking about, …) those tokens bill at this rate instead of{' '}
-              <code>in</code>. Typically <strong>4–10× cheaper</strong> - e.g.{' '}
-              <code>minimax-m2.7</code> charges $0.21/M for fresh input but only
+              <Code>in</Code>. Typically <strong>4–10× cheaper</strong> - e.g.{' '}
+              <Code>minimax-m2.7</Code> charges $0.21/M for fresh input but only
               $0.04/M for cache hits. For long-running coding agents and
               chatbots, this is often the dominant cost line; use it when
               comparing peers.
             </li>
             <li>
-              <code>tags</code> - capability hints. <code>coding</code>,{' '}
-              <code>vision</code>, <code>fast</code>, <code>free</code>, etc.
+              <Code>tags</Code> - capability hints. <Code>coding</Code>,{' '}
+              <Code>vision</Code>, <Code>fast</Code>, <Code>free</Code>, etc.
             </li>
             <li>
-              <code>sessions</code> / <code>ghosts</code> - on-chain reputation.
+              <Code>sessions</Code> / <Code>ghosts</Code> - on-chain reputation.
               Sessions = settled streams. Ghosts = streams that opened but never
               closed cleanly.
             </li>
           </ul>
           <p className={styles.hint}>
             Free-text version with on-chain stats and pin command:{' '}
-            <code>antseed network peer &lt;peerId&gt;</code> (without{' '}
-            <code>--json</code>).
+            <Code>antseed network peer &lt;peerId&gt;</Code> (without{' '}
+            <Code>--json</Code>).
           </p>
         </div>
       </li>
@@ -236,7 +237,7 @@ export function SetupSteps(): JSX.Element {
             selects the highest-ranked eligible offer under your shared Price +
             Trust preferences and fails over to the next-ranked seller on
             retryable peer errors.{' '}
-            <code>/v1/models</code> lists every model on the network,
+            <Code>/v1/models</Code> lists every model on the network,
             aggregated across sellers:
           </p>
           <CodeBlock
@@ -251,10 +252,10 @@ export function SetupSteps(): JSX.Element {
 "minimax-m2.7"`}
           />
           <p className={styles.hint}>
-            These are the values you can pass as <code>model</code> in your
-            tool's config (close aliases like <code>opus-5</code> for{' '}
-            <code>claude-opus-5</code> also resolve). A model no seller your routing
-            policy allows serves returns <code>502 model_not_found</code>. A gateway
+            These are the values you can pass as <Code>model</Code> in your
+            tool's config (close aliases like <Code>opus-5</Code> for{' '}
+            <Code>claude-opus-5</Code> also resolve). A model no seller your routing
+            policy allows serves returns <Code>502 model_not_found</Code>. A gateway
             key limited to certain models lists only those.
           </p>
           <p className={styles.hint}>
@@ -270,7 +271,7 @@ export function SetupSteps(): JSX.Element {
           <p className={styles.hint}>
             <strong>Option A - session pin (local buyer proxy only).</strong> One
             command, every future request goes to that peer. Persists in{' '}
-            <code>~/.antseed/buyer.state.json</code> across restarts. On a gateway, use
+            <Code>~/.antseed/buyer.state.json</Code> across restarts. On a gateway, use
             a routing policy or preset instead.
           </p>
           <CodeBlock
@@ -278,7 +279,7 @@ export function SetupSteps(): JSX.Element {
           />
           <p className={styles.hint}>
             <strong>Option B - per-request header.</strong> Send{' '}
-            <code>x-antseed-pin-peer: &lt;peerId&gt;</code> on each call. Overrides
+            <Code>x-antseed-pin-peer: &lt;peerId&gt;</Code> on each call. Overrides
             any session pin for that one request. Best for scripts, schedulers, and
             multi-tenant deployments that fan out to different peers per call.
           </p>
@@ -294,7 +295,7 @@ export function SetupSteps(): JSX.Element {
           />
           <p className={styles.hint}>
             <strong>Option C - model prefix (works in any tool).</strong> Set the{' '}
-            <code>model</code> field to <code>&lt;peerId&gt;@&lt;service-id&gt;</code>.
+            <Code>model</Code> field to <Code>&lt;peerId&gt;@&lt;service-id&gt;</Code>.
             Antseed pins that peer for the request and strips the prefix before
             routing, so the seller just sees the service id. This is the way to pick
             a peer from tools where you can only type a model name.
@@ -333,7 +334,7 @@ export function SetupSteps(): JSX.Element {
             incoming funds are swept into the Deposits contract and credited to
             your buyer automatically: a permissionless relayer submits the
             transaction for a fixed ~$0.05 USDC fee, so the buyer never needs
-            ETH. Verify with <code>antseed buyer balance</code>.
+            ETH. Verify with <Code>antseed buyer balance</Code>.
           </p>
           <p className={styles.hint}>
             <strong>Send USDC on the Base network only</strong> - other tokens or

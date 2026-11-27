@@ -37,7 +37,7 @@
 @container (max-width: 359.9px) {
   .window { left: 12px; width: 256px; padding: 12px; }
   .memory, .model .logo { display: none; }
-  .price { width: 62px; padding: 0 5px; }
+  .price { width: 62px; padding: 0 6px; gap: 1px; }
   .cursor { left: 249px; top: 155px; }
 }
 @container (max-width: 279.9px) {

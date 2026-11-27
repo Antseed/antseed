@@ -31,3 +31,9 @@
 @media (max-width: 760px) {
   .word { font-size: 64px; }
 }
+/* touch screens: 44px tall to grab, the look unchanged */
+@media (max-width: 1079px) {
+  .control .range { height: 44px; }
+  .stops .stop { position: relative; }
+  .stops .stop::after { content: ''; position: absolute; inset: -7px 0; }
+}

@@ -1,6 +1,7 @@
 import type {JSX, ReactNode} from 'react';
 import Link from '@docusaurus/Link';
 import clsx from 'clsx';
+import {ThemedImg} from '../../components';
 import styles from './ListingCard.module.css';
 
 const SHOT_WIDTH = 800;
@@ -10,8 +11,8 @@ type Props = {
   href: string;
   name: string;
   line: string;
-  /** The card's picture: a screenshot (`shot`) or any panel (`panel`). */
-  shot?: {src: string; alt: string};
+  /** The card's picture: a screenshot (`shot`, with its night version when the page has one) or any panel (`panel`). */
+  shot?: {src: string; night?: string; alt: string};
   panel?: ReactNode;
 };
 
@@ -21,7 +22,9 @@ export default function ListingCard({href, name, line, shot, panel}: Props): JSX
     <>
       {shot ? (
         <div className={clsx(styles.picture, styles.shot)}>
-          <img src={shot.src} alt={shot.alt} width={SHOT_WIDTH} height={SHOT_HEIGHT} loading="lazy" decoding="async" />
+          {shot.night
+            ? <ThemedImg day={shot.src} night={shot.night} alt={shot.alt} width={SHOT_WIDTH} height={SHOT_HEIGHT} />
+            : <img src={shot.src} alt={shot.alt} width={SHOT_WIDTH} height={SHOT_HEIGHT} loading="lazy" decoding="async" />}
         </div>
       ) : panel}
       <p className={styles.caption}><b>{name}</b> {line}</p>

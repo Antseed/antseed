@@ -9,6 +9,13 @@ This project uses selective package publishing. Each release entry lists the pub
 ### Fixed
 
 - Website: the Get started page (`/get-started/`) no longer goes blank when you press **Continue**, or open `/get-started/#instructions` directly, in current Chrome.
+- Website: a polish pass, mostly for phones and tablets. One side margin on every page; buttons and links large enough to tap; titles and sub lines no longer end on a single word; the network steps, the featured blog card, the Ecosystem Build section and the Foundation staking card no longer break at tablet and small laptop widths; docs tables, code blocks and inline code hold on narrow screens; hover styles no longer stick after a tap; live figures no longer show, drop and count back up; a `#hash` link opens at its section.
+- Website: the homepage hero shows the ant on phones and tablets, with the seed on the ground beside it. A tap no longer brings up the seed under the finger.
+
+### Changed
+
+- Website: the closing "Ask anything, on any model." band shows a dot mosaic of a meadow with ants that follow the pointer and answer a click or a tap.
+- Website: true night paintings for the Colony sign-up steps and for the Coding, Apps and Get started first screens, in place of dimmed day paintings.
 
 ## 2026-11-27 — CLI 0.1.266, Desktop 0.2.100
 

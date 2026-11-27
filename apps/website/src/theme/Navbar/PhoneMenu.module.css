@@ -1,6 +1,7 @@
-/* The burger replaces the bar's links under 1080px (the nav's own breakpoint): a line icon at the footer's stroke in a 44 box. */
+/* The burger replaces the bar's links under 1080px (the nav's own breakpoint): a line icon at the footer's stroke in a 44 box,
+   pulled out so its lines end as far from the edge as the logo starts. */
 .button {
-  display: none; place-items: center; width: 44px; height: 44px; margin: 0 -10px 0 0; padding: 0; border: 0; border-radius: var(--site-radius-control);
+  display: none; place-items: center; width: 44px; height: 44px; margin: 0 -14px 0 -4px; padding: 0; border: 0; border-radius: var(--site-radius-control);
   background: none; color: var(--site-ink); cursor: pointer; -webkit-tap-highlight-color: transparent;
 }
 .icon { display: block; width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.25; stroke-linecap: round; }
@@ -18,7 +19,8 @@
 :global(:root[data-theme='dark']) .sheet { box-shadow: inset 0 1px 0 rgba(255, 255, 255, .08); }
 
 /* the links carry their own ink, so they read the same in the sheet and in the docs sidebar */
-.links { --menu-ink: #0a1a12; display: grid; font-family: var(--site-font); }
+.links { --menu-ink: #0a1a12; display: flex; flex-direction: column; font-family: var(--site-font); }
+.sheet > .links { flex: 1 0 auto; }   /* fills the sheet, so the buttons can sit at its foot */
 :global(:root[data-theme='dark']) .links { --menu-ink: var(--site-ink); }
 .row, .subRow { color: var(--menu-ink); text-decoration: none; -webkit-tap-highlight-color: transparent; }
 .row:hover, .subRow:hover { color: var(--menu-ink); text-decoration: none; }
@@ -33,7 +35,7 @@
 .subText { font: 400 14px/20px var(--site-font); color: var(--site-text-small); }
 
 /* the nav's two buttons, full width at the sheet's foot; a phone has no downloads */
-.actions { display: grid; gap: 12px; margin-top: auto; }
+.actions { display: grid; gap: 12px; margin-top: auto; padding-top: 24px; }
 .actions .action { display: flex; justify-content: center; height: 48px; font-size: 16px; }
 @media (min-width: 761px) { .actions { display: none; } }
 

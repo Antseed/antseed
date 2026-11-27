@@ -11,9 +11,12 @@
 .carryLane { position: relative; height: calc(var(--card-size) + var(--below) + 2 * 6px); }
 .carryLane > .track { position: absolute; inset: 0; padding: 0; }
 .carried { position: absolute; left: 0; top: 6px; will-change: transform; cursor: pointer; }
+/* on phone cards the left-walking lane's ant stands over the card's bottom-right corner, where the provider count sits */
+@media (max-width: 760px) { .mirroredLane .carried { --count-inset: 12px; } }
 
-/* reduced motion: each lane scrolls by hand */
+/* reduced motion: each lane scrolls by hand, its first card on the heading's line (the lane is the screen's width, as the rail's 100%) */
 @media (prefers-reduced-motion: reduce) {
-  .slideLane { width: auto; animation: none; overflow-x: auto; scrollbar-width: none; }
+  .slideLane { width: auto; animation: none; overflow-x: auto; scrollbar-width: none;
+    padding-inline-start: calc((100% - var(--site-rail)) / 2 + var(--site-pad)); }
   .track.copy { display: none; }
 }

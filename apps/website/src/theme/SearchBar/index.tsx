@@ -95,6 +95,16 @@ function SearchIcon({className}: {className?: string}) {
   );
 }
 
+// The phone menu's cross: a phone has no Esc key to show
+function CloseIcon({className}: {className?: string}) {
+  return (
+    <svg className={className} viewBox="0 0 16 16" fill="none" stroke="currentColor"
+      strokeWidth="1.5" strokeLinecap="round" aria-hidden="true">
+      <path d="M3.75 3.75l8.5 8.5M12.25 3.75l-8.5 8.5" />
+    </svg>
+  );
+}
+
 function SearchModal({onClose}: {onClose: () => void}) {
   const history = useHistory();
   const modalRef = useRef<HTMLDivElement>(null);
@@ -238,7 +248,10 @@ function SearchModal({onClose}: {onClose: () => void}) {
             role="combobox" aria-expanded={hits.length > 0} aria-controls="docs-search-results"
             aria-activedescendant={hits.length ? `docs-search-hit-${active}` : undefined}
             autoComplete="off" autoCorrect="off" spellCheck={false} />
-          <button type="button" className={styles.kbdButton} onClick={onClose}>Esc</button>
+          <button type="button" className={styles.kbdButton} onClick={onClose} aria-label="Close search">
+            <span className={styles.closeKey}>Esc</span>
+            <CloseIcon className={styles.closeIcon} />
+          </button>
         </div>
         <div className={styles.body}>{body}</div>
         <div className={styles.footer}>

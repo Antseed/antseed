@@ -34,8 +34,12 @@
 
 @media (max-width: 760px) {
   .crumbs { margin-bottom: 28px; }
+  .title { text-wrap: balance; }   /* no word alone on the headline's last line */
   .description { margin-top: 28px; font-size: 16px; line-height: 25px; }
 }
 .description strong { font-weight: 500; color: var(--site-text); }
 .rail { padding-block: 120px 72px; }
 @media (max-width: 760px) { .rail { padding-block: 72px 56px; } }
+@media (max-width: 760px), (pointer: coarse) {
+  .crumbs a { padding-block: 12px; margin-block: -12px; }   /* a 44px hit area, the line where it was */
+}
