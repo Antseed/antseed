@@ -1058,6 +1058,18 @@ export async function runVerifierRound(
           ? new Map<string, PendingExtension>()
           : await loadPendingExtensions(evidenceDir, epoch, models)
         const publishedCloseCalls = await publishedCloseCallsOf(epochPendingExtensions, { banksDir, epoch })
+        // Each audited model is audited only at or below its genuine price: the highest price any
+        // OpenRouter provider charges for it. Sellers above it are skipped, so they never get a request,
+        // and their retries are given up below rather than holding the model's window.
+        const priceCaps = await resolveAuditPriceCaps(
+          config.verifier, models, () => loadVerifierModelCatalog(config.verifier),
+          (upstreamModel) => loadHighestEndpointPrice(config.verifier, upstreamModel),
+        )
+        // The limits the running buyer enforces; a buyer from an older build doesn't record them,
+        // so this config's buyer settings stand in.
+        const configBuyer = resolveEffectiveBuyerConfig({ config })
+        const priceCapOf = (model: string) => priceCaps.caps.get(model)
+          ?? [...priceCaps.caps].find(([name]) => normalized(name) === normalized(model))?.[1]
         if (peerList) {
           await updateRetryGiveUps({
             evidenceDir, epoch, peers: peerList.peers, publishedCloseCalls, timing: testTiming,
@@ -1068,6 +1080,16 @@ export async function runVerifierRound(
                 ...(cell.result ? [cell.result.service] : []),
                 ...(confirmation ? [confirmation.service] : []),
               ]
+            },
+            // The planner below skips such a seller, so nothing would ever audit it again.
+            refusal: (cell, peer, services) => {
+              const priceCap = priceCapOf(cell.model)
+              if (!priceCap) return null
+              const eligibility = classifyVerificationTargetServices(peer, services, {
+                minReputation: peerList.settings?.minPeerReputation ?? configBuyer.minPeerReputation,
+                priceCap,
+              })
+              return eligibility.eligible || eligibility.code === 'model_not_advertised' ? null : eligibility.reason
             },
           })
         }
@@ -1261,9 +1283,6 @@ export async function runVerifierRound(
           throw new Error(`resume run ${resumeSourceRunId} has no undetermined audits for the selected models${peerSuffix}`)
         }
         const proxy = peerList ?? await loadBuyerProxySnapshot(globalOptions.dataDir)
-        // The limits the running buyer enforces; a buyer from an older build doesn't record them,
-        // so this config's buyer settings stand in.
-        const configBuyer = resolveEffectiveBuyerConfig({ config })
         const buyerLimits = {
           minPeerReputation: proxy.settings?.minPeerReputation ?? configBuyer.minPeerReputation,
           maxPricing: proxy.settings?.maxPricing ?? configBuyer.maxPricing.defaults,
@@ -1272,17 +1291,13 @@ export async function runVerifierRound(
         const selectedPeers = selectedPeerId
           ? [selectVerifierPeer(proxy.peers, selectedPeerId)]
           : proxy.peers
-        // Each audited model is audited only at or below its genuine price: the highest price any
-        // OpenRouter provider charges for it. Sellers above it are skipped here, so they never get a request.
-        const priceCaps = await resolveAuditPriceCaps(
-          config.verifier, runModels, () => loadVerifierModelCatalog(config.verifier),
-          (upstreamModel) => loadHighestEndpointPrice(config.verifier, upstreamModel),
-        )
-        for (const [model, reason] of priceCaps.unpriced) {
+        // The price caps resolved above, for this run's models.
+        const unpriced = [...priceCaps.unpriced].filter(([model]) => runModels.includes(model))
+        for (const [model, reason] of unpriced) {
           console.warn(chalk.yellow(`SKIPPED ${model}: ${reason}`))
         }
         // A model skipped for want of a price fails the round, and so the command if it is still skipped in the last.
-        const skippedUnpriced = priceCaps.unpriced.size > 0
+        const skippedUnpriced = unpriced.length > 0
         runModels = runModels.filter((model) => priceCaps.caps.has(model))
         if (runModels.length === 0) throw new Error('no audited model has a reference price; see the warnings above')
         // Audit requests go through the running buyer, which refuses sellers above its own cap.
@@ -2533,14 +2548,20 @@ export async function runVerifierRound(
 const PEER_LIST_MAX_AGE_MS = 30 * 60_000
 
 /**
- * Gives up the retries of sellers that stopped listing their model, and takes back the ones whose
- * seller is listed again (`decideRetryGiveUps`). A stale peer list decides nothing.
+ * Gives up the retries of sellers that stopped listing their model or that a run would now skip
+ * (`refusal`), and takes back the ones whose seller is listed and auditable again (`decideRetryGiveUps`).
+ * A stale peer list decides nothing.
  */
 export async function updateRetryGiveUps(input: {
   evidenceDir: string
   epoch: string
   peers: readonly PeerInfo[]
   servicesFor: (cell: EpochCell, peer: PeerInfo) => string[]
+  /**
+   * Why a run would skip the seller for the cell's model although it lists it (`classifyVerificationTargetServices`:
+   * priced above the model's cap, under the reputation floor, without ResponseAuth), or null when it would audit it.
+   */
+  refusal?: (cell: EpochCell, peer: PeerInfo, services: string[]) => string | null
   /** Close calls whose extra questions a submit has published (`loadPublishedCloseCalls`), by `pendingExtensionKey`. */
   publishedCloseCalls?: ReadonlyMap<string, PendingExtension>
   nowMs?: number
@@ -2562,6 +2583,7 @@ export async function updateRetryGiveUps(input: {
     .filter((window) => window.state === 'closed')
     .map((window) => normalized(window.model)))
   const peers = new Map(input.peers.map((peer) => [peer.peerId.toLowerCase(), peer]))
+  const peerOf = (cell: EpochCell) => peers.get(cell.peerId.trim().replace(/^0x/i, '').toLowerCase())
   // First looks still to be recovered are given up like retries when their seller is gone (`recoveringFirstLooks`).
   const recovering = new Set((await recoveringFirstLooks(state, input.timing)).keys())
   const { entries, added, restored } = decideRetryGiveUps({
@@ -2572,9 +2594,13 @@ export async function updateRetryGiveUps(input: {
     nowSeconds: nowMs / 1_000,
     windowClosed: (cell) => closedModels.has(normalized(cell.model)),
     offersModel: peersFresh ? (cell) => {
-      const peer = peers.get(cell.peerId.trim().replace(/^0x/i, '').toLowerCase())
+      const peer = peerOf(cell)
       return peer !== undefined && input.servicesFor(cell, peer).some((service) => findAdvertisedService(peer, service) !== null)
     } : null,
+    refusal: (cell) => {
+      const peer = peersFresh ? peerOf(cell) : undefined
+      return peer && input.refusal ? input.refusal(cell, peer, input.servicesFor(cell, peer)) : null
+    },
     extraQuestionsPublished: (cell) => input.publishedCloseCalls?.has(pendingExtensionKey(cell.model, cell.peerId)) === true,
   })
   if (added.length + restored.length === 0) return
