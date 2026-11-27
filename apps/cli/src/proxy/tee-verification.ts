@@ -5,7 +5,9 @@ import { parseVerifierCapabilities } from '@antseed/node/verifier-capabilities'
 import { selectVerifier, verifierSupportFingerprint, type VerifierPolicy, type VerifyOutcome } from '../plugins/verifier.js'
 
 type Peer = { peerId: string; capabilities?: string[] }
-type Entry = { outcome?: Omit<VerifyOutcome, 'ok'>; checkedAt: number }
+type Entry = { outcome?: Omit<VerifyOutcome, 'ok'>; checkedAt: number; failures?: number; expiresAt?: number }
+
+const TEE_FAILURE_MAX_AGE_MS = 6 * 60 * 60 * 1_000
 
 export class TeeVerification {
   readonly sessionId = randomUUID()
@@ -15,7 +17,7 @@ export class TeeVerification {
   private closed = false
   private activeChecks = 0
 
-  constructor(readonly policy: VerifierPolicy | undefined, private readonly now = Date.now) {}
+  constructor(readonly policy: VerifierPolicy | undefined, private readonly now = Date.now, private readonly random = Math.random) {}
 
   /** `buyerIdentity` keeps a verdict to the connection of the identity that checked it. */
   async verify(peer: Peer, policy: VerifierPolicy, run: () => Promise<VerifyOutcome>, force = false, buyerIdentity?: string): Promise<VerifyOutcome> {
@@ -28,8 +30,8 @@ export class TeeVerification {
   }
 
   private cacheExpiry(entry: Entry, maxAgeMs: number): number {
-    return entry.outcome?.sellerNodeVerified && !entry.outcome.transient
-      ? entry.checkedAt + maxAgeMs : entry.checkedAt + TEE_MAX_AGE_MS
+    const age = entry.outcome?.sellerNodeVerified && !entry.outcome.transient ? maxAgeMs : TEE_MAX_AGE_MS
+    return entry.expiresAt ?? entry.checkedAt + age
   }
 
   private async verifyCached(
@@ -80,9 +82,14 @@ export class TeeVerification {
         this.activeChecks += 1
         try {
           const { ok: _allowed, ...outcome } = await Promise.resolve().then(run)
-          return { checkedAt, outcome }
+          if (outcome.transient) return { checkedAt, outcome, failures: entry?.failures }
+          if (chosen !== TEE_VERIFIER_ID || outcome.verified === true) return { checkedAt, outcome }
+          const failures = (entry?.failures ?? 0) + 1
+          const jitter = failures === 1 ? 1 : 1 + (this.random() - 0.5) * 0.4
+          const delay = Math.round(Math.min(TEE_MAX_AGE_MS * 2 ** (failures - 1) * jitter, TEE_FAILURE_MAX_AGE_MS))
+          return { checkedAt, outcome, failures, expiresAt: checkedAt + delay }
         } catch (error: unknown) {
-          return { checkedAt, outcome: {
+          return { checkedAt, failures: entry?.failures, outcome: {
             verified: false, transient: true, reason: error instanceof Error ? error.message : 'Verification unavailable',
           } }
         } finally {
@@ -102,16 +109,26 @@ export class TeeVerification {
   }
 
   /**
-   * Why the seller's TEE attestation failed, from the newest settled check
-   * still in date; null when that check passed, or none was run or could be.
-   * Checks are kept per buyer identity, so an older pass (or one past its
-   * date) never hides a newer failure. A seller that advertises the TEE
-   * verifier but fails it (an unapproved build) is not one Private can send to.
+   * The reason from the newest in-date failure after the latest seller-node pass.
+   * A seller that advertises the TEE verifier but fails it (an unapproved
+   * build) is not one Private can send to.
    */
   teeFailure(peer: Peer): string | null {
-    const newest = this.newestSettledCheck(peer, { skipRefetching: true })
-    if (!newest?.outcome || newest.outcome.sellerNodeVerified || this.cacheExpiry(newest, TEE_MAX_AGE_MS) <= this.now()) return null
-    return newest.outcome.reason ?? 'TEE attestation did not pass'
+    const now = this.now()
+    let latestPassAt = -Infinity
+    let newestFailure: Entry | undefined
+    for (const query of this.teeQueries(peer)) {
+      if (query.state.fetchStatus === 'fetching') continue
+      const entry = query.state.data as Entry | undefined
+      if (!entry?.outcome || entry.outcome.transient) continue
+      if (entry.outcome.sellerNodeVerified) {
+        latestPassAt = Math.max(latestPassAt, entry.checkedAt)
+      } else if ((!newestFailure || entry.checkedAt > newestFailure.checkedAt) && this.cacheExpiry(entry, TEE_MAX_AGE_MS) > now) {
+        newestFailure = entry
+      }
+    }
+    if (!newestFailure || newestFailure.checkedAt <= latestPassAt) return null
+    return newestFailure.outcome?.reason ?? 'TEE attestation did not pass'
   }
 
   /**
