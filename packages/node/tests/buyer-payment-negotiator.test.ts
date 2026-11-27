@@ -46,6 +46,7 @@ function createMockBpm(): BuyerPaymentManager & Record<string, unknown> {
     retireSession: vi.fn(),
     canReplayReserveAuth: vi.fn().mockReturnValue(false),
     hasPendingReserveAuth: vi.fn().mockReturnValue(false),
+    isOpeningReservePending: vi.fn().mockReturnValue(false),
     hasPaymentInFlight: vi.fn().mockReturnValue(false),
     reconcileReserveAmount: vi.fn().mockResolvedValue(undefined),
     setChannelDepositReader: vi.fn(),
@@ -654,6 +655,86 @@ describe('BuyerPaymentNegotiator', () => {
       expect(bpm.retireSession).not.toHaveBeenCalled();
       expect(bpm.authorizeSpending).not.toHaveBeenCalled();
       expect(bpm.extendCurrentSpendingAuth).not.toHaveBeenCalled();
+    });
+
+    describe('a 402 naming an old channel the seller still serves', () => {
+      const oldChannelCatchUp = {
+        error: 'payment_required',
+        minBudgetPerRequest: '10000',
+        suggestedAmount: '1000000',
+        requiredCumulativeAmount: '4000000',
+        currentSpent: '4000000',
+        currentAcceptedCumulative: '3500000',
+        reserveMaxAmount: '4000000',
+        channelId: '0x' + 'cd'.repeat(32),
+      };
+      const missingOnChain: ChannelInfo = {
+        buyer: '0x' + '00'.repeat(20),
+        seller: '0x' + '00'.repeat(20),
+        deposit: 0n,
+        settled: 0n,
+        metadataHash: '0x' + '00'.repeat(32),
+        deadline: 0n,
+        settledAt: 0n,
+        closeRequestedAt: 0n,
+        status: 0,
+      };
+
+      beforeEach(() => {
+        // The replacement 0xab… was signed but its reserve never locked: no
+        // AuthAck, nothing on-chain, and the seller still serves 0xcd….
+        (bpm.getActiveSession as ReturnType<typeof vi.fn>).mockReturnValue(makeActiveSession(peer.peerId));
+        (bpm.isOpeningReservePending as ReturnType<typeof vi.fn>).mockReturnValue(true);
+        (channelsClient.getSession as ReturnType<typeof vi.fn>).mockResolvedValue(missingOnChain);
+      });
+
+      it('replays the live channel\'s reserve instead of retrying the old channel forever', async () => {
+        (bpm.canReplayReserveAuth as ReturnType<typeof vi.fn>).mockReturnValue(true);
+        (bpm.resendReserveAuth as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+          (bpm.isLockConfirmed as ReturnType<typeof vi.fn>).mockReturnValue(true);
+        });
+
+        const result = await negotiator.handle402(make402Response(oldChannelCatchUp), peer, conn, makeRequest());
+
+        expect(bpm.resendReserveAuth).toHaveBeenCalledWith(peer.peerId, expect.anything());
+        // The old channel's target is never signed on the live one.
+        expect(bpm.extendCurrentSpendingAuth).not.toHaveBeenCalled();
+        expect(bpm.retireSession).not.toHaveBeenCalled();
+        expect(result.action).toBe('retry');
+      });
+
+      it('replaces a live channel that cannot be replayed with a fresh reserve', async () => {
+        (bpm.retireSession as ReturnType<typeof vi.fn>).mockImplementation(() => {
+          (bpm.getActiveSession as ReturnType<typeof vi.fn>).mockReturnValue(null);
+        });
+        bufferPaymentRequired(negotiator, peer.peerId, conn);
+        (bpm.authorizeSpending as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+          (bpm.isLockConfirmed as ReturnType<typeof vi.fn>).mockReturnValue(true);
+        });
+
+        const result = await negotiator.handle402(
+          make402Response({ ...oldChannelCatchUp, code: 'channel_exhausted' }),
+          peer,
+          conn,
+          makeRequest(),
+        );
+
+        expect(bpm.retireSession).toHaveBeenCalledWith(peer.peerId, CHANNEL_STATUS.GHOST);
+        expect(bpm.authorizeSpending).toHaveBeenCalled();
+        expect(result.action).toBe('retry');
+      });
+
+      it('waits for a negotiation already running instead of recovering', async () => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (negotiator as any)._negotiationLocks.set(peer.peerId, Promise.resolve());
+
+        const result = await negotiator.handle402(make402Response(oldChannelCatchUp), peer, conn, makeRequest());
+
+        expect(result.action).toBe('retry');
+        expect(channelsClient.getSession).not.toHaveBeenCalled();
+        expect(bpm.resendReserveAuth).not.toHaveBeenCalled();
+        expect(bpm.retireSession).not.toHaveBeenCalled();
+      });
     });
 
     it('detects exhaustion via reserveMaxAmount even when seller omits the explicit code', async () => {

@@ -22,9 +22,9 @@ function memoryChannelStore(): BuyerChannelStore {
   } as unknown as BuyerChannelStore;
 }
 
-async function sessionSignedUpTo(cumulative: bigint) {
+function newPaymentManager(): BuyerPaymentManager {
   const wallet = Wallet.createRandom();
-  const manager = new BuyerPaymentManager(
+  return new BuyerPaymentManager(
     { peerId: toPeerId(wallet.address.slice(2).toLowerCase()), wallet },
     {
       rpcUrl: 'http://127.0.0.1:8545',
@@ -40,6 +40,10 @@ async function sessionSignedUpTo(cumulative: bigint) {
     },
     memoryChannelStore(),
   );
+}
+
+async function sessionSignedUpTo(cumulative: bigint) {
+  const manager = newPaymentManager();
   const sent: SpendingAuthPayload[] = [];
   const mux = {
     sendSpendingAuth: (payload: SpendingAuthPayload) => { sent.push(payload); },
@@ -87,5 +91,18 @@ describe('BuyerPaymentManager 402 catch-up', () => {
     await manager.extendCurrentSpendingAuth(SELLER, 500_000n, mux);
 
     expect(sent.map((auth) => auth.cumulativeAmount)).toEqual(['501000']);
+  });
+});
+
+describe('BuyerPaymentManager opening reserve', () => {
+  it('reports the opening reserve as pending until the seller acknowledges it', async () => {
+    const manager = newPaymentManager();
+    const mux = { sendSpendingAuth: () => {}, sendReserveAuth: () => {} } as unknown as PaymentMux;
+
+    expect(manager.isOpeningReservePending(SELLER)).toBe(false);
+    const channelId = await manager.authorizeSpending(SELLER, mux, 10_000n);
+    expect(manager.isOpeningReservePending(SELLER)).toBe(true);
+    await manager.handleAuthAck(SELLER, { channelId });
+    expect(manager.isOpeningReservePending(SELLER)).toBe(false);
   });
 });

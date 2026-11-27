@@ -992,18 +992,33 @@ export class BuyerPaymentNegotiator {
     const paymentChannelId = buffered?.channelId
       ?? (responseAlreadyHasRequirements && typeof directPaymentBody?.channelId === 'string' ? directPaymentBody.channelId : null);
     const session = this._bpm.getActiveSession(peer.peerId);
-    if (session && paymentChannelId != null && paymentChannelId.toLowerCase() !== session.sessionId.toLowerCase()) {
+    const aboutOtherChannel = session != null && paymentChannelId != null
+      && paymentChannelId.toLowerCase() !== session.sessionId.toLowerCase();
+    if (aboutOtherChannel) {
+      const negotiation = this._negotiationLocks.get(peer.peerId);
+      // With no negotiation running and the replacement's opening reserve never
+      // acknowledged, the seller still serves the old channel and will keep
+      // answering for it: retrying would loop forever. Recover the live channel
+      // instead, so the seller gets its ReserveAuth again and replaces the old one.
+      if (negotiation || !this._bpm.isOpeningReservePending(peer.peerId)) {
+        debugLog(
+          `[BuyerNegotiator] ${channelExhausted ? 'Exhausted ' : ''}402 from ${peer.peerId.slice(0, 12)}... is about channel ` +
+          `${paymentChannelId.slice(0, 18)}..., not the live ${session.sessionId.slice(0, 18)}... — retrying on it`,
+        );
+        await negotiation?.catch(() => undefined);
+        return { action: 'retry' };
+      }
       debugLog(
-        `[BuyerNegotiator] ${channelExhausted ? 'Exhausted ' : ''}402 from ${peer.peerId.slice(0, 12)}... is about channel ` +
-        `${paymentChannelId.slice(0, 18)}..., not the live ${session.sessionId.slice(0, 18)}... — retrying on it`,
+        `[BuyerNegotiator] ${peer.peerId.slice(0, 12)}... still serves channel ${paymentChannelId.slice(0, 18)}... and never ` +
+        `acknowledged the live ${session.sessionId.slice(0, 18)}... — recovering the live channel`,
       );
-      await this._negotiationLocks.get(peer.peerId)?.catch(() => undefined);
-      return { action: 'retry' };
     }
+    // What the 402 asks of another channel is never signed on the live one.
+    const liveTarget = aboutOtherChannel ? null : requiredCumulativeTarget;
 
     const hasActiveSession = hadLockedSession || session != null;
 
-    if (channelExhausted && hasActiveSession) {
+    if (channelExhausted && hasActiveSession && !aboutOtherChannel) {
       debugLog(
         `[BuyerNegotiator] Channel exhausted for ${peer.peerId.slice(0, 12)}... ` +
         `(required=${requiredCumulativeTarget ?? 'n/a'} > reserveMax=${sellerReserveMax ?? 'n/a'}) — ` +
@@ -1021,8 +1036,8 @@ export class BuyerPaymentNegotiator {
           conn,
           session,
           existingSessionBudgetRequest,
-          requiredCumulativeTarget,
-          requiredCumulativeTarget == null,
+          liveTarget,
+          liveTarget == null,
           req.requestId,
           inFlightRequests,
         );
