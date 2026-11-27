@@ -822,7 +822,7 @@ function openAIResponsesStopReason(
 
 export function normalizeAnthropicMessagesResponseBody(
   body: Record<string, unknown>,
-  fallbacks: { id: string; model: string },
+  fallbacks: { id: string; model: string; requestedModel?: string | null },
 ): CanonicalLlmResponse {
   const id = typeof body.id === 'string' && body.id.length > 0 ? body.id : fallbacks.id;
   const model = typeof body.model === 'string' && body.model.length > 0 ? body.model : fallbacks.model;
@@ -857,7 +857,17 @@ export function normalizeAnthropicMessagesResponseBody(
 
   const usage = extractReportedUsage(body, 'anthropic-messages');
   const stopReason = anthropicStopReasonToOpenAI(body.stop_reason);
-  return { id, model, output, stopReason, usage };
+  // The thoughts are also the answer's reasoning, which a Responses client that keeps reasoning state gets as a
+  // `reasoning` item, as it does from a stream of the same answer.
+  const reasoning = canonicalReasoningText(output);
+  return {
+    id,
+    model,
+    output,
+    stopReason,
+    ...(hasContent(reasoning) ? { reasoning, reasoningModel: fallbacks.requestedModel || model } : {}),
+    usage,
+  };
 }
 
 export function renderCanonicalResponseToOpenAIChatBody(response: CanonicalLlmResponse): Record<string, unknown> {

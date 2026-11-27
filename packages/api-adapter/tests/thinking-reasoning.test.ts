@@ -401,3 +401,30 @@ describe('thoughts a seller writes that the Messages client did not ask for', ()
     expect(JSON.stringify(events)).toContain('reasoning_content');
   });
 });
+
+describe('Messages thinking translated whole for a Responses client', () => {
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+  const answer = {
+    id: 'msg_1', type: 'message', role: 'assistant', model: 'claude-example',
+    content: [{ type: 'thinking', thinking: 'Check the disk first.', signature: 'sig' }, { type: 'text', text: 'It is 40% full.' }],
+    stop_reason: 'end_turn', usage: { input_tokens: 5, output_tokens: 5 },
+  };
+  const translate = (streamRequested: boolean, includeReasoning: boolean): string => decoder.decode(transformResponse(
+    { requestId: 'r', statusCode: 200, headers: { 'content-type': 'application/json' }, body: encoder.encode(JSON.stringify(answer)) },
+    { from: 'anthropic-messages', to: 'openai-responses', streamRequested, fallbackModel: 'claude-example', includeReasoning },
+  )!.body);
+
+  it('keeps the thoughts as a reasoning item when the client keeps reasoning state, as a stream of it does', () => {
+    const body = JSON.parse(translate(false, true));
+    expect(body.output.map((item: { type: string }) => item.type)).toEqual(['reasoning', 'message']);
+    expect(body.output[0].content).toEqual([{ type: 'reasoning_text', text: 'Check the disk first.' }]);
+    expect(body.output[0].encrypted_content).toBe('antseed.reasoning.v1:claude-example');
+    expect(translate(true, true)).toContain('Check the disk first.');
+  });
+
+  it('leaves the thoughts out for a client that keeps no reasoning state', () => {
+    expect(JSON.parse(translate(false, false)).output.map((item: { type: string }) => item.type)).toEqual(['message']);
+    expect(translate(true, false)).not.toContain('Check the disk first.');
+  });
+});
