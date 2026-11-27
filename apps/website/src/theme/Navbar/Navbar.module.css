@@ -44,3 +44,8 @@
   .actions .barGateway { display: none; }
   .frame.page .nav { padding-inline: calc((100% - var(--site-rail)) / 2 + 20px); }
 }
+/* the smallest phones: the actions a little closer, so the burger still fits beside the docs search and three icons at 320px */
+@media (max-width: 359px) {
+  .actions { gap: 2px; }
+  .actions .themeSwitch { margin-right: 0; }
+}

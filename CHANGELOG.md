@@ -6,6 +6,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Changed
+
+- Website: the header now links to the Antseed Telegram group, after X and GitHub, as the footer does.
+
 ## 2026-11-27 — CLI 0.1.266, Desktop 0.2.100
 
 ### Packages
