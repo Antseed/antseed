@@ -277,7 +277,7 @@ antseed.css declares the pixel face: `@font-face { font-family: "Geist Pixel Var
 
 A side is on when its variable is `2px`, off at `0px`: 2px round dots on an 8px pitch, the first on the corner.
 
-**The 8px grid.** Every section's height is a multiple of 8, so each top and its dotted line sit on a row of margin dots. The page hero is `round(down, calc(100svh - 69px), 8px)` tall from 1200px (824 at 1440 × 900). Every other section gets `min-height` rounded up to the next multiple of 8 by antseed.js (`Math.ceil(h / 8 - 0.02) * 8`, re-run on resize and after fonts load). The closing band and the footer are not rounded, as on the site. Sections touch: no margin between them.
+**The 8px grid.** Every section's height is a multiple of 8, so each top and its dotted line sit on a row of margin dots. The page hero is `round(down, calc(100svh - 69px), 8px)` tall from 1200px (824 at 1440 × 900). Every other section gets `min-height` rounded up to the next multiple of 8 by antseed.js (`Math.ceil(h / 8 - 0.02) * 8`, measured afresh on resize, after fonts load and whenever a section's content changes, so a section shrinks back when an FAQ answer closes). The closing band and the footer are not rounded, as on the site. Sections touch: no margin between them.
 
 **Spacing scale.** Only these values: 2, 4, 8, 12, 14, 16, 20, 24, 28, 32, 40, 48, 56, 64, 72, 96, 124, 128. Where each goes:
 

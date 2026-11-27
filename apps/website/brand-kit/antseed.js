@@ -80,11 +80,39 @@
 
     // 5. every section a multiple of 8px tall, so each top and its dotted line land on a row of the margin's dots.
     //    The closing band and the footer are left as they are (as on the live site).
-    const snap = (sec) => { sec.style.minHeight = ''; const h = sec.getBoundingClientRect().height, to = Math.ceil(h / 8 - 0.02) * 8; if (to > h) sec.style.minHeight = `${to}px`; };
+    //    Every pass measures from scratch (all min-heights cleared first), so a section shrinks as well as grows. A section held up by its
+    //    min-height doesn't change size when its content gets shorter, so content changes are watched too: an FAQ answer opened or closed,
+    //    text or elements added or removed, a picture swapped or loaded, the fonts arriving. Passes run on a frame, never inside an observer.
     const secs = [...document.querySelectorAll('.s-page > .s-sec:not(.cta-band, .s-foot)')];
-    const ro = new ResizeObserver((list) => list.forEach((e) => snap(e.target)));
-    secs.forEach((s) => ro.observe(s));
-    document.fonts.ready.then(() => secs.forEach(snap));
+    const snapAll = () => {
+      secs.forEach((sec) => { sec.style.minHeight = ''; });
+      const heights = secs.map((sec) => sec.getBoundingClientRect().height);
+      secs.forEach((sec, i) => { const h = heights[i], to = Math.ceil(h / 8 - 0.02) * 8; if (to > h) sec.style.minHeight = `${to}px`; });
+    };
+    let snapQueued = false;
+    const resnap = () => { if (!snapQueued) { snapQueued = true; requestAnimationFrame(() => { snapQueued = false; snapAll(); }); } };
+    if (secs.length) {
+      snapAll();
+      const ro = new ResizeObserver(resnap);
+      secs.forEach((s) => ro.observe(s));
+      new MutationObserver(resnap).observe(secs[0].parentElement, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['open', 'hidden', 'src', 'srcset'] });
+      document.addEventListener('load', resnap, true);
+      document.fonts.ready.then(resnap);
+      // An FAQ answer folds away over its ::details-content transition, which fires no transition events and leaves the section's size
+      // alone, so after a toggle (and during any size transition inside a section) every frame is re-measured until the longest transition
+      // on that element is over: the section follows the answer down. Capped at 2s.
+      const page = secs[0].parentElement, sizing = /height|block-size|width|inline-size|padding|margin|font|line|grid|content-visibility/;
+      const ms = (v) => (v.trim().endsWith('ms') ? parseFloat(v) : parseFloat(v) * 1000) || 0;
+      const longest = (el, pseudo) => {
+        try { const cs = getComputedStyle(el, pseudo), d = cs.transitionDuration.split(','), l = cs.transitionDelay.split(',');
+          return Math.max(0, ...d.map((x, i) => ms(x) + ms(l[i % l.length]))); } catch { return 0; }
+      };
+      let until = 0, following = false;
+      const step = () => { snapAll(); if (performance.now() < until) requestAnimationFrame(step); else following = false; };
+      const follow = (t) => { until = Math.max(until, performance.now() + Math.min(t + 50, 2000)); if (!following) { following = true; requestAnimationFrame(step); } };
+      document.addEventListener('toggle', (e) => { if (page.contains(e.target)) follow(Math.max(longest(e.target, '::details-content'), longest(e.target))); }, true);
+      page.addEventListener('transitionrun', (e) => { if (sizing.test(e.propertyName)) follow(longest(e.target, e.pseudoElement || null)); });
+    }
     // the page hero, from 1200 wide, where the browser lacks CSS round(): calc(100svh - 69px) rounded down to 8px
     const grid = document.querySelector('.s-hero-grid');
     if (grid && !CSS.supports('height', 'round(down, 10px, 4px)')) {
