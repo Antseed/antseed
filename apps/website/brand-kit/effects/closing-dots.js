@@ -17,10 +17,16 @@ function loadMosaic(night) {
   if (!cache.has(url)) {
     const p = fetch(url).then((r) => (r.ok ? r.text() : Promise.reject(new Error(url + ': ' + r.status)))).then((svg) => {
       const doc = new DOMParser().parseFromString(svg, 'image/svg+xml');
-      return [...doc.querySelectorAll('g')].map((g) => ({
+      const groups = [...doc.querySelectorAll('g')].map((g) => ({
         fill: g.getAttribute('fill') || '#000',
         dots: [...g.querySelectorAll('circle')].map((c) => [Number(c.getAttribute('cx')), Number(c.getAttribute('cy'))]),
       }));
+      // each mosaic cell ("col,row") -> the index of the colour group its dot is in; built once per file, not on every redraw
+      const groupAt = new Map();
+      groups.forEach((g, gi) => {
+        for (const [x, y] of g.dots) groupAt.set(Math.round((x - MOSAIC_X0) / MOSAIC_STEP) + ',' + Math.round((y - MOSAIC_Y0) / MOSAIC_STEP), gi);
+      });
+      return { groups, groupAt };
     });
     p.catch(() => cache.delete(url));
     cache.set(url, p);
@@ -39,7 +45,7 @@ function sourceCell(k, n, m) {
   return q + ((k - half) % (m - 2 * q));
 }
 
-function draw(host, canvas, groups) {
+function draw(host, canvas, { groups, groupAt }) {
   const w = host.clientWidth, h = host.clientHeight;
   if (!w || !h) return;
   const dpr = Math.min(MAX_DPR, window.devicePixelRatio || 1);
@@ -49,10 +55,6 @@ function draw(host, canvas, groups) {
   ctx.clearRect(0, 0, w, h);
   const cols = Math.floor(w / STEP), rows = Math.floor(h / STEP);
   const ox = (w - cols * STEP) / 2 + STEP / 2, oy = (h - rows * STEP) / 2 + STEP / 2;
-  const groupAt = new Map();
-  groups.forEach((g, gi) => {
-    for (const [x, y] of g.dots) groupAt.set(Math.round((x - MOSAIC_X0) / MOSAIC_STEP) + ',' + Math.round((y - MOSAIC_Y0) / MOSAIC_STEP), gi);
-  });
   const paths = groups.map((g) => ({ fill: g.fill, path: new Path2D() }));
   for (let i = 0; i < cols; i++) for (let j = 0; j < rows; j++) {
     const gi = groupAt.get(sourceCell(i, cols, MOSAIC_COLS) + ',' + sourceCell(j, rows, MOSAIC_ROWS));
@@ -68,13 +70,13 @@ for (const host of document.querySelectorAll('.cta-card .tw')) {
   const canvas = document.createElement('canvas');
   canvas.className = 'tw-dots';
   host.appendChild(canvas);
-  let groups = null, token = 0;
+  let mosaic = null, token = 0;
   const night = () => document.documentElement.dataset.theme === 'dark';
   const load = () => {
     const mine = ++token;
-    loadMosaic(night()).then((g) => { if (mine === token) { groups = g; draw(host, canvas, groups); } }, (e) => console.warn('closing band dots not drawn', e));
+    loadMosaic(night()).then((m) => { if (mine === token) { mosaic = m; draw(host, canvas, mosaic); } }, (e) => console.warn('closing band dots not drawn', e));
   };
-  new ResizeObserver(() => { if (groups) draw(host, canvas, groups); }).observe(host);
+  new ResizeObserver(() => { if (mosaic) draw(host, canvas, mosaic); }).observe(host);
   document.addEventListener('themechange', load);
   new MutationObserver(load).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
   load();
