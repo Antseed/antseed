@@ -222,7 +222,7 @@ function forgetRollup(dir: string): void {
     UPDATE usage_rollup_state SET
       requests_from = (SELECT MAX(started_at) + 1 FROM gateway_requests),
       requests_cursor = (SELECT MIN(started_at) FROM gateway_requests),
-      ledger_from = (SELECT MAX(id) FROM ledger_entries),
+      ledger_from = COALESCE((SELECT MAX(id) FROM ledger_entries), 0),
       ledger_cursor = 0;
   `)
   store.close()
@@ -258,6 +258,35 @@ test('the backfill rolls up older rows exactly while new requests, outcomes and 
     } finally {
       cleanup()
     }
+  }
+})
+
+test('the backfill rolls up request rows a chunk at a time, also with no ledger rows to roll up', async () => {
+  const { dir, cleanup } = tempDir()
+  try {
+    let store = new GatewayStore(dir, () => BASE + 6 * HOUR)
+    const { key } = store.createKey({ label: 'k', limits: NO_LIMITS, expiresAt: null })
+    // 300 requests, several in the same millisecond (a chunk never splits one).
+    for (let i = 0; i < 300; i += 1) {
+      store.startRequest({ tag: `gw_${i}`, keyId: key.id, buyerIdentity: 'default', method: 'POST', path: '/v1/responses', model: 'm1', startedAt: BASE + Math.floor(i / 3) * 1_000 })
+    }
+    store.close()
+    forgetRollup(dir)
+    store = new GatewayStore(dir, () => BASE + 6 * HOUR)
+    try {
+      const cursors: number[] = []
+      const cursor = () => (store.database.prepare('SELECT requests_cursor FROM usage_rollup_state').get() as { requests_cursor: number }).requests_cursor
+      assert.equal(await store.backfillUsageRollup({ chunkSize: 25, shouldStop: () => { cursors.push(cursor()); return false } }), true)
+      // 300 rows in chunks of 25 (plus the ties of a chunk's last millisecond): at least 11 steps, the cursor moving each time.
+      assert.ok(cursors.length >= 11, `chunks: ${cursors.length}`)
+      assert.deepEqual([...cursors].sort((a, b) => a - b), cursors)
+      assert.equal(new Set(cursors).size, cursors.length)
+      assert.equal(store.usageReport({}, null).totals.requests, 300)
+    } finally {
+      store.close()
+    }
+  } finally {
+    cleanup()
   }
 })
 
