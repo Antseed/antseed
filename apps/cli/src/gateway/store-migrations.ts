@@ -3,6 +3,7 @@
  * Append-only: never edit a migration that has shipped.
  */
 import { splitPinnedModelSql } from './pinned-model.js'
+import { usageRollupMigrationSql } from './usage-rollup-sql.js'
 
 export const MIGRATIONS: readonly string[] = [
   `
@@ -442,4 +443,10 @@ export const MIGRATIONS: readonly string[] = [
   ALTER TABLE gateway_requests ADD COLUMN video_price_usdc INTEGER;
   CREATE INDEX gateway_requests_unfinished ON gateway_requests(key_id) WHERE finished_at IS NULL;
   `,
+  // Usage per hour and attribution, kept by triggers as requests and spend are written, so usage reads
+  // (reports, key totals, savings, seller stats) never scan the request log or the ledger, however long
+  // they grow. Rows recorded before are rolled up in the background (see `backfillUsageRollup`); until
+  // that is done, reads use the log and the ledger as before. Pruned request counts move over from
+  // `request_rollups`, which nothing writes any more.
+  usageRollupMigrationSql(),
 ]

@@ -8,6 +8,7 @@ Started by `antseed gateway start`, `antseed tunnel start` (which the desktop's 
 
 - `runtime.ts` — `startGatewayRuntime`, the entry both commands call.
 - `server.ts` — the API front door. `ALLOWED_ROUTES` lists every forwarded path and whether it is paid; anything else is 404.
+- `usage-rollup-sql.ts` — the hourly usage rollup (`usage_hourly`): triggers on the request log and the ledger keep it, and every usage read (reports, key totals, savings, seller stats) uses it. `GatewayStore.backfillUsageRollup` rolls up rows older than the rollup; until then reads use the log.
 - `policy-resolver.ts` — the effective routing policy, level by level. `accounting.ts` and `video-jobs.ts` — admission holds and the ledger. `spend-feed.ts` — the buyer's spend feed, which gates capped keys.
 - A console route is a `register…Routes` in `console-api/handlers/<area>.ts` (listed in `handlers/index.ts` or `console.ts`), its logic in `services/<area>.ts`, its types in `console-api/types.ts`. Services validate and audit; they never check who calls (`console-api/access.ts` does).
 - A schema change is a new string at the end of `MIGRATIONS` in `store-migrations.ts`. A new paid API path goes in `ALLOWED_ROUTES` and in the buyer proxy's known paths.
@@ -17,6 +18,7 @@ Started by `antseed gateway start`, `antseed tunnel start` (which the desktop's 
 | Listens on `127.0.0.1` unless `--host`; `exposure.ts` reports what a wider listen exposes. | `exposure.test.ts` |
 | No request spends past its key, member or workspace cap. | `gateway.test.ts` |
 | A shipped migration is never edited. | review only |
+| Usage reads come from the hourly rollup and match the request log and ledger exactly; no usage read scans their history. | `usage-rollup.test.ts` |
 | Admission counts settled spend plus holds of requests in flight, in UTC calendar periods. A key's cap is the lower of the admins' and the owner's. | `gateway.test.ts` |
 | A capped key fails closed while the buyer is not reporting spend or video commitments cannot be stored. | `gateway.test.ts` |
 | Policies only narrow from the gateway default down to the preset; peer lists are references. | `policy-resolver.test.ts` |
@@ -41,6 +43,7 @@ Started by `antseed gateway start`, `antseed tunnel start` (which the desktop's 
 - systemd expands `$` in `ExecStart` but not in `Environment=`, so only `ExecStart` words escape it (`service.ts`).
 - Statements match settlements to peers by payment channel, not seller address (a delegated seller is paid at its seller contract). An issued month never changes.
 - Workspace wallets come from the running buyer (`services/wallet-address.ts`), not the store. Passkeys are bound to the console's domain; after moving it, members need a recovery link.
+- `usage-rollup-sql.ts` is part of migration 18: never edit it. A new usage total, or a change in what a request or ledger row counts, is a new migration with new triggers and a rebuilt rollup. The triggers follow every insert and update, but no delete: pruning the log keeps its counts on purpose.
 - Money here is `number` in USDC base units with safe-integer checks (`money.ts`), unlike the repo's `bigint`. Parse input with `parseUsdToUsdc`, never `parseFloat`.
 
 **Ask first:** auth, keys, caps, x402, listen and exposure defaults; the policy levels or their order; a field removed from `console-api/types.ts`; a new migration.

@@ -6,6 +6,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Fixed
+
+- Gateway (`@antseed/cli`): usage pages no longer slow down, or stall the whole gateway, as its history grows. The console's Overview, Activity, Keys and Network pages, `GET /v1/key` and `GET /v1/key/savings` summed the entire request log and ledger on every load. On a gateway with millions of requests a page took tens of seconds, and meanwhile the gateway answered nothing else: API requests failed, and capped keys were refused while the spend feed read as unreachable. Usage now comes from hourly totals that the gateway keeps as it records each request and spend, so these reads stay fast however long the history grows. After the upgrade the gateway rolls up the usage it recorded before in the background; usage pages read the log as before until that finishes, and request-log retention waits for it. The Network page's latency, first-token and speed medians now come from the day's newest 20,000 requests. In `/v1/key/savings`, `matched_requests` counts each billed request once, and requests pruned from the log keep the tokens their responses reported.
+
 ## 2026-11-27 — CLI 0.1.265, Node 0.2.195, Desktop 0.2.99
 
 ### Packages
