@@ -15,7 +15,7 @@ export interface ServiceApiResponseTransformOptions {
   to: ServiceApiProtocol;
   streamRequested?: boolean;
   fallbackModel?: string | null;
-  /** A Responses client that keeps reasoning state gets a chat model's reasoning (see `includeReasoning` on transformRequest). */
+  /** The client takes the model's reasoning (see `includeReasoning` on transformRequest). */
   includeReasoning?: boolean;
   /**
    * A Messages client gets a `thinking` block only when it asked for thoughts (`includeThinking` of
@@ -66,10 +66,8 @@ export function transformResponse(
     requestedModel: options.fallbackModel ?? null,
   });
   const { reasoning: _reasoning, reasoningModel: _reasoningModel, ...withoutReasoning } = normalized;
-  const kept: CanonicalLlmResponse = options.includeReasoning === true ? normalized : withoutReasoning;
-  const canonical: CanonicalLlmResponse = options.to === 'anthropic-messages' && options.includeThinking !== true
-    ? { ...kept, output: kept.output.filter((item) => item.type !== 'reasoning') }
-    : kept;
+  const dropsThoughts = options.to === 'anthropic-messages' && options.includeThinking !== true;
+  const canonical: CanonicalLlmResponse = options.includeReasoning === true && !dropsThoughts ? normalized : withoutReasoning;
   const body = render(canonical);
 
   if (options.streamRequested) {
@@ -234,12 +232,9 @@ function buildOpenAIChatStream(response: CanonicalLlmResponse): Uint8Array {
 
   pushChunk({ role: 'assistant', content: '' });
 
+  if (response.reasoning) pushChunk({ reasoning_content: response.reasoning });
   let toolCallIndex = 0;
   for (const item of response.output) {
-    if (item.type === 'reasoning') {
-      pushChunk({ reasoning_content: item.text });
-      continue;
-    }
     if (item.type === 'text') {
       if (item.text.length > 0) pushChunk({ content: item.text });
       continue;

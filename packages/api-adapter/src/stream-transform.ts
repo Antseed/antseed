@@ -20,7 +20,7 @@ export interface ServiceApiStreamTransformOptions {
   from: ServiceApiProtocol;
   to: ServiceApiProtocol;
   fallbackModel?: string | null;
-  /** A Responses client that keeps reasoning state gets a chat model's reasoning (see `includeReasoning` on transformRequest). */
+  /** The client takes the model's reasoning (see `includeReasoning` on transformRequest). */
   includeReasoning?: boolean;
   /**
    * A Messages client gets a `thinking` block only when it asked for thoughts (`includeThinking` of
@@ -181,6 +181,9 @@ function createAnthropicStreamNormalizer(options: StreamTransformInternals): Pro
   let responseDone = false;
   const toolBlockIndexes = new Map<number, number>();
   const toolCalls = new Map<number, CanonicalStreamToolCall>();
+  // Thoughts of a later thinking block start on a new line, as a buffered answer joins them.
+  let thoughtsSent = false;
+  let newThinkingBlock = false;
 
   const toolIndexForBlock = (blockIndex: number): number => {
     const existing = toolBlockIndexes.get(blockIndex);
@@ -231,6 +234,7 @@ function createAnthropicStreamNormalizer(options: StreamTransformInternals): Pro
           const block = data.content_block && typeof data.content_block === 'object'
             ? data.content_block as Record<string, unknown>
             : {};
+          if (block.type === 'thinking') newThinkingBlock = thoughtsSent;
           if (block.type === 'tool_use') {
             emitStart(emitted);
             const blockIndex = typeof data.index === 'number' ? data.index : 0;
@@ -249,7 +253,11 @@ function createAnthropicStreamNormalizer(options: StreamTransformInternals): Pro
             : {};
           if (delta.type === 'thinking_delta' && typeof delta.thinking === 'string') {
             emitStart(emitted);
-            if (delta.thinking.length > 0) emitted.push({ type: 'reasoning_delta', delta: delta.thinking });
+            if (delta.thinking.length > 0) {
+              emitted.push({ type: 'reasoning_delta', delta: newThinkingBlock ? `\n${delta.thinking}` : delta.thinking });
+              thoughtsSent = true;
+              newThinkingBlock = false;
+            }
             continue;
           }
           if (delta.type === 'text_delta' && typeof delta.text === 'string') {
@@ -456,7 +464,7 @@ function createChatStreamRenderer(options: StreamTransformInternals): ProtocolSt
         }
 
         if (event.type === 'reasoning_delta') {
-          chunks.push(renderChunk({ reasoning_content: event.delta }));
+          if (options.includeReasoning) chunks.push(renderChunk({ reasoning_content: event.delta }));
           continue;
         }
 
@@ -629,6 +637,7 @@ function createAnthropicStreamRenderer(options: StreamTransformInternals): Proto
         }
 
         if (event.type === 'reasoning_delta') {
+          if (!options.includeReasoning) continue;
           startMessage(emitted, null);
           // Thoughts that come after the answer began have no place before it: dropped, never reordered.
           if (thinkingBlockState === 'closed' || hadTextBlock || openToolIndex !== null || heldTools.size > 0) continue;

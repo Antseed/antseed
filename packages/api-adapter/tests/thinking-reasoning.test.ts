@@ -9,11 +9,18 @@ import { parseSseBuffer } from '../src/utils.js';
 
 const MESSAGES = 'anthropic-messages';
 const CHAT = 'openai-chat-completions';
+const RESPONSES = 'openai-responses';
 
 const PATHS: Record<string, string> = {
   [MESSAGES]: '/v1/messages',
   [CHAT]: '/v1/chat/completions',
 };
+
+/** Whether the client asked for the model's reasoning: what `transformRequest` returns as `includeReasoning`. */
+interface ClientOptions {
+  includeReasoning?: boolean;
+  includeThinking?: boolean;
+}
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -45,22 +52,27 @@ function translateBody(
   to: ServiceApiProtocol,
   body: Json,
   streamRequested = false,
-  includeThinking = true,
+  { includeReasoning = true, includeThinking = true }: ClientOptions = {},
 ): Json | string {
   const result = transformResponse({
     requestId: 'req-thinking',
     statusCode: 200,
     headers: { 'content-type': 'application/json' },
     body: encoder.encode(JSON.stringify(body)),
-  }, { from, to, streamRequested, fallbackModel: 'example-model', includeThinking });
+  }, { from, to, streamRequested, fallbackModel: 'example-model', includeReasoning, includeThinking });
   expect(result).not.toBeNull();
   const text = decoder.decode(result!.body);
   return streamRequested ? text : JSON.parse(text) as Json;
 }
 
 /** A seller's stream, one frame per chunk, as the client of `to` receives it. */
-function translateStream(from: ServiceApiProtocol, to: ServiceApiProtocol, frames: string[], includeThinking = true): Json[] {
-  const adapter = createStreamingAdapter({ from, to, fallbackModel: 'example-model', includeThinking })!;
+function translateStream(
+  from: ServiceApiProtocol,
+  to: ServiceApiProtocol,
+  frames: string[],
+  { includeReasoning = true, includeThinking = true }: ClientOptions = {},
+): Json[] {
+  const adapter = createStreamingAdapter({ from, to, fallbackModel: 'example-model', includeReasoning, includeThinking })!;
   expect(adapter).not.toBeNull();
   let sse = '';
   for (const frame of frames) {
@@ -334,6 +346,27 @@ describe('a Messages response with thinking, translated to Chat Completions', ()
     expect(firstReasoning).toBeLessThan(firstText);
   });
 
+  it('joins two thinking blocks on a new line, streamed as buffered', () => {
+    const buffered = translateBody(MESSAGES, CHAT, message([
+      { type: 'thinking', thinking: 'First.', signature: 'sig' },
+      { type: 'thinking', thinking: 'Second.', signature: 'sig' },
+      { type: 'text', text: 'Hi' },
+    ])) as Json;
+    const events = translateStream(MESSAGES, CHAT, [
+      anthropicFrame({ type: 'message_start', message: { id: 'msg_1', model: 'example-model', usage: { input_tokens: 10 } } }),
+      anthropicFrame({ type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '', signature: '' } }),
+      anthropicFrame({ type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'First.' } }),
+      anthropicFrame({ type: 'content_block_stop', index: 0 }),
+      anthropicFrame({ type: 'content_block_start', index: 1, content_block: { type: 'thinking', thinking: '', signature: '' } }),
+      anthropicFrame({ type: 'content_block_delta', index: 1, delta: { type: 'thinking_delta', thinking: 'Second.' } }),
+      anthropicFrame({ type: 'content_block_stop', index: 1 }),
+      anthropicFrame({ type: 'message_stop' }),
+    ]);
+    const streamed = events.map((event) => event.choices?.[0]?.delta?.reasoning_content).filter(Boolean).join('');
+    expect(buffered.choices[0].message.reasoning_content).toBe('First.\nSecond.');
+    expect(streamed).toBe('First.\nSecond.');
+  });
+
   it('streams a Chat reply with no reasoning without a reasoning_content member', () => {
     const events = translateStream(MESSAGES, CHAT, [
       anthropicFrame({ type: 'message_start', message: { id: 'msg_1', model: 'example-model', usage: { input_tokens: 10 } } }),
@@ -371,12 +404,12 @@ describe('thoughts a seller writes that the Messages client did not ask for', ()
   });
 
   it('leaves them out of a non-streamed Messages response, as before', () => {
-    const body = translateBody(CHAT, MESSAGES, reply({ reasoning_content: 'Own thoughts.' }), false, false) as Json;
+    const body = translateBody(CHAT, MESSAGES, reply({ reasoning_content: 'Own thoughts.' }), false, { includeThinking: false }) as Json;
     expect(body.content).toEqual([{ type: 'text', text: 'Hi' }]);
   });
 
   it('leaves them out of a Messages stream built from a whole response, as before', () => {
-    const sse = translateBody(CHAT, MESSAGES, reply({ reasoning_content: 'Own thoughts.' }), true, false) as string;
+    const sse = translateBody(CHAT, MESSAGES, reply({ reasoning_content: 'Own thoughts.' }), true, { includeThinking: false }) as string;
     expect(blockLog(sseEvents(sse))).toEqual(['start 0 text', 'text_delta 0 Hi', 'stop 0']);
   });
 
@@ -386,7 +419,7 @@ describe('thoughts a seller writes that the Messages client did not ask for', ()
       chatFrame({ content: 'Hi' }),
       chatFrame({}, 'stop'),
       CHAT_DONE,
-    ], false);
+    ], { includeThinking: false });
     expect(blockLog(events)).toEqual(['start 0 text', 'text_delta 0 Hi', 'stop 0']);
     expect(JSON.stringify(events)).not.toContain('thinking');
   });
@@ -397,7 +430,115 @@ describe('thoughts a seller writes that the Messages client did not ask for', ()
       anthropicFrame({ type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } }),
       anthropicFrame({ type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'Own thoughts.' } }),
       anthropicFrame({ type: 'message_stop' }),
-    ], false);
+    ], { includeThinking: false });
     expect(JSON.stringify(events)).toContain('reasoning_content');
+  });
+});
+
+describe('sealed reasoning a chat seller passes through, for a Messages client', () => {
+  const MARKER = '__ENCRYPTED_REASONING__';
+  const reply = (message: Json): Json => ({
+    id: 'chatcmpl-1',
+    model: 'example-model',
+    choices: [{ index: 0, message: { role: 'assistant', content: 'Hi', ...message }, finish_reason: 'stop' }],
+  });
+
+  it.each([
+    { reasoning_content: `${MARKER}opaque` },
+    { reasoning_content: 'opaque', reasoning_encrypted: true },
+    { reasoning: `${MARKER}opaque` },
+  ])('never becomes a thinking block in a buffered answer %j', (message) => {
+    for (const stream of [false, true]) {
+      const translated = JSON.stringify(translateBody(CHAT, MESSAGES, reply(message), stream));
+      expect(translated).not.toContain('thinking');
+      expect(translated).not.toContain('opaque');
+    }
+  });
+
+  it.each([
+    [{ reasoning_content: `${MARKER}opaque` }],
+    [{ reasoning_content: 'opaque', reasoning_encrypted: true }],
+  ])('never becomes a thinking block in a stream %j', (delta) => {
+    const events = translateStream(CHAT, MESSAGES, [
+      chatFrame(delta),
+      chatFrame({ reasoning_content: 'more opaque' }),
+      chatFrame({ content: 'Hi' }),
+      chatFrame({}, 'stop'),
+      CHAT_DONE,
+    ]);
+    expect(blockLog(events)).toEqual(['start 0 text', 'text_delta 0 Hi', 'stop 0']);
+  });
+
+  it('shows only the plain thoughts before the marker, wherever the marker is split across deltas', () => {
+    for (let split = 1; split < MARKER.length; split++) {
+      const events = translateStream(CHAT, MESSAGES, [
+        chatFrame({ reasoning_content: `Plain. ${MARKER.slice(0, split)}` }),
+        chatFrame({ reasoning_content: `${MARKER.slice(split)}opaque` }),
+        chatFrame({ content: 'Hi' }),
+        chatFrame({}, 'stop'),
+        CHAT_DONE,
+      ]);
+      const thoughts = events
+        .filter((event) => event.delta?.type === 'thinking_delta')
+        .map((event) => event.delta.thinking as string)
+        .join('');
+      expect(thoughts, `marker split after ${split} characters`).toBe('Plain. ');
+    }
+  });
+});
+
+describe('a Messages seller\'s thinking, for a Responses client that keeps reasoning state', () => {
+  const message: Json = {
+    id: 'msg_1',
+    type: 'message',
+    role: 'assistant',
+    model: 'example-model',
+    content: [
+      { type: 'thinking', thinking: 'Light scatters.', signature: 'sig' },
+      { type: 'text', text: 'Because of Rayleigh scattering.' },
+    ],
+    stop_reason: 'end_turn',
+    usage: { input_tokens: 10, output_tokens: 30 },
+  };
+  const frames = [
+    anthropicFrame({ type: 'message_start', message: { id: 'msg_1', model: 'example-model', usage: { input_tokens: 10, output_tokens: 1 } } }),
+    anthropicFrame({ type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '', signature: '' } }),
+    anthropicFrame({ type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'Light ' } }),
+    anthropicFrame({ type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'scatters.' } }),
+    anthropicFrame({ type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'sig' } }),
+    anthropicFrame({ type: 'content_block_stop', index: 0 }),
+    anthropicFrame({ type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } }),
+    anthropicFrame({ type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'Because of Rayleigh scattering.' } }),
+    anthropicFrame({ type: 'content_block_stop', index: 1 }),
+    anthropicFrame({ type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 30 } }),
+    anthropicFrame({ type: 'message_stop' }),
+  ];
+  const reasoningItem = {
+    type: 'reasoning',
+    id: 'rs_msg_1_0',
+    summary: [],
+    content: [{ type: 'reasoning_text', text: 'Light scatters.' }],
+    encrypted_content: 'antseed.reasoning.v1:example-model',
+  };
+
+  it('gets the thoughts as a tagged reasoning item ahead of the message, buffered', () => {
+    const body = translateBody(MESSAGES, RESPONSES, message) as Json;
+    expect(body.output.map((item: Json) => item.type)).toEqual(['reasoning', 'message']);
+    expect(body.output[0]).toEqual(reasoningItem);
+  });
+
+  it('gets the same output streamed as buffered', () => {
+    const buffered = translateBody(MESSAGES, RESPONSES, message) as Json;
+    const completed = translateStream(MESSAGES, RESPONSES, frames).find((event) => event.type === 'response.completed')!;
+    expect(completed.response.output).toEqual(buffered.output);
+    expect(completed.response.output_text).toBe(buffered.output_text);
+  });
+
+  it('gets no reasoning item when it keeps no reasoning state, streamed or buffered', () => {
+    const buffered = translateBody(MESSAGES, RESPONSES, message, false, { includeReasoning: false }) as Json;
+    const completed = translateStream(MESSAGES, RESPONSES, frames, { includeReasoning: false })
+      .find((event) => event.type === 'response.completed')!;
+    expect(buffered.output.map((item: Json) => item.type)).toEqual(['message']);
+    expect(completed.response.output).toEqual(buffered.output);
   });
 });

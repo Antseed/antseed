@@ -139,10 +139,6 @@ function assignToolsAndToolChoice(
 }
 
 export type CanonicalOutputItem =
-  /**
-   * The model's thoughts as text. A Messages `thinking` block and a Chat `reasoning_content` land here. No signature is kept or made up: the OpenAI protocols have none.
-   */
-  | { type: 'reasoning'; text: string }
   | { type: 'text'; text: string; phase?: CanonicalResponseMessagePhase }
   | { type: 'function_call'; id: string; name: string; arguments: Record<string, unknown> | string };
 
@@ -152,24 +148,11 @@ export interface CanonicalLlmResponse {
   output: CanonicalOutputItem[];
   stopReason: string | null;
   endTurn?: boolean;
-  /** Reasoning a chat model returned beside its answer (`reasoning_content`). */
+  /** The model's reasoning beside its answer: a chat model's `reasoning_content`, or a Messages model's `thinking`. */
   reasoning?: string;
   /** The model the reasoning's tag names: the one the request asked for, else the seller's label. */
   reasoningModel?: string;
   usage: ReportedUsage;
-}
-
-/** Whether a thought has anything to show: whitespace alone would only make an empty `thinking` block. */
-function hasContent(text: string): boolean {
-  return text.trim().length > 0;
-}
-
-/** All the thoughts of a canonical response, as one text. */
-export function canonicalReasoningText(output: CanonicalOutputItem[]): string {
-  return output
-    .filter((item): item is Extract<CanonicalOutputItem, { type: 'reasoning' }> => item.type === 'reasoning')
-    .map((item) => item.text)
-    .join('\n\n');
 }
 
 function responseFunctionCallId(id: string): string {
@@ -686,7 +669,6 @@ export function normalizeOpenAIChatResponseBody(
   const reasoning = chatReasoningText(message);
   const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
   const output: CanonicalOutputItem[] = [];
-  if (reasoning.trim().length > 0) output.push({ type: 'reasoning', text: reasoning });
   if (text.length > 0) {
     output.push({ type: 'text', text, phase: toolCalls.length > 0 ? 'commentary' : undefined });
   }
@@ -771,11 +753,12 @@ function openAIResponsesStopReason(
 
 export function normalizeAnthropicMessagesResponseBody(
   body: Record<string, unknown>,
-  fallbacks: { id: string; model: string },
+  fallbacks: { id: string; model: string; requestedModel?: string | null },
 ): CanonicalLlmResponse {
   const id = typeof body.id === 'string' && body.id.length > 0 ? body.id : fallbacks.id;
   const model = typeof body.model === 'string' && body.model.length > 0 ? body.model : fallbacks.model;
   const output: CanonicalOutputItem[] = [];
+  const thoughts: string[] = [];
 
   const content = Array.isArray(body.content) ? body.content : [];
   for (const blockRaw of content) {
@@ -783,8 +766,7 @@ export function normalizeAnthropicMessagesResponseBody(
     const block = blockRaw as Record<string, unknown>;
     // A `redacted_thinking` block is opaque by design: there is nothing in it to translate.
     if (block.type === 'thinking') {
-      const text = typeof block.thinking === 'string' ? block.thinking : '';
-      if (hasContent(text)) output.push({ type: 'reasoning', text });
+      if (typeof block.thinking === 'string' && block.thinking.trim().length > 0) thoughts.push(block.thinking);
       continue;
     }
     if (block.type === 'text') {
@@ -806,7 +788,15 @@ export function normalizeAnthropicMessagesResponseBody(
 
   const usage = extractReportedUsage(body, 'anthropic-messages');
   const stopReason = anthropicStopReasonToOpenAI(body.stop_reason);
-  return { id, model, output, stopReason, usage };
+  const reasoning = thoughts.join('\n');
+  return {
+    id,
+    model,
+    output,
+    stopReason,
+    ...(reasoning.length > 0 ? { reasoning, reasoningModel: fallbacks.requestedModel || model } : {}),
+    usage,
+  };
 }
 
 export function renderCanonicalResponseToOpenAIChatBody(response: CanonicalLlmResponse): Record<string, unknown> {
@@ -814,7 +804,6 @@ export function renderCanonicalResponseToOpenAIChatBody(response: CanonicalLlmRe
     .filter((item): item is { type: 'text'; text: string } => item.type === 'text')
     .map((item) => item.text)
     .join('');
-  const reasoning = canonicalReasoningText(response.output);
   const toolCalls = response.output
     .filter((item): item is Extract<CanonicalOutputItem, { type: 'function_call' }> => item.type === 'function_call')
     .map((item) => ({
@@ -833,7 +822,7 @@ export function renderCanonicalResponseToOpenAIChatBody(response: CanonicalLlmRe
       message: {
         role: 'assistant',
         content: text.length > 0 ? text : null,
-        ...(reasoning.length > 0 ? { reasoning_content: reasoning } : {}),
+        ...(response.reasoning ? { reasoning_content: response.reasoning } : {}),
         ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
       },
       finish_reason: response.stopReason ?? (toolCalls.length > 0 ? 'tool_calls' : 'stop'),
@@ -889,16 +878,19 @@ export function renderCanonicalResponseToOpenAIResponsesBody(response: Canonical
 }
 
 export function renderCanonicalResponseToAnthropicMessagesBody(response: CanonicalLlmResponse): Record<string, unknown> {
-  const content = response.output.map((item) => {
-    if (item.type === 'reasoning') return { type: 'thinking', thinking: item.text };
-    if (item.type === 'text') return { type: 'text', text: item.text };
-    return {
+  const content: Record<string, unknown>[] = response.reasoning ? [{ type: 'thinking', thinking: response.reasoning }] : [];
+  for (const item of response.output) {
+    if (item.type === 'text') {
+      content.push({ type: 'text', text: item.text });
+      continue;
+    }
+    content.push({
       type: 'tool_use',
       id: item.id,
       name: item.name || 'tool',
       input: parseToolArguments(item.arguments),
-    };
-  });
+    });
+  }
 
   return {
     id: response.id,

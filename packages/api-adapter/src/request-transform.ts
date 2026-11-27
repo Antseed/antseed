@@ -22,9 +22,11 @@ export interface ServiceApiRequestTransformResult {
   streamRequested: boolean;
   requestedModel: string | null;
   /**
-   * The client keeps reasoning state: a Responses request whose `include` lists
-   * `reasoning.encrypted_content`. Pass it to `createStreamingAdapter` and `transformResponse`, which
-   * then return a chat model's reasoning to it as a `reasoning` item.
+   * The client asked for the model's reasoning: a Responses request whose `include` lists
+   * `reasoning.encrypted_content` (it keeps reasoning state), a Chat Completions request that names a
+   * `reasoning_effort` other than `none`, or any Messages request. Pass it to `createStreamingAdapter`
+   * and `transformResponse`, which then return the reasoning as a `reasoning` item, `reasoning_content`
+   * or a `thinking` block.
    */
   includeReasoning: boolean;
   /**
@@ -137,7 +139,9 @@ export function transformRequest(
 }
 
 function requestsReasoningState(from: ServiceApiProtocol, body: Record<string, unknown>): boolean {
-  return from === 'openai-responses' && Array.isArray(body.include) && body.include.includes('reasoning.encrypted_content');
+  if (from === 'openai-responses') return Array.isArray(body.include) && body.include.includes('reasoning.encrypted_content');
+  if (from === 'openai-chat-completions') return typeof body.reasoning_effort === 'string' && body.reasoning_effort !== 'none';
+  return true;
 }
 
 /** Whether a Messages request switches thinking on, with a budget (`enabled`) or without one (`adaptive`). */
