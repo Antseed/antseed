@@ -593,7 +593,15 @@ const ENCRYPTED_REASONING_PREFIX = '__ENCRYPTED_REASONING__';
  * text: the relay marks it `reasoning_encrypted: true` or prefixes it `__ENCRYPTED_REASONING__`.
  */
 export function isEncryptedReasoning(message: Record<string, unknown>, field: unknown): boolean {
-  return message.reasoning_encrypted === true || (typeof field === 'string' && field.startsWith(ENCRYPTED_REASONING_PREFIX));
+  return message.reasoning_encrypted === true || (typeof field === 'string' && field.includes(ENCRYPTED_REASONING_PREFIX));
+}
+
+/** How many characters at the end of `text` could be the start of the encrypted-reasoning marker. */
+function possibleMarkerStartLength(text: string): number {
+  for (let length = Math.min(text.length, ENCRYPTED_REASONING_PREFIX.length - 1); length > 0; length--) {
+    if (ENCRYPTED_REASONING_PREFIX.startsWith(text.slice(text.length - length))) return length;
+  }
+  return 0;
 }
 
 export function toStringContent(value: unknown): string {
@@ -758,8 +766,34 @@ export function createChatStreamParser(
   const slotByIndex = new Map<number, number>();
   const slotById = new Map<string, number>();
   let lastSlot: number | null = null;
-  // Decided on the first reasoning delta: an encrypted item continues in later deltas without its marker.
-  let reasoningEncrypted: boolean | null = null;
+  // Once any reasoning is encrypted, the rest of this answer's reasoning is dropped: an encrypted
+  // item continues in later deltas without its marker. Text that may be the start of the marker
+  // (`__ENCRYPTED_` with `REASONING__…` in the next delta) is held back until the next delta decides.
+  let reasoningEncrypted = false;
+  let heldReasoning = '';
+  const flushHeldReasoning = () => {
+    if (heldReasoning.length > 0 && !reasoningEncrypted) callbacks.onReasoning?.(heldReasoning);
+    heldReasoning = '';
+  };
+  const onReasoningDelta = (deltaFields: Record<string, unknown>, reasoningDelta: string) => {
+    if (reasoningEncrypted) return;
+    if (deltaFields.reasoning_encrypted === true) {
+      reasoningEncrypted = true;
+      heldReasoning = '';
+      return;
+    }
+    const text = heldReasoning + reasoningDelta;
+    const marker = text.indexOf(ENCRYPTED_REASONING_PREFIX);
+    if (marker >= 0) {
+      reasoningEncrypted = true;
+      heldReasoning = '';
+      if (marker > 0) callbacks.onReasoning?.(text.slice(0, marker));
+      return;
+    }
+    const held = possibleMarkerStartLength(text);
+    heldReasoning = text.slice(text.length - held);
+    if (text.length > held) callbacks.onReasoning?.(text.slice(0, text.length - held));
+  };
 
   return {
     getId: () => id,
@@ -796,16 +830,18 @@ export function createChatStreamParser(
 
         const reasoningDelta = delta ? chatReasoningField(delta) : '';
         if (reasoningDelta.length > 0) {
-          reasoningEncrypted ??= isEncryptedReasoning(delta!, reasoningDelta);
-          if (!reasoningEncrypted && !isEncryptedReasoning(delta!, reasoningDelta)) callbacks.onReasoning?.(reasoningDelta);
+          onReasoningDelta(delta!, reasoningDelta);
+        } else if (delta?.reasoning_encrypted === true) {
+          onReasoningDelta(delta, '');
         }
 
         const textDelta = typeof delta?.content === 'string' ? delta.content : '';
+        const deltaToolCalls = Array.isArray(delta?.tool_calls) ? delta.tool_calls : [];
+        if (textDelta.length > 0 || deltaToolCalls.length > 0) flushHeldReasoning();
         if (textDelta.length > 0) {
           callbacks.onText(textDelta);
         }
 
-        const deltaToolCalls = Array.isArray(delta?.tool_calls) ? delta.tool_calls : [];
         for (const tcRaw of deltaToolCalls) {
           if (!tcRaw || typeof tcRaw !== 'object') continue;
           const tc = tcRaw as Record<string, unknown>;
@@ -848,6 +884,7 @@ export function createChatStreamParser(
       }
 
       if (done) {
+        flushHeldReasoning();
         const sorted = [...toolCalls.entries()]
           .sort((a, b) => a[0] - b[0])
           .map(([index, tc]) => ({ index, ...tc }));

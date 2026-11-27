@@ -447,8 +447,56 @@ describe('encrypted reasoning from a chat seller', () => {
     }
   });
 
+  const reasoningSent = (frames: string[]) => {
+    const events = streamEvents(frames);
+    const output = completedResponse(events).output as Array<{ type: string; content?: Array<{ text?: string }> }>;
+    const item = output.find((entry) => entry.type === 'reasoning');
+    const streamed = events.filter((e) => e.event === 'response.reasoning_text.delta').map((e) => e.data.delta as string).join('');
+    return { kept: item?.content?.map((part) => part.text ?? '').join('') ?? null, streamed };
+  };
+
+  it('is caught when the marker itself is split across deltas, however it is cut', () => {
+    for (const cut of [5, 12, 22]) {
+      const frames = [frame({ reasoning_content: sealed.slice(0, cut) }), frame({ reasoning_content: sealed.slice(cut) }), frame({ reasoning_content: 'REVG' }), frame({ content: 'Done.' }), frame({}, 'stop')];
+      expect(reasoningSent(frames), `cut at ${cut}`).toEqual({ kept: null, streamed: '' });
+    }
+  });
+
+  it('keeps the plain reasoning before a sealed blob and drops the blob and everything after it', () => {
+    const flagged = [
+      frame({ role: 'assistant', reasoning_content: 'I will trace' }),
+      frame({ reasoning_content: ' the conversion.' }),
+      frame({ reasoning_content: `\n\n${sealed}`, reasoning_encrypted: true }),
+      frame({ reasoning_content: 'REVG' }),
+      frame({ content: 'Done.' }),
+      frame({}, 'stop'),
+    ];
+    expect(reasoningSent(flagged)).toEqual({ kept: 'I will trace the conversion.', streamed: 'I will trace the conversion.' });
+
+    const unflagged = [
+      frame({ role: 'assistant', reasoning_content: 'I will trace' }),
+      frame({ reasoning_content: ` the conversion.\n\n${sealed.slice(0, 9)}` }),
+      frame({ reasoning_content: sealed.slice(9) }),
+      frame({ reasoning_content: 'REVG' }),
+      frame({ content: 'Done.' }),
+      frame({}, 'stop'),
+    ];
+    expect(reasoningSent(unflagged)).toEqual({ kept: 'I will trace the conversion.\n\n', streamed: 'I will trace the conversion.\n\n' });
+  });
+
+  it('passes plain reasoning that only looks like the start of the marker, in order', () => {
+    const frames = [
+      frame({ role: 'assistant', reasoning_content: '__init__ runs first, then __ENC' }),
+      frame({ reasoning_content: 'ODE is called. Last word: __ENCRYPT' }),
+      frame({ content: 'Done.' }),
+      frame({}, 'stop'),
+    ];
+    const text = '__init__ runs first, then __ENCODE is called. Last word: __ENCRYPT';
+    expect(reasoningSent(frames)).toEqual({ kept: text, streamed: text });
+  });
+
   it('gives a buffered answer no reasoning item', () => {
-    for (const message of [{ reasoning_content: sealed }, { reasoning: 'QUJD', reasoning_encrypted: true }]) {
+    for (const message of [{ reasoning_content: sealed }, { reasoning: 'QUJD', reasoning_encrypted: true }, { reasoning_content: `Plain.\n\n${sealed}` }]) {
       const body = JSON.parse(decoder.decode(transformResponse(
         { requestId: 'r', statusCode: 200, headers: {}, body: encoder.encode(JSON.stringify({ id: 'c', model: 'm', choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: 'Done.', ...message } }] })) },
         { from: 'openai-chat-completions', to: 'openai-responses', includeReasoning: true },
