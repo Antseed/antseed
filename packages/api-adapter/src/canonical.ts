@@ -1,16 +1,17 @@
 import {
+  chatReasoningText,
   extractReportedUsage,
   mapFinishReasonToAnthropicStopReason,
   openAIResponsesFunctionCallId,
   openAIResponsesMessageId,
+  openAIResponsesReasoningItem,
   parseJsonSafe,
   reasoningUsageFields,
-  RESPONSES_FINAL_ANSWER_TOOL,
+  responsesEndTurn,
+  responsesReasoningTextFor,
   toStringContent,
   type ReportedUsage,
 } from './utils.js';
-
-const RESPONSES_FINAL_ANSWER_TOOL_RE = /(?:^|\n\s*)tool\s+final_answer\s*\{\s*\}\s*(?:\n|$)/g;
 
 export interface CanonicalFunctionTool {
   name: string;
@@ -85,8 +86,10 @@ export type CanonicalInputItem =
     role: 'user' | 'assistant';
     content: CanonicalContentPart[];
     phase?: CanonicalResponseMessagePhase;
+    /** The model's reasoning for this assistant turn, as a chat model returned it. */
+    reasoning?: string;
   }
-  | { type: 'function_call'; id: string; name: string; arguments: Record<string, unknown> | string }
+  | { type: 'function_call'; id: string; name: string; arguments: Record<string, unknown> | string; reasoning?: string }
   | { type: 'function_call_output'; callId: string; output: string };
 
 /**
@@ -145,6 +148,10 @@ export interface CanonicalLlmResponse {
   output: CanonicalOutputItem[];
   stopReason: string | null;
   endTurn?: boolean;
+  /** Reasoning a chat model returned beside its answer (`reasoning_content`). */
+  reasoning?: string;
+  /** The model the reasoning's tag names: the one the request asked for, else the seller's label. */
+  reasoningModel?: string;
   usage: ReportedUsage;
 }
 
@@ -167,15 +174,14 @@ export function renderCanonicalRequestToOpenAIChatBody(
   options: {
     toolCallContent?: '' | null;
     groupAssistantToolCallsWithPreviousMessage?: boolean;
-    preserveResponsesAgentSemantics?: boolean;
+    /** Send an assistant turn's reasoning back as `reasoning_content`, as chat models that write it read it. */
+    reasoningContent?: boolean;
   } = {},
 ): Record<string, unknown> {
   const messages: unknown[] = [];
-  const instructions = options.preserveResponsesAgentSemantics && request.tools?.length
-    ? appendResponsesChatCompatibilityInstructions(request.instructions)
-    : request.instructions;
-  if (instructions !== undefined && instructions.length > 0) {
-    messages.push({ role: 'system', content: instructions });
+  const reasoningOf = (item: { reasoning?: string }): string | undefined => (options.reasoningContent ? item.reasoning : undefined);
+  if (request.instructions !== undefined && request.instructions.length > 0) {
+    messages.push({ role: 'system', content: request.instructions });
   }
 
   for (const item of request.input) {
@@ -186,15 +192,14 @@ export function renderCanonicalRequestToOpenAIChatBody(
         if (isAssistantMessageWithToolCalls(previous)) {
           const existingContent = typeof previous.content === 'string' ? previous.content : '';
           previous.content = existingContent.length > 0 && text.length > 0 ? `${existingContent}\n${text}` : existingContent || text;
+          addReasoningContent(previous, reasoningOf(item));
           continue;
         }
       }
       messages.push({
         role: item.role,
         content: renderCanonicalContentToOpenAIChat(item.content),
-        ...(options.preserveResponsesAgentSemantics && item.role === 'assistant' && item.phase
-          ? { name: item.phase }
-          : {}),
+        ...(item.role === 'assistant' && reasoningOf(item) ? { reasoning_content: item.reasoning } : {}),
       });
       continue;
     }
@@ -211,11 +216,13 @@ export function renderCanonicalRequestToOpenAIChatBody(
         && (options.groupAssistantToolCallsWithPreviousMessage || Array.isArray(previous.tool_calls))) {
         const toolCalls = Array.isArray(previous.tool_calls) ? previous.tool_calls : [];
         previous.tool_calls = [...toolCalls, toolCall];
+        addReasoningContent(previous, reasoningOf(item));
         continue;
       }
       messages.push({
         role: 'assistant',
         content: options.toolCallContent !== undefined ? options.toolCallContent : '',
+        ...(reasoningOf(item) ? { reasoning_content: item.reasoning } : {}),
         tool_calls: [toolCall],
       });
       continue;
@@ -234,11 +241,7 @@ export function renderCanonicalRequestToOpenAIChatBody(
   if (typeof request.temperature === 'number') body.temperature = request.temperature;
   if (typeof request.topP === 'number') body.top_p = request.topP;
   if (request.stop !== undefined) body.stop = request.stop;
-  const tools = renderCanonicalToolsToOpenAIChat(
-    options.preserveResponsesAgentSemantics && request.tools?.length
-      ? [...request.tools, { name: RESPONSES_FINAL_ANSWER_TOOL, parameters: { type: 'object', properties: {} } }]
-      : request.tools,
-  );
+  const tools = renderCanonicalToolsToOpenAIChat(request.tools);
   const toolChoice = renderCanonicalToolChoiceToOpenAIChat(request.toolChoice);
   assignToolsAndToolChoice(body, tools, toolChoice);
   if (request.metadata) body.metadata = request.metadata;
@@ -564,34 +567,29 @@ export function normalizeOpenAIResponsesRequestBody(body: Record<string, unknown
   }
 
   const input = body.input;
-  const normalizedInput = Array.isArray(input)
-    ? input.map((item) => {
-      if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
-      const msg = item as Record<string, unknown>;
-      if (msg.type !== 'message' || msg.role !== 'assistant' || !Array.isArray(msg.content)) return item;
-      const text = msg.content.map((part) => {
-        if (!part || typeof part !== 'object') return '';
-        const value = (part as Record<string, unknown>).text;
-        return typeof value === 'string' ? value : '';
-      }).join('');
-      if (!RESPONSES_FINAL_ANSWER_TOOL_RE.test(text)) return item;
-      return {
-        ...msg,
-        content: [{
-          type: 'output_text',
-          text: text.replace(RESPONSES_FINAL_ANSWER_TOOL_RE, '').trim(),
-          ...(Array.isArray(msg.annotations) ? { annotations: msg.annotations } : {}),
-        }],
-      };
-    })
-    : input;
   if (typeof input === 'string') {
     request.input.push({ type: 'message', role: 'user', content: [{ type: 'text', text: input }] });
-  } else if (Array.isArray(normalizedInput)) {
-    for (const item of normalizedInput) {
+  } else if (Array.isArray(input)) {
+    // A Responses client sends a reasoning item back before the message and calls it led to. When the
+    // requested model wrote it, its text rides on that assistant output; reasoning nothing follows is dropped.
+    let reasoning = '';
+    const takeReasoning = (): { reasoning?: string } => {
+      const taken = reasoning;
+      reasoning = '';
+      return taken.length > 0 ? { reasoning: taken } : {};
+    };
+    for (const item of input) {
       if (!item || typeof item !== 'object') continue;
       const msg = item as Record<string, unknown>;
       const type = typeof msg.type === 'string' ? msg.type : '';
+
+      if (type === 'reasoning') {
+        const text = responsesReasoningTextFor(msg, request.model);
+        if (text.length > 0) reasoning = reasoning.length > 0 ? `${reasoning}\n${text}` : text;
+        continue;
+      }
+      // Any other item without a role (a tool output, a built-in tool call) ends the reasoning's turn.
+      if (type !== 'function_call' && typeof msg.role !== 'string') reasoning = '';
 
       if (type === 'function_call_output') {
         request.input.push({
@@ -609,6 +607,7 @@ export function normalizeOpenAIResponsesRequestBody(body: Record<string, unknown
             ? msg.call_id : (typeof msg.id === 'string' ? msg.id : ''),
           name: typeof msg.name === 'string' ? msg.name : '',
           arguments: typeof msg.arguments === 'string' ? msg.arguments : JSON.stringify(msg.arguments ?? {}),
+          ...takeReasoning(),
         });
         continue;
       }
@@ -624,7 +623,8 @@ export function normalizeOpenAIResponsesRequestBody(body: Record<string, unknown
       // text — dropping them avoids injecting empty user messages mid-history.
       if (type !== 'message' && textFromCanonicalContent(content).length === 0) continue;
       const phase = role === 'assistant' ? normalizeResponseMessagePhase(msg.phase) : undefined;
-      request.input.push({ type: 'message', role, content, ...(phase ? { phase } : {}) });
+      const turnReasoning = takeReasoning();
+      request.input.push({ type: 'message', role, content, ...(phase ? { phase } : {}), ...(role === 'assistant' ? turnReasoning : {}) });
     }
   }
 
@@ -653,7 +653,7 @@ export function normalizeOpenAIResponsesRequestBody(body: Record<string, unknown
 
 export function normalizeOpenAIChatResponseBody(
   body: Record<string, unknown>,
-  fallbacks: { id: string; model: string },
+  fallbacks: { id: string; model: string; requestedModel?: string | null },
 ): CanonicalLlmResponse {
   const id = typeof body.id === 'string' && body.id.length > 0 ? body.id : fallbacks.id;
   const model = typeof body.model === 'string' && body.model.length > 0 ? body.model : fallbacks.model;
@@ -666,6 +666,7 @@ export function normalizeOpenAIChatResponseBody(
     : {};
 
   const text = toStringContent(message.content);
+  const reasoning = chatReasoningText(message);
   const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
   const output: CanonicalOutputItem[] = [];
   if (text.length > 0) {
@@ -677,7 +678,6 @@ export function normalizeOpenAIChatResponseBody(
     const fn = toolCall.function && typeof toolCall.function === 'object'
       ? toolCall.function as Record<string, unknown>
       : {};
-    if (fn.name === RESPONSES_FINAL_ANSWER_TOOL) continue;
     output.push({
       type: 'function_call',
       id: typeof toolCall.id === 'string' && toolCall.id.length > 0 ? toolCall.id : `call_${index + 1}`,
@@ -693,14 +693,8 @@ export function normalizeOpenAIChatResponseBody(
     model,
     output,
     stopReason,
-    endTurn: toolCalls.some((toolCall) => {
-      const fn = toolCall.function && typeof toolCall.function === 'object'
-        ? toolCall.function as Record<string, unknown>
-        : {};
-      return fn.name === RESPONSES_FINAL_ANSWER_TOOL;
-    })
-      ? true
-      : false,
+    endTurn: responsesEndTurn(output.filter((item) => item.type === 'function_call').length),
+    ...(reasoning.trim().length > 0 ? { reasoning, reasoningModel: fallbacks.requestedModel || model } : {}),
     usage,
   };
 }
@@ -829,6 +823,10 @@ export function renderCanonicalResponseToOpenAIResponsesBody(response: Canonical
   const text = textItems.map((item) => item.text).join('');
   const phase = textItems.find((item) => item.phase)?.phase;
 
+  if (response.reasoning) {
+    output.push(openAIResponsesReasoningItem(response.id, response.reasoning, response.reasoningModel ?? response.model));
+  }
+
   if (text.length > 0) {
     output.push({
       type: 'message',
@@ -942,14 +940,11 @@ function normalizeResponseMessagePhase(value: unknown): CanonicalResponseMessage
   return value === 'commentary' || value === 'final_answer' ? value : undefined;
 }
 
-function appendResponsesChatCompatibilityInstructions(instructions: string | undefined): string {
-  const compatibility = [
-    'Chat Completions compatibility requirement:',
-    '- Assistant messages named "commentary" are interim progress updates, not final answers.',
-    '- If more work remains, do not end with commentary alone; include the next tool call in the same response.',
-    '- Return text without a tool call only when it is the final answer to the user.',
-  ].join('\n');
-  return instructions ? `${instructions}\n\n${compatibility}` : compatibility;
+/** Chat Completions holds one reasoning per assistant message; reasoning for items grouped into it joins. */
+function addReasoningContent(message: Record<string, unknown>, reasoning: string | undefined): void {
+  if (!reasoning) return;
+  const existing = typeof message.reasoning_content === 'string' ? message.reasoning_content : '';
+  message.reasoning_content = existing.length > 0 ? `${existing}\n${reasoning}` : reasoning;
 }
 
 function isAssistantMessage(value: unknown): value is Record<string, unknown> {

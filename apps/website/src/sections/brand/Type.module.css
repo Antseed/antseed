@@ -1,27 +1,11 @@
-.rows { margin-top: 56px; }
-.row {
-  composes: dots from '../../components/dots.module.css';
-  --dots-top: 2px;
-  display: grid;
-  grid-template-columns: 280px minmax(0, 1fr);
-  gap: 32px;
-  padding: 40px 0;
-}
-.meta { display: flex; flex-direction: column; gap: 6px; }
-.name { font: 500 18px/26px var(--site-font); color: var(--site-text); }
-.use { font: 400 14px/20px var(--site-font); color: var(--site-text-body); }
-.detail { font: 400 13px/20px var(--site-font); color: var(--site-text-small); }
-.detail code { font-size: 12.5px; }
-.specimen { min-width: 0; align-self: center; }
-
-.text { max-width: 640px; font: 400 26px/36px var(--site-font); letter-spacing: -.01em; color: var(--site-text); }
-.ui { font: 500 20px/28px var(--site-font-ui); color: var(--site-ink); }
-.mono { font: 400 18px/28px var(--site-font-mono); color: var(--site-text); overflow-wrap: anywhere; }
+.face { display: flex; flex-direction: column; }
+.letters { display: grid; place-items: center; height: 440px; font-size: 220px; line-height: 1; color: var(--site-text); }
+.pixel { font-family: var(--site-font-pixel); font-variation-settings: 'ELSH' 40; letter-spacing: -9px; }
+.sans { font-family: var(--site-font); font-weight: 500; letter-spacing: -6px; }
+.external { font: 500 14px/20px var(--site-font); }
+.external a { color: var(--site-accent); }
+.external a:hover { color: var(--site-accent); text-decoration: underline; text-underline-offset: 3px; }
 
 @media (max-width: 899px) {
-  .row { grid-template-columns: 1fr; gap: 20px; padding: 32px 0; }
-}
-@media (max-width: 760px) {
-  .text { font-size: 20px; line-height: 28px; }
-  .use { text-wrap: pretty; }   /* never one short word on its last line */
+  .letters { height: 280px; font-size: 140px; }
 }

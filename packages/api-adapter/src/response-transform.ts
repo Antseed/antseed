@@ -15,11 +15,13 @@ export interface ServiceApiResponseTransformOptions {
   to: ServiceApiProtocol;
   streamRequested?: boolean;
   fallbackModel?: string | null;
+  /** A Responses client that keeps reasoning state gets a chat model's reasoning (see `includeReasoning` on transformRequest). */
+  includeReasoning?: boolean;
 }
 
 type ResponseNormalizer = (
   body: Record<string, unknown>,
-  fallbacks: { id: string; model: string },
+  fallbacks: { id: string; model: string; requestedModel?: string | null },
 ) => CanonicalLlmResponse;
 type ResponseRenderer = (response: CanonicalLlmResponse) => Record<string, unknown>;
 
@@ -52,10 +54,13 @@ export function transformResponse(
     return transformErrorResponse(response, parsed, options);
   }
 
-  const canonical = normalize(parsed, {
+  const normalized = normalize(parsed, {
     id: fallbackResponseId(response.requestId, options.to),
     model: options.fallbackModel ?? 'unknown',
+    requestedModel: options.fallbackModel ?? null,
   });
+  const { reasoning: _reasoning, reasoningModel: _reasoningModel, ...withoutReasoning } = normalized;
+  const canonical: CanonicalLlmResponse = options.includeReasoning === true ? normalized : withoutReasoning;
   const body = render(canonical);
 
   if (options.streamRequested) {
@@ -324,6 +329,12 @@ function buildOpenAIResponsesStream(body: Record<string, unknown>): Uint8Array {
         name: outputItem.name,
         arguments: argumentsText,
       });
+      pushEvent('response.output_item.done', { output_index: outputIndex, item: outputItem });
+      continue;
+    }
+
+    if (outputItem.type === 'reasoning') {
+      pushEvent('response.output_item.added', { output_index: outputIndex, item: { ...outputItem, content: [] } });
       pushEvent('response.output_item.done', { output_index: outputIndex, item: outputItem });
     }
   }
