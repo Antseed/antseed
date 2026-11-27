@@ -5,6 +5,7 @@ import {useInView} from '../../lib/useInView';
 import {usePageVisible} from '../../lib/usePageVisible';
 import {useSiteTheme} from '../../lib/useSiteTheme';
 import {useStill} from '../../lib/useStill';
+import {bindPointerAndCalls} from '../PrivacyDots/usePointerAndCalls';
 import {Colony, DAY, NIGHT} from './colony';
 import {DOT, centreX, centreY, fitGrid, grade, type Glow, type Grid, type Rect, type Tiles} from './meadow';
 import styles from './CtaDots.module.css';
@@ -47,23 +48,24 @@ function glowOf(host: HTMLElement, content: HTMLElement | null): Glow | null {
 
 /** The meadow at rest, drawn once per size and theme; at night the lit dots' glow is added over it. */
 function paintMeadow(ctx: CanvasRenderingContext2D, g: Grid, t: Tiles, dpr: number, night: boolean): void {
-  const tile = (c: CanvasRenderingContext2D, q: number, dx = 0) => {
-    c.beginPath(); c.arc(centreX(g, q % g.cols) - dx, centreY(g, Math.floor(q / g.cols)), DOT / 2, 0, Math.PI * 2); c.fill();
+  // k scales card px to the canvas's own px, for a context drawn untransformed
+  const tile = (c: CanvasRenderingContext2D, q: number, dx = 0, k = 1) => {
+    c.beginPath(); c.arc(centreX(g, q % g.cols) * k - dx, centreY(g, Math.floor(q / g.cols)) * k, (DOT / 2) * k, 0, Math.PI * 2); c.fill();
   };
   const colour = (q: number) => `rgb(${t.rgb[q * 3] | 0},${t.rgb[q * 3 + 1] | 0},${t.rgb[q * 3 + 2] | 0})`;
   for (let q = 0; q < t.alpha.length; q++) if (t.alpha[q]) { ctx.globalAlpha = t.alpha[q]; ctx.fillStyle = colour(q); tile(ctx, q); }
   ctx.globalAlpha = 1;
   if (!night || !LIT_GLOW) return;
-  // the glow: only the lit dots' blurred shadows (each dot drawn far off to the left, its shadow cast back in place), added on
+  // the glow: only the lit dots' blurred shadows (each dot drawn far off to the left, its shadow cast back in place), added on.
+  // Drawn untransformed, in the canvas's own px, as a shadow's offset and blur are: one unit for the dots, the offset and the blur
   const glow = document.createElement('canvas');
   glow.width = ctx.canvas.width; glow.height = ctx.canvas.height;
   const gc = glow.getContext('2d');
   if (!gc) return;
-  gc.setTransform(dpr, 0, 0, dpr, 0, 0);
-  const off = ctx.canvas.width / dpr + 100;
-  gc.shadowOffsetX = off * dpr;
+  const off = glow.width + 100 * dpr;
+  gc.shadowOffsetX = off;
   gc.shadowBlur = LIT_BLUR * 2 * dpr;
-  for (let q = 0; q < t.lit.length; q++) if (t.lit[q] > 0.04) { gc.globalAlpha = t.lit[q]; gc.shadowColor = colour(q); tile(gc, q, off); }
+  for (let q = 0; q < t.lit.length; q++) if (t.lit[q] > 0.04) { gc.globalAlpha = t.lit[q]; gc.shadowColor = colour(q); tile(gc, q, off, dpr); }
   ctx.save();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.globalCompositeOperation = 'lighter';
@@ -144,24 +146,13 @@ export default function CtaDots({contentRef}: Props): JSX.Element {
   // left to the page's scroll
   useEffect(() => {
     const el = host.current;
-    const card = el?.parentElement;
-    if (!el || !card) return;
-    const at = (e: MouseEvent) => { const b = el.getBoundingClientRect(); return {x: e.clientX - b.left, y: e.clientY - b.top}; };
-    const move = (e: PointerEvent) => { if (e.pointerType === 'mouse') colony.current?.setPointer(at(e), performance.now()); };
-    const leave = () => colony.current?.setPointer(null, performance.now());
-    const click = (e: MouseEvent) => {
-      if ((e.target as Element).closest('a, button, h2, p')) return;
-      const p = at(e);
-      colony.current?.call(p.x, p.y, performance.now());
-    };
-    card.addEventListener('pointermove', move, {passive: true});
-    card.addEventListener('pointerleave', leave);
-    card.addEventListener('click', click);
-    return () => {
-      card.removeEventListener('pointermove', move);
-      card.removeEventListener('pointerleave', leave);
-      card.removeEventListener('click', click);
-    };
+    if (!el) return;
+    return bindPointerAndCalls(el, {
+      ignore: 'a, button, h2, p',
+      move: (p, e) => { if (e.pointerType === 'mouse') colony.current?.setPointer(p, performance.now()); },
+      leave: () => colony.current?.setPointer(null, performance.now()),
+      call: (p) => colony.current?.call(p.x, p.y, performance.now()),
+    });
   }, []);
 
   useFrameLoop(ready && onScreen && visible && !still, (now) => {
