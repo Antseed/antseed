@@ -1503,6 +1503,42 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     }
   });
 
+  it('reports the fee of a channel the seller opened but never acknowledged, once it has been open past the grace', async () => {
+    const h = setup();
+    const openedAt = Date.now();
+    const spends: string[] = [];
+    h.buyer.setSpendListener((event) => { spends.push(event.amountUsdc); });
+    const handleAuthAck = h.buyer.handleAuthAck.bind(h.buyer);
+    vi.spyOn(h.buyer, 'handleAuthAck').mockImplementation(async (peerId, payload) => {
+      if (h.oneOffChannelIds().includes(payload.channelId)) return;
+      return handleAuthAck(peerId, payload);
+    });
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const pending = h.send(h.videoRequest('video-1'));
+    pending.catch(() => {});
+    await vi.waitFor(() => expect(h.oneOffChannelIds()).toHaveLength(1));
+    const channelId = h.oneOffChannelIds()[0]!;
+    await vi.waitFor(() => expect(h.chain.get(channelId)).toMatchObject({ deposit: FIRST_RESERVE, status: 1 }));
+    // The buyer's reads do not show the reserve until it has stopped waiting, so it never confirms the channel.
+    const record = h.chain.get(channelId)!;
+    h.chain.delete(channelId);
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    vi.setSystemTime(openedAt + 46_000);
+    await expect(pending).rejects.toThrow('did not open the video payment channel in time');
+    h.chain.set(channelId, record);
+
+    vi.setSystemTime(openedAt + 5 * 60_000);
+    await h.negotiator.reconcileChannelsWithChain();
+    expect(spends).toEqual([]);
+    // Open on-chain, holding the fee signature: reported while a gateway still counts it.
+    vi.setSystemTime(openedAt + 31 * 60_000);
+    expect((await h.negotiator.reconcileChannelsWithChain()).openOneOffs).toEqual([channelId]);
+    expect(spends).toEqual([SERIOUS_FEE.toString()]);
+    Object.assign(h.chain.get(channelId)!, { deposit: VIDEO_PRICE, settled: SERIOUS_FEE, status: 2 });
+    await h.negotiator.reconcileChannelsWithChain();
+    expect(spends).toEqual([SERIOUS_FEE.toString()]);
+  }, 20_000);
+
   it('reports nothing for a create whose send threw on a closed connection', async () => {
     const h = setup();
     const spends: string[] = [];
