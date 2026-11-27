@@ -418,7 +418,7 @@ describe('a Responses request asks for reasoning state', () => {
     expect(asks({ include: ['reasoning.encrypted_content'] }, 'openai-responses')).toBe(true);
   });
 
-  it('never for a Chat Completions client', () => {
+  it('not from `include` for a Chat Completions client', () => {
     const chat = transformRequest(
       { requestId: 'r', method: 'POST', path: '/v1/chat/completions', headers: {}, body: encoder.encode(JSON.stringify({ model: 'm', messages: [], include: ['reasoning.encrypted_content'] })) },
       { from: 'openai-chat-completions', to: 'openai-responses' },

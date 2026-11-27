@@ -143,7 +143,15 @@ selectTargetProtocolForRequest(requestProtocol, supportedProtocols): TargetProto
 transformRequest(request, { from, to, streamRequested }): ServiceApiRequestTransformResult | null
 ```
 
-`from` and `to` currently support `anthropic-messages`, `openai-chat-completions`, and `openai-responses`. Unsupported protocols return `null`. When `includeReasoning` (from `transformRequest`'s result: the request's `include` lists `reasoning.encrypted_content`) is passed to `transformResponse` or `createStreamingAdapter`, a chat model's reasoning reaches a Responses client as a `reasoning` item, first in `output`, tagged with the model the request asked for, or the seller's label when it named none (`encrypted_content: "antseed.reasoning.v1:<model>"`). When the client sends the item back in a request for that same model, ignoring case and a provider prefix, its text goes to the model as `reasoning_content`; for any other model it is dropped. `withoutAdapterReasoningItems(request)` removes these items from a Responses request bound for a Responses seller and changes nothing else.
+`from` and `to` currently support `anthropic-messages`, `openai-chat-completions`, and `openai-responses`. Unsupported protocols return `null`.
+
+`transformRequest`'s result carries `includeReasoning`: the client asked for the model's reasoning. That is a Responses request whose `include` lists `reasoning.encrypted_content`, a Chat Completions request that names a `reasoning_effort` other than `none`, or a Messages request with `thinking` `enabled` or `adaptive`. Pass it to `transformResponse` and `createStreamingAdapter`; without it, reasoning a seller wrote on its own is left out. With it:
+
+- A Responses client gets a chat model's reasoning as a `reasoning` item, first in `output`, tagged with the model the request asked for, or the seller's label when it named none (`encrypted_content: "antseed.reasoning.v1:<model>"`).
+- A Messages client gets it as a `thinking` block ahead of the answer, signed `antseed.reasoning.v1:<model>#<response id>`.
+- A Chat Completions client gets it as `reasoning_content`.
+
+When the client sends the item or the `thinking` block back in a request for that same model, ignoring case and a provider prefix, its text goes to the model as `reasoning_content`; for any other model it is dropped. `withoutAdapterReasoningItems(request)` removes these items from a Responses request bound for a Responses seller, and `withoutAdapterThinkingBlocks(request)` removes these `thinking` blocks from a Messages request bound for a Messages seller. Neither changes anything else.
 
 ### Responses
 

@@ -383,6 +383,63 @@ describe('a Messages response with thinking, translated to Chat Completions', ()
   });
 });
 
+describe('the reasoning a Chat Completions client gets from a Messages seller', () => {
+  const includeReasoningFor = (fields: Json): boolean => transformRequest({
+    requestId: 'r',
+    method: 'POST',
+    path: PATHS[CHAT]!,
+    headers: {},
+    body: encoder.encode(JSON.stringify({ model: 'example-model', messages: [{ role: 'user', content: 'Hi' }], ...fields })),
+  }, { from: CHAT, to: MESSAGES })!.includeReasoning;
+  const message: Json = {
+    id: 'msg_1',
+    type: 'message',
+    role: 'assistant',
+    model: 'example-model',
+    content: [
+      { type: 'thinking', thinking: 'Light scatters.', signature: 'sig' },
+      { type: 'text', text: 'Because of Rayleigh scattering.' },
+    ],
+    stop_reason: 'end_turn',
+    usage: { input_tokens: 10, output_tokens: 30 },
+  };
+  const frames = [
+    anthropicFrame({ type: 'message_start', message: { id: 'msg_1', model: 'example-model', usage: { input_tokens: 10, output_tokens: 1 } } }),
+    anthropicFrame({ type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '', signature: '' } }),
+    anthropicFrame({ type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'Light scatters.' } }),
+    anthropicFrame({ type: 'content_block_stop', index: 0 }),
+    anthropicFrame({ type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } }),
+    anthropicFrame({ type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'Because of Rayleigh scattering.' } }),
+    anthropicFrame({ type: 'content_block_stop', index: 1 }),
+    anthropicFrame({ type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 30 } }),
+    anthropicFrame({ type: 'message_stop' }),
+  ];
+  const answers = (includeReasoning: boolean): string[] => [
+    JSON.stringify(translateBody(MESSAGES, CHAT, message, false, { includeReasoning })),
+    translateBody(MESSAGES, CHAT, message, true, { includeReasoning }) as string,
+    JSON.stringify(translateStream(MESSAGES, CHAT, frames, { includeReasoning })),
+  ];
+
+  it('includes reasoning when the request names a reasoning_effort other than none', () => {
+    expect(includeReasoningFor({ reasoning_effort: 'high' })).toBe(true);
+    expect(includeReasoningFor({ reasoning_effort: 'low' })).toBe(true);
+    expect(includeReasoningFor({ reasoning_effort: 'none' })).toBe(false);
+    expect(includeReasoningFor({})).toBe(false);
+  });
+
+  it('gets the thoughts as reasoning_content, buffered, as a whole-reply stream and streamed', () => {
+    for (const answer of answers(true)) expect(answer).toContain('"reasoning_content":"Light scatters."');
+  });
+
+  it('gets no reasoning anywhere when it named no effort, buffered, as a whole-reply stream and streamed', () => {
+    for (const answer of answers(false)) {
+      expect(answer).not.toContain('reasoning');
+      expect(answer).not.toContain('Light scatters.');
+      expect(answer).toContain('Because of Rayleigh scattering.');
+    }
+  });
+});
+
 describe('thoughts a seller writes that the Messages client did not ask for', () => {
   const reply = (message: Json): Json => ({
     id: 'chatcmpl-1',
