@@ -103,6 +103,9 @@ actor LocalModel {
     /// The engine executable's SHA-256, hashed once per launch after its code signature check.
     private var engineDigest: String?
 
+    /// The stamps of the files the last successful load hashed and attested; nil until one succeeds.
+    private var attestedStamps: [String: FileStamp]?
+
     /// Download (first run), hash the pinned snapshot's files and start the engine on that snapshot.
     /// Cancelling it stops its download or engine and never starts one afterwards, so a superseded
     /// load can't stop the engine a newer one started.
@@ -119,6 +122,7 @@ actor LocalModel {
         guard FileManager.default.fileExists(atPath: snapshot.appendingPathComponent("config.json").path) else {
             throw EngineError.failed("The pinned revision is not in the model cache (\(snapshot.path))")
         }
+        attestedStamps = nil
         let engineSHA = try hashEngine()
         let (digest, stamps) = try Self.filesDigestAndStamps(of: snapshot)
         self.snapshot = snapshot
@@ -134,7 +138,25 @@ actor LocalModel {
             stop()
             throw EngineError.failed("The engine's witness names another executable than the one this app runs")
         }
+        attestedStamps = stamps
         return Checkpoint(model: modelId, sha256: digest, witness: witness, engine: engineSHA)
+    }
+
+    /// Start the engine again after it stopped, on the files the load attested: refused when any of
+    /// them changed since, before and after it starts, so a restarted engine never serves other
+    /// files under the attested digest.
+    private func restartEngine() async throws {
+        guard let stamps = attestedStamps, let snapshot else { throw EngineError.failed("Model not loaded") }
+        guard Self.unchanged(stamps, in: snapshot) else {
+            attestedStamps = nil
+            throw EngineError.failed("The model's files changed since they were attested; load the model again")
+        }
+        let witness = try await startEngine()
+        if witness?.filesChanged == true || !Self.unchanged(stamps, in: snapshot) {
+            stop()
+            attestedStamps = nil
+            throw EngineError.failed("The model's files changed while the engine loaded them")
+        }
     }
 
     /// The engine's SHA-256, after checking its code signature: once per launch, since the file is in the signed app.
@@ -262,7 +284,7 @@ actor LocalModel {
         temperature: Float,
         onOutput: @escaping @Sendable (Output) async -> Void
     ) async throws -> Result {
-        if server?.isRunning != true { try await startEngine() }
+        if server?.isRunning != true { try await restartEngine() }
 
         // Checked after tokenizing and before prefill, the costly part.
         let promptTokens = try await countTokens(chat)
@@ -468,7 +490,7 @@ actor LocalModel {
     /// The running engine's socket, starting the engine again if it stopped: for the owner's own
     /// requests (LocalAPI) and the dashboard, which go to the engine as they are.
     func engineSocket() async throws -> EngineSocket {
-        if server?.isRunning != true { try await startEngine() }
+        if server?.isRunning != true { try await restartEngine() }
         guard let socket else { throw EngineError.failed("Model not loaded") }
         return socket
     }

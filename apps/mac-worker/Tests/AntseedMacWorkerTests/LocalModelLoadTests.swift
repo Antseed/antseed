@@ -89,6 +89,26 @@ final class LocalModelLoadTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: ran.path), "the engine never ran")
     }
 
+    /// A restart serves only the files a load attested: with none attested, the engine never starts.
+    func testNeverRestartsTheEngineWithoutAttestedFiles() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let ran = directory.appendingPathComponent("ran")
+        let engine = directory.appendingPathComponent("tensorfold")
+        try "#!/bin/sh\ntouch \"\(ran.path)\"\nexec sleep 30\n".write(to: engine, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: engine.path)
+
+        let model = LocalModel(modelId: "antseed-test/never-cached@" + UUID().uuidString.lowercased(), engine: engine, directory: directory, engineRequirement: nil)
+        do {
+            _ = try await model.engineSocket()
+            XCTFail("expected a refusal")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("Model not loaded"), error.localizedDescription)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: ran.path), "the engine never ran")
+    }
+
     /// Agents compact their history when an error reads as a context overflow; OpenAI's wording is
     /// the one they all match.
     func testAPromptThatDoesNotFitReadsAsAContextOverflow() {
