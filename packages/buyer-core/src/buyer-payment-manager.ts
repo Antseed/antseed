@@ -219,6 +219,27 @@ interface PersistedVideoJob {
   entry: BuyerRequestBillingEntry;
 }
 
+/**
+ * What a one-off channel's row keeps in `oneOffVideoJob` from this release
+ * on: the accepted job, if one is still tracked, and how much of the channel
+ * was reported as spent, so a restarted buyer neither reports it again nor
+ * forgets it. A row without one was written by an older release, which
+ * reported the serious fee when the channel was confirmed.
+ */
+interface PersistedOneOffRecord {
+  v: 2;
+  reported: string;
+  job?: PersistedVideoJob;
+  /** The create was refused while the channel was still open; it waits for the close. */
+  refused?: true;
+}
+
+const ONE_OFF_RECORD_VERSION = 2;
+
+function serializeOneOffRecord(record: PersistedOneOffRecord): string {
+  return JSON.stringify(record, (_key, value) => typeof value === 'bigint' ? { $bigint: value.toString() } : value);
+}
+
 interface OneOffChannelState {
   sellerPeerId: string;
   requestId: string;
@@ -227,13 +248,16 @@ interface OneOffChannelState {
   cumulative: bigint;
   /**
    * What this channel has been reported as spent so far. The serious fee is
-   * reported once the seller has taken it: when the create is accepted, or
-   * when the chain shows it settled. A seller may hold the fee until its
-   * upstream accepts the create and release a refused one at 0.
+   * reported once the seller has taken it, or may have: when the create is
+   * accepted, when it was sent and got no answer, or when the chain shows it
+   * settled. A seller may hold the fee until its upstream accepts the create
+   * and release a refused one at 0. Stored on the row as well.
    */
   reported: bigint;
   confirmed: boolean;
   ackWaiters: Array<(confirmed: boolean) => void>;
+  /** Restored after a restart with its create's outcome unknown: reported in full at the next sweep. */
+  outcomeUnknown?: boolean;
 }
 
 interface PendingReserveAuthorization {
@@ -376,6 +400,8 @@ export class BuyerPaymentManager {
   private readonly _unsavedVideoDeliveries = new Map<string, string>();
   /** One-off channels keyed by channelId. Never a seller's session channel. */
   private readonly _oneOffChannels = new Map<string, OneOffChannelState>();
+  /** One-off channels whose create was refused while still open on-chain: kept until the close is seen, to report what it settled. */
+  private readonly _refusedOneOffs = new Map<string, OneOffChannelState>();
 
   /** Cached EIP-712 domain — static for the lifetime of this manager. */
   private readonly _channelsDomain: ReturnType<typeof makeChannelsDomain>;
@@ -427,17 +453,25 @@ export class BuyerPaymentManager {
       CHANNEL_KIND.ONE_OFF,
     )) {
       if (!channel.oneOffRequestId) continue;
-      this._oneOffChannels.set(channel.sessionId, {
+      const record = this._readOneOffRecord(channel);
+      const confirmed = channel.reserveAuthPending !== true;
+      const state: OneOffChannelState = {
         sellerPeerId: channel.peerId,
         requestId: channel.oneOffRequestId,
         price: BigInt(channel.reserveMaxAmount ?? '0'),
         cumulative: BigInt(channel.authMax || '0'),
-        // An accepted job was reported when it was accepted; any other channel is reported from its settlement.
-        reported: channel.oneOffVideoJob ? BigInt(channel.authMax || '0') : 0n,
-        confirmed: channel.reserveAuthPending !== true,
+        reported: record.reported,
+        confirmed,
         ackWaiters: [],
-      });
-      this._restoreVideoJob(channel);
+        // The create may have been sent and accepted before the restart; nothing will tell this buyer now.
+        ...(confirmed && !record.job && !record.refused ? { outcomeUnknown: true } : {}),
+      };
+      if (record.refused) {
+        this._refusedOneOffs.set(channel.sessionId, state);
+        continue;
+      }
+      this._oneOffChannels.set(channel.sessionId, state);
+      if (record.job) this._restoreVideoJob(channel, record.job);
     }
   }
 
@@ -1566,6 +1600,7 @@ export class BuyerPaymentManager {
     if (requestId && !answered && !this._requestLedgers.get(sellerPeerId)?.has(requestId)) {
       this.recordDeliveredResponse(sellerPeerId, requestId, { costUsdc: 0n, cutOff: true });
     }
+    if (requestId && !answered) this._oneOffCreateUnanswered(sellerPeerId, requestId);
     const remaining = (this._inFlightPaidRequests.get(sellerPeerId) ?? 0) - 1;
     if (remaining > 0) this._inFlightPaidRequests.set(sellerPeerId, remaining);
     else this._inFlightPaidRequests.delete(sellerPeerId);
@@ -2513,6 +2548,7 @@ export class BuyerPaymentManager {
     await this._commitAuthorization(this._newBuyerChannel(terms, openingReserve, openingReserveSig, metadata, {
       channelKind: CHANNEL_KIND.ONE_OFF,
       oneOffRequestId: requestId,
+      oneOffVideoJob: serializeOneOffRecord({ v: ONE_OFF_RECORD_VERSION, reported: '0' }),
       reserveMaxAmount: price.toString(),
       ...(reserveBatch ? {
         authMax: reserveBatch.cumulativeAmount,
@@ -2602,46 +2638,103 @@ export class BuyerPaymentManager {
 
   /**
    * Drop a one-off channel's in-memory state, failing anyone still waiting for
-   * its AuthAck. The store is not touched. With the amount the chain shows
-   * settled, whatever of it was not reported yet is reported as spent: a
-   * create that got no answer may still have been accepted and charged.
+   * its AuthAck. The store's status is not touched. With the amount the chain
+   * shows settled, whatever of it was not reported yet is reported as spent.
    */
   forgetOneOffChannel(channelId: string, settledOnChain?: bigint): void {
-    const state = this._oneOffChannels.get(channelId);
+    const state = this._oneOffChannels.get(channelId) ?? this._refusedOneOffs.get(channelId);
     if (!state) return;
     this._oneOffChannels.delete(channelId);
-    if (settledOnChain !== undefined) this._reportOneOffSpendUpTo(state, settledOnChain);
+    this._refusedOneOffs.delete(channelId);
+    if (settledOnChain !== undefined) this._reportOneOffSpendUpTo(channelId, state, settledOnChain);
     for (const waiter of state.ackWaiters.splice(0)) waiter(false);
   }
 
   /**
    * Retire the one-off channel of a create the seller did not accept. A seller
    * that holds the serious fee until its upstream accepts releases the channel
-   * at 0; an older one took the fee before the create was sent. The fee is
-   * reported as spent only as far as `readSettled` (the chain) shows it was
-   * taken, and in full when the chain cannot be read.
+   * at 0; an older one took the fee before the create was sent. Reports what
+   * `readChannel` (the chain) shows settled. Only a channel the read shows
+   * closed is retired: an open one stays active, and the reconcile reports
+   * whatever its close settles beyond this read. When the chain cannot be
+   * read, the fee is reported in full and the channel retired, as before.
    */
-  async retireRefusedOneOffChannel(channelId: string, readSettled: (() => Promise<bigint>) | null): Promise<void> {
+  async retireRefusedOneOffChannel(
+    channelId: string,
+    readChannel: (() => Promise<{ settled: bigint; status: number }>) | null,
+  ): Promise<void> {
     const state = this._oneOffChannels.get(channelId);
     if (!state) return;
-    this.retireOneOffChannel(channelId);
-    let settled = state.cumulative;
-    if (readSettled) {
+    // The create is over: the channel is no longer one a request can use.
+    this._oneOffChannels.delete(channelId);
+    for (const waiter of state.ackWaiters.splice(0)) waiter(false);
+    this._refusedOneOffs.set(channelId, state);
+    this._persistOneOffRecord(channelId, { refused: true });
+    let read: { settled: bigint; status: number } | null = null;
+    if (readChannel) {
       try {
-        settled = await readSettled();
+        read = await readChannel();
       } catch (err) {
-        debugWarn(`[BuyerPayment] Could not read what refused one-off channel ${channelId.slice(0, 18)}... settled; reporting its fee: ${err instanceof Error ? err.message : err}`);
+        debugWarn(`[BuyerPayment] Could not read refused one-off channel ${channelId.slice(0, 18)}...; reporting its fee: ${err instanceof Error ? err.message : err}`);
       }
     }
-    this._reportOneOffSpendUpTo(state, settled);
+    if (!this._refusedOneOffs.has(channelId)) {
+      // A reconcile or sweep ended it during the read and reported its close.
+      return;
+    }
+    this._reportOneOffSpendUpTo(channelId, state, read ? read.settled : state.cumulative);
+    if (read && !(read.status > 1)) return;
+    this._refusedOneOffs.delete(channelId);
+    this._channelStore.updateChannelStatus(channelId, CHANNEL_STATUS.SETTLED, read?.settled.toString());
   }
 
-  /** Report a one-off channel's spend up to `amount` (never past what the buyer signed), once. */
-  private _reportOneOffSpendUpTo(state: OneOffChannelState, amount: bigint): void {
+  /**
+   * After a reconcile: report and drop every one-off channel whose row another
+   * process (`antseed buyer status`, say) retired meanwhile, with what the row
+   * says it settled; and report in full each restored channel whose create's
+   * outcome nothing can tell this buyer any more.
+   */
+  sweepOneOffChannels(): void {
+    for (const map of [this._oneOffChannels, this._refusedOneOffs]) {
+      for (const [channelId, state] of [...map]) {
+        const row = this._channelStore.getChannel(channelId);
+        if (row && row.status !== CHANNEL_STATUS.ACTIVE) {
+          this.forgetOneOffChannel(channelId, row.settledAmount != null ? BigInt(row.settledAmount) : undefined);
+          continue;
+        }
+        if (state.outcomeUnknown) {
+          state.outcomeUnknown = false;
+          this._reportOneOffSpendUpTo(channelId, state, state.cumulative);
+        }
+      }
+    }
+  }
+
+  /**
+   * A create sent on its one-off channel ended with no answer (aborted, timed
+   * out, connection lost). The seller may still have had it accepted and
+   * taken the serious fee, and no later answer will say so: report the fee
+   * now, while the request can still be attributed.
+   */
+  private _oneOffCreateUnanswered(sellerPeerId: string, requestId: string): void {
+    const channelId = this.getOneOffChannelForRequest(sellerPeerId, requestId);
+    const state = channelId ? this._oneOffChannels.get(channelId) : undefined;
+    if (!channelId || !state?.confirmed) return;
+    this._reportOneOffSpendUpTo(channelId, state, state.cumulative);
+  }
+
+  /**
+   * Report a one-off channel's spend up to `amount` (never past what the buyer
+   * signed), once. Stored first, so a restart neither reports it again nor
+   * misses it.
+   */
+  private _reportOneOffSpendUpTo(channelId: string, state: OneOffChannelState, amount: bigint): void {
     const target = amount < state.cumulative ? amount : state.cumulative;
     if (target <= state.reported) return;
-    this._reportUnitSpend(state.sellerPeerId, state.requestId, target - state.reported);
+    const delta = target - state.reported;
     state.reported = target;
+    this._persistOneOffRecord(channelId, {});
+    this._reportUnitSpend(state.sellerPeerId, state.requestId, delta);
   }
 
   /**
@@ -2737,9 +2830,11 @@ export class BuyerPaymentManager {
     });
     const spendingAuth = await this._signAndCommitSpendingAuth(channel, state.price, metadata);
     if (typeof spendingAuth === 'string') return;
-    if (state.price > state.reported) this._reportUnitSpend(sellerPeerId, requestId, state.price - state.reported);
+    const delivered = state.price - state.reported;
     state.cumulative = state.price;
     state.reported = state.price;
+    this._persistOneOffRecord(channelId, {});
+    if (delivered > 0n) this._reportUnitSpend(sellerPeerId, requestId, delivered);
     paymentMux.sendSpendingAuth(spendingAuth);
     this.clearRequestBilling(requestId);
     // The seller closes the channel on receiving this; it pays for nothing else.
@@ -2918,7 +3013,7 @@ export class BuyerPaymentManager {
       this._persistVideoJob(oneOffChannelId, { protocol, jobId, createdAtMs: now, entry });
       // The seller accepted the create, so it keeps the serious fee whatever happens to the job.
       const state = this._oneOffChannels.get(oneOffChannelId);
-      if (state) this._reportOneOffSpendUpTo(state, state.cumulative);
+      if (state) this._reportOneOffSpendUpTo(oneOffChannelId, state, state.cumulative);
     }
     while (this._videoJobs.size > MAX_VIDEO_JOBS) {
       const oldest = this._videoJobs.keys().next().value;
@@ -2996,36 +3091,70 @@ export class BuyerPaymentManager {
   /** Store (or clear) the undelivered job on its one-off channel row. */
   /** Whether the job is stored as given (true too when its channel is gone: nothing can restore the job). */
   private _persistVideoJob(channelId: string, job: PersistedVideoJob | null): boolean {
+    return this._persistOneOffRecord(channelId, { job });
+  }
+
+  /**
+   * Rewrite a one-off row's record with `change`, keeping the rest. What was
+   * reported comes from the channel's state when it has one. True when stored
+   * (or the row is gone).
+   */
+  private _persistOneOffRecord(channelId: string, change: { job?: PersistedVideoJob | null; refused?: true }): boolean {
     try {
       const channel = this._channelStore.getChannel(channelId);
       if (!channel) return true;
-      this._channelStore.upsertChannel({
-        ...channel,
-        oneOffVideoJob: job ? JSON.stringify(job, (_key, value) => typeof value === 'bigint' ? { $bigint: value.toString() } : value) : null,
-        updatedAt: Date.now(),
-      });
+      const current = this._readOneOffRecord(channel);
+      const state = this._oneOffChannels.get(channelId) ?? this._refusedOneOffs.get(channelId);
+      const job = change.job !== undefined ? change.job : current.job;
+      const refused = change.refused ?? (current.refused || undefined);
+      const record: PersistedOneOffRecord = {
+        v: ONE_OFF_RECORD_VERSION,
+        reported: (state?.reported ?? current.reported).toString(),
+        ...(job ? { job } : {}),
+        ...(refused ? { refused } : {}),
+      };
+      this._channelStore.upsertChannel({ ...channel, oneOffVideoJob: serializeOneOffRecord(record), updatedAt: Date.now() });
       return true;
     } catch (err) {
-      debugWarn(`[BuyerPayment] Failed to persist video job for ${channelId.slice(0, 18)}...: ${err instanceof Error ? err.message : String(err)}`);
+      debugWarn(`[BuyerPayment] Failed to persist one-off record for ${channelId.slice(0, 18)}...: ${err instanceof Error ? err.message : String(err)}`);
       return false;
     }
   }
 
-  private _restoreVideoJob(channel: StoredChannel): void {
-    if (!channel.oneOffVideoJob) return;
+  /**
+   * A one-off row's record. An older release stored only the accepted job
+   * there (or nothing), and reported the serious fee once the channel was
+   * confirmed, so such a row counts as reported up to what it signed.
+   */
+  private _readOneOffRecord(channel: StoredChannel): { reported: bigint; job: PersistedVideoJob | null; refused: boolean } {
+    const signed = BigInt(channel.authMax || '0');
+    const legacyReported = channel.reserveAuthPending === true ? 0n : signed;
+    if (!channel.oneOffVideoJob) return { reported: legacyReported, job: null, refused: false };
     try {
-      const job = JSON.parse(channel.oneOffVideoJob, (_key, value) => (
+      const parsed = JSON.parse(channel.oneOffVideoJob, (_key, value) => (
         value && typeof value === 'object' && typeof value.$bigint === 'string' ? BigInt(value.$bigint) : value
-      )) as PersistedVideoJob;
-      if (Date.now() - job.createdAtMs > VIDEO_JOB_TTL_MS) return;
-      this._videoJobs.set(videoJobKey(channel.peerId, job.protocol, job.jobId), {
-        ...job.entry,
-        createdAtMs: job.createdAtMs,
-        oneOffChannelId: channel.sessionId,
-      });
+      )) as Partial<PersistedOneOffRecord> & Partial<PersistedVideoJob>;
+      if (parsed.v === ONE_OFF_RECORD_VERSION) {
+        return {
+          reported: typeof parsed.reported === 'string' ? BigInt(parsed.reported) : 0n,
+          job: parsed.job ?? null,
+          refused: parsed.refused === true,
+        };
+      }
+      return { reported: signed, job: parsed as PersistedVideoJob, refused: false };
     } catch (err) {
-      debugWarn(`[BuyerPayment] Ignoring unreadable video job on ${channel.sessionId.slice(0, 18)}...: ${err instanceof Error ? err.message : String(err)}`);
+      debugWarn(`[BuyerPayment] Ignoring unreadable one-off record on ${channel.sessionId.slice(0, 18)}...: ${err instanceof Error ? err.message : String(err)}`);
+      return { reported: legacyReported, job: null, refused: false };
     }
+  }
+
+  private _restoreVideoJob(channel: StoredChannel, job: PersistedVideoJob): void {
+    if (Date.now() - job.createdAtMs > VIDEO_JOB_TTL_MS) return;
+    this._videoJobs.set(videoJobKey(channel.peerId, job.protocol, job.jobId), {
+      ...job.entry,
+      createdAtMs: job.createdAtMs,
+      oneOffChannelId: channel.sessionId,
+    });
   }
 
   clearRequestBilling(requestId: string): void {

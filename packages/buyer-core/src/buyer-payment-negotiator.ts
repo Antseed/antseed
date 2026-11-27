@@ -89,14 +89,6 @@ const ONE_OFF_ACK_TIMEOUT_MS = 45_000;
  * AuthAck gets the same one-off 402 back.
  */
 const ONE_OFF_CHAIN_CONFIRM_GRACE_MS = 15_000;
-/**
- * How long the opening reserve alone must be visible on-chain, with no AuthAck,
- * before the channel counts as confirmed. A seller that tops up only after its
- * upstream accepts the create never shows the full reserve before the create
- * is sent. Longer than the full-reserve grace: an older seller acknowledges
- * only after its topUp, and confirming before it would send the create early.
- */
-const ONE_OFF_OPENING_CONFIRM_GRACE_MS = 30_000;
 /** Upper bound on stored sessions for one seller checked against the chain in a single pass. */
 const MAX_STALE_SESSION_CHECKS = 5;
 /**
@@ -223,6 +215,8 @@ export class BuyerPaymentNegotiator {
   private _firstSignCapValue: bigint | null = null;
   /** Serializes one-off channel openings per request so a request never opens two channels. */
   private readonly _oneOffLocks = new Map<string, Promise<unknown>>();
+  /** A refused create's chain read, by request: the answer waits for it, so its fee is reported before the caller sees the refusal. */
+  private readonly _oneOffRefusals = new Map<string, Promise<void>>();
   /** Peers that have sent their first request after session establishment. */
   private readonly _firstRequestSent = new Set<string>();
   /** Per-peer last response cost, raw content, and latency from the seller. */
@@ -560,16 +554,16 @@ export class BuyerPaymentNegotiator {
   /**
    * Wait until the seller acknowledges the one-off channel. The chain is read
    * between waits, so a lost AuthAck still confirms once the full reserve has
-   * been visible for ONE_OFF_CHAIN_CONFIRM_GRACE_MS, or the opening reserve
-   * alone for ONE_OFF_OPENING_CONFIRM_GRACE_MS (a seller that tops up only
-   * once its upstream accepts the create never shows more before it). A
+   * been visible for ONE_OFF_CHAIN_CONFIRM_GRACE_MS, or, at the timeout, with
+   * the opening reserve alone: a seller that tops up only once its upstream
+   * accepts the create never shows more before it. Only at the timeout, so an
+   * older seller, which acknowledges after its topUp, keeps the whole wait. A
    * channel the seller already closed (for example after a reverted topUp)
    * fails fast instead of waiting out the timeout.
    */
   private async _waitForOneOffChannel(channelId: string, price: bigint, openingReserve: bigint): Promise<void> {
     const deadline = Date.now() + ONE_OFF_ACK_TIMEOUT_MS;
     let fundedSince: number | null = null;
-    let openedSince: number | null = null;
     for (;;) {
       if (await this._bpm.waitForOneOffAck(channelId, ONE_OFF_ACK_POLL_MS)) return;
       let channel;
@@ -588,20 +582,18 @@ export class BuyerPaymentNegotiator {
         debugLog(`[BuyerNegotiator] One-off channel ${channelId.slice(0, 18)}... confirmed on-chain: deposit=${channel.deposit}`);
         return;
       }
-      if (openingReserve < price && channel.deposit >= openingReserve && (channel.status == null || channel.status === 1)) {
-        const now = Date.now();
-        openedSince ??= now;
-        if (now - openedSince >= ONE_OFF_OPENING_CONFIRM_GRACE_MS && now < deadline) {
-          await this._bpm.confirmOneOffChannelOnChain(channelId, channel.deposit, openingReserve);
-          debugLog(`[BuyerNegotiator] One-off channel ${channelId.slice(0, 18)}... confirmed on-chain at its opening reserve: deposit=${channel.deposit}`);
-          return;
-        }
-      }
       if (channel.status != null && channel.status > 1) {
         this._bpm.retireOneOffChannel(channelId, CHANNEL_STATUS.SETTLED, channel.settled);
         throw buyerFault('Seller closed the video payment channel before the request was sent', 'buyer-session-state');
       }
       if (Date.now() >= deadline) {
+        if (openingReserve < price && channel.deposit >= openingReserve && (channel.status == null || channel.status === 1)) {
+          await this._bpm.confirmOneOffChannelOnChain(channelId, channel.deposit, openingReserve);
+          if (this._bpm.isOneOffChannelConfirmed(channelId)) {
+            debugLog(`[BuyerNegotiator] One-off channel ${channelId.slice(0, 18)}... confirmed on-chain at its opening reserve: deposit=${channel.deposit}`);
+            return;
+          }
+        }
         throw buyerFault(
           `Seller did not open the video payment channel in time (deposit=${formatUsdc(channel.deposit)} USDC, needed ${formatUsdc(price)} USDC)`,
           'buyer-reserve-topup-timeout',
@@ -1212,10 +1204,17 @@ export class BuyerPaymentNegotiator {
           const oneOffChannelId = this._bpm.getOneOffChannelForRequest(peer.peerId, requestId);
           const channels = this._channelsClient;
           if (oneOffChannelId) {
-            void this._bpm.retireRefusedOneOffChannel(
+            const retiring = this._bpm.retireRefusedOneOffChannel(
               oneOffChannelId,
-              channels ? async () => (await channels.getSession(oneOffChannelId)).settled : null,
+              channels ? async () => {
+                const session = await channels.getSession(oneOffChannelId);
+                return { settled: session.settled, status: Number(session.status ?? 0) };
+              } : null,
             ).catch((err) => debugWarn(`[BuyerNegotiator] Could not retire refused one-off channel: ${err instanceof Error ? err.message : err}`));
+            this._oneOffRefusals.set(requestId, retiring);
+            void retiring.finally(() => {
+              if (this._oneOffRefusals.get(requestId) === retiring) this._oneOffRefusals.delete(requestId);
+            });
           }
         }
       }
@@ -1447,6 +1446,11 @@ export class BuyerPaymentNegotiator {
     this._lastResponseCost.delete(peerId);
   }
 
+  /** Resolves once a refused video create's fee, if any, has been reported. */
+  async oneOffRefusalReported(requestId: string): Promise<void> {
+    await this._oneOffRefusals.get(requestId);
+  }
+
   /**
    * Retire this buyer's stored channels the chain shows can never move money
    * again, for every seller. A seller with payment work in flight (a 402, a
@@ -1486,6 +1490,8 @@ export class BuyerPaymentNegotiator {
         ),
       },
     });
+    // Rows another process retired, and restored creates whose outcome is unknown.
+    this._bpm.sweepOneOffChannels();
     if (result.readError !== undefined) this._onChainReadFailure?.();
     return result;
   }
