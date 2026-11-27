@@ -5757,12 +5757,14 @@ export class BuyerProxy {
           to: strategy.from,
           streamRequested: transformed.streamRequested,
           fallbackModel: transformed.requestedModel,
+          includeThinking: transformed.includeThinking,
         }) ?? response
       if (transformed.streamRequested) {
         streamResponseAdapter = createStreamingAdapter({
           from: strategy.to,
           to: strategy.from,
           fallbackModel: transformed.requestedModel,
+          includeThinking: transformed.includeThinking,
         })
         if (!streamResponseAdapter) {
           res.writeHead(502, { 'content-type': 'text/plain' })

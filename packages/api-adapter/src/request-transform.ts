@@ -19,6 +19,12 @@ export interface ServiceApiRequestTransformResult {
   request: SerializedHttpRequest;
   streamRequested: boolean;
   requestedModel: string | null;
+  /**
+   * Whether the client asked for thoughts: a Messages request with `thinking` `enabled` or `adaptive`.
+   * Pass it as `includeThinking` to `transformResponse` and `createStreamingAdapter`, so a Messages
+   * client that did not ask is not sent a `thinking` block a seller wrote on its own.
+   */
+  includeThinking: boolean;
 }
 
 export interface ServiceApiRequestTransformOptions {
@@ -80,6 +86,7 @@ export function transformRequest(
 
   const normalized = normalize(body);
   const streamRequested = options.streamRequested ?? normalized.stream;
+  const includeThinking = options.from === 'anthropic-messages' && requestsThinking(body);
   if (options.from === options.to) {
     const repairedBody = options.from === 'openai-responses'
       ? repairLegacyResponsesItemIds(body)
@@ -88,6 +95,7 @@ export function transformRequest(
       request: repairedBody ? { ...request, body: encodeJson(repairedBody) } : request,
       streamRequested,
       requestedModel: normalized.model,
+      includeThinking,
     };
   }
 
@@ -112,7 +120,16 @@ export function transformRequest(
     },
     streamRequested,
     requestedModel: normalized.model,
+    includeThinking,
   };
+}
+
+/** Whether a Messages request switches thinking on, with a budget (`enabled`) or without one (`adaptive`). */
+function requestsThinking(body: Record<string, unknown>): boolean {
+  const thinking = body.thinking;
+  if (!thinking || typeof thinking !== 'object' || Array.isArray(thinking)) return false;
+  const type = (thinking as Record<string, unknown>).type;
+  return type === 'enabled' || type === 'adaptive';
 }
 
 /**

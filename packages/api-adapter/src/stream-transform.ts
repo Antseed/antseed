@@ -19,6 +19,12 @@ export interface ServiceApiStreamTransformOptions {
   from: ServiceApiProtocol;
   to: ServiceApiProtocol;
   fallbackModel?: string | null;
+  /**
+   * A Messages client gets a `thinking` block only when it asked for thoughts (`includeThinking` of
+   * `transformRequest`'s result). Without it, thoughts a seller wrote on its own are left out, as they
+   * were before. Other client protocols are not affected.
+   */
+  includeThinking?: boolean;
 }
 
 interface CanonicalStreamToolCall {
@@ -91,12 +97,13 @@ export function createStreamingAdapter(
   };
   const normalizer = createNormalizer(internals);
   const renderer = createRenderer(internals);
+  const dropsThoughts = options.to === 'anthropic-messages' && options.includeThinking !== true;
 
   return {
     adaptStart: makeStreamingStartResponse,
     adaptChunk(chunk) {
       const events = normalizer.feed(chunk);
-      return renderer.render(events, chunk);
+      return renderer.render(dropsThoughts ? events.filter((event) => event.type !== 'reasoning_delta') : events, chunk);
     },
   };
 }

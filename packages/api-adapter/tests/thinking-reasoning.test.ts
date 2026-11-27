@@ -40,21 +40,27 @@ function sellerBody(to: ServiceApiProtocol, fields: Json, stream = false): Json 
 }
 
 /** A non-streamed seller reply in `from`, as the client of `to` receives it. */
-function translateBody(from: ServiceApiProtocol, to: ServiceApiProtocol, body: Json, streamRequested = false): Json | string {
+function translateBody(
+  from: ServiceApiProtocol,
+  to: ServiceApiProtocol,
+  body: Json,
+  streamRequested = false,
+  includeThinking = true,
+): Json | string {
   const result = transformResponse({
     requestId: 'req-thinking',
     statusCode: 200,
     headers: { 'content-type': 'application/json' },
     body: encoder.encode(JSON.stringify(body)),
-  }, { from, to, streamRequested, fallbackModel: 'example-model' });
+  }, { from, to, streamRequested, fallbackModel: 'example-model', includeThinking });
   expect(result).not.toBeNull();
   const text = decoder.decode(result!.body);
   return streamRequested ? text : JSON.parse(text) as Json;
 }
 
 /** A seller's stream, one frame per chunk, as the client of `to` receives it. */
-function translateStream(from: ServiceApiProtocol, to: ServiceApiProtocol, frames: string[]): Json[] {
-  const adapter = createStreamingAdapter({ from, to, fallbackModel: 'example-model' })!;
+function translateStream(from: ServiceApiProtocol, to: ServiceApiProtocol, frames: string[], includeThinking = true): Json[] {
+  const adapter = createStreamingAdapter({ from, to, fallbackModel: 'example-model', includeThinking })!;
   expect(adapter).not.toBeNull();
   let sse = '';
   for (const frame of frames) {
@@ -336,5 +342,62 @@ describe('a Messages response with thinking, translated to Chat Completions', ()
       anthropicFrame({ type: 'message_stop' }),
     ]);
     expect(JSON.stringify(events)).not.toContain('reasoning');
+  });
+});
+
+describe('thoughts a seller writes that the Messages client did not ask for', () => {
+  const reply = (message: Json): Json => ({
+    id: 'chatcmpl-1',
+    model: 'example-model',
+    choices: [{ index: 0, message: { role: 'assistant', content: 'Hi', ...message }, finish_reason: 'stop' }],
+    usage: { prompt_tokens: 10, completion_tokens: 30, total_tokens: 40 },
+  });
+
+  it('reports includeThinking for enabled and adaptive thinking only', () => {
+    const flag = (thinking?: Json): boolean => {
+      const result = transformRequest({
+        requestId: 'r',
+        method: 'POST',
+        path: PATHS[MESSAGES]!,
+        headers: {},
+        body: encoder.encode(JSON.stringify({ model: 'm', max_tokens: 10, messages: [{ role: 'user', content: 'Hi' }], ...(thinking ? { thinking } : {}) })),
+      }, { from: MESSAGES, to: CHAT });
+      return result!.includeThinking;
+    };
+    expect(flag({ type: 'enabled', budget_tokens: 2000 })).toBe(true);
+    expect(flag({ type: 'adaptive' })).toBe(true);
+    expect(flag({ type: 'disabled' })).toBe(false);
+    expect(flag()).toBe(false);
+  });
+
+  it('leaves them out of a non-streamed Messages response, as before', () => {
+    const body = translateBody(CHAT, MESSAGES, reply({ reasoning_content: 'Own thoughts.' }), false, false) as Json;
+    expect(body.content).toEqual([{ type: 'text', text: 'Hi' }]);
+  });
+
+  it('leaves them out of a Messages stream built from a whole response, as before', () => {
+    const sse = translateBody(CHAT, MESSAGES, reply({ reasoning_content: 'Own thoughts.' }), true, false) as string;
+    expect(blockLog(sseEvents(sse))).toEqual(['start 0 text', 'text_delta 0 Hi', 'stop 0']);
+  });
+
+  it('leaves them out of a Messages stream, and the text keeps index 0', () => {
+    const events = translateStream(CHAT, MESSAGES, [
+      chatFrame({ reasoning_content: 'Own thoughts.' }),
+      chatFrame({ content: 'Hi' }),
+      chatFrame({}, 'stop'),
+      CHAT_DONE,
+    ], false);
+    expect(blockLog(events)).toEqual(['start 0 text', 'text_delta 0 Hi', 'stop 0']);
+    expect(JSON.stringify(events)).not.toContain('thinking');
+  });
+
+  it('still gives a Chat client the thoughts of a native Messages seller', () => {
+    const events = translateStream(MESSAGES, CHAT, [
+      anthropicFrame({ type: 'message_start', message: { id: 'msg_1', model: 'example-model', usage: { input_tokens: 10 } } }),
+      anthropicFrame({ type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } }),
+      anthropicFrame({ type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'Own thoughts.' } }),
+      anthropicFrame({ type: 'message_stop' }),
+    ], false);
+    expect(JSON.stringify(events)).toContain('reasoning_content');
   });
 });

@@ -15,6 +15,12 @@ export interface ServiceApiResponseTransformOptions {
   to: ServiceApiProtocol;
   streamRequested?: boolean;
   fallbackModel?: string | null;
+  /**
+   * A Messages client gets a `thinking` block only when it asked for thoughts (`includeThinking` of
+   * `transformRequest`'s result). Without it, thoughts a seller wrote on its own are left out, as they
+   * were before. Other client protocols are not affected.
+   */
+  includeThinking?: boolean;
 }
 
 type ResponseNormalizer = (
@@ -52,10 +58,13 @@ export function transformResponse(
     return transformErrorResponse(response, parsed, options);
   }
 
-  const canonical = normalize(parsed, {
+  const normalized = normalize(parsed, {
     id: fallbackResponseId(response.requestId, options.to),
     model: options.fallbackModel ?? 'unknown',
   });
+  const canonical: CanonicalLlmResponse = options.to === 'anthropic-messages' && options.includeThinking !== true
+    ? { ...normalized, output: normalized.output.filter((item) => item.type !== 'reasoning') }
+    : normalized;
   const body = render(canonical);
 
   if (options.streamRequested) {
