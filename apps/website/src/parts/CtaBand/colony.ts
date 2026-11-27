@@ -124,16 +124,19 @@ export class Colony {
   draw(ctx: CanvasRenderingContext2D, now: number, look: Look): void {
     const {g} = this;
     ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height); ctx.restore();
-    const paint = (q: number, [r, gr, b]: Rgb, a: number) => {
+    const rgb = ([r, gr, b]: Rgb) => `rgb(${r},${gr},${b})`;
+    // one colour per layer, set before it: the cells only change opacity
+    const paint = (q: number, a: number) => {
       ctx.globalAlpha = Math.min(1, a);
-      ctx.fillStyle = `rgb(${r},${gr},${b})`;
       ctx.beginPath(); ctx.arc(centreX(g, q % g.cols), centreY(g, Math.floor(q / g.cols)), DOT / 2, 0, Math.PI * 2); ctx.fill();
     };
+    ctx.fillStyle = rgb(look.trail);
     for (let q = 0; q < this.trail.length; q++) {
       if (!this.on[q]) continue;
       const tr = this.trail[q] * TRAIL * this.veil[q];
-      if (tr > 0.03) paint(q, look.trail, tr);
+      if (tr > 0.03) paint(q, tr);
     }
+    ctx.fillStyle = rgb(look.ring);
     for (const r of this.rings) {
       const age = now - r.start;
       const speed = Math.max(RING_MIN_SPEED, Math.min(RING_SPEED, Math.hypot(g.cols, g.rows) / RING_CROSSING));
@@ -145,7 +148,7 @@ export class Colony {
         const i = q % g.cols;
         const j = Math.floor(q / g.cols);
         const band = (Math.hypot(i - r.i, j - r.j) - radius) / RING_WIDTH;
-        if (Math.abs(band) < 2) paint(q, look.ring, fade * Math.exp(-band * band) * this.clear(i, j));   // none behind the words
+        if (Math.abs(band) < 2) paint(q, fade * Math.exp(-band * band) * this.clear(i, j));   // none behind the words
       }
     }
     ctx.fillStyle = look.ant;
