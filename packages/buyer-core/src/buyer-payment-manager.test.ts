@@ -22,9 +22,9 @@ function memoryChannelStore(): BuyerChannelStore {
   } as unknown as BuyerChannelStore;
 }
 
-async function sessionSignedUpTo(cumulative: bigint) {
+function newPaymentManager(): BuyerPaymentManager {
   const wallet = Wallet.createRandom();
-  const manager = new BuyerPaymentManager(
+  return new BuyerPaymentManager(
     { peerId: toPeerId(wallet.address.slice(2).toLowerCase()), wallet },
     {
       rpcUrl: 'http://127.0.0.1:8545',
@@ -40,6 +40,10 @@ async function sessionSignedUpTo(cumulative: bigint) {
     },
     memoryChannelStore(),
   );
+}
+
+async function sessionSignedUpTo(cumulative: bigint) {
+  const manager = newPaymentManager();
   const sent: SpendingAuthPayload[] = [];
   const mux = {
     sendSpendingAuth: (payload: SpendingAuthPayload) => { sent.push(payload); },
@@ -92,23 +96,7 @@ describe('BuyerPaymentManager 402 catch-up', () => {
 
 describe('BuyerPaymentManager opening reserve', () => {
   it('reports the opening reserve as pending until the seller acknowledges it', async () => {
-    const wallet = Wallet.createRandom();
-    const manager = new BuyerPaymentManager(
-      { peerId: toPeerId(wallet.address.slice(2).toLowerCase()), wallet },
-      {
-        rpcUrl: 'http://127.0.0.1:8545',
-        depositsContractAddress: `0x${'dd'.repeat(20)}`,
-        channelsContractAddress: `0x${'cc'.repeat(20)}`,
-        usdcAddress: `0x${'ee'.repeat(20)}`,
-        identityRegistryAddress: `0x${'ff'.repeat(20)}`,
-        chainId: 31337,
-        defaultAuthDurationSecs: 3600,
-        maxPerRequestUsdc: MAX_PER_REQUEST,
-        maxReserveAmountUsdc: 10_000_000n,
-        dataDir: '/nonexistent',
-      },
-      memoryChannelStore(),
-    );
+    const manager = newPaymentManager();
     const mux = { sendSpendingAuth: () => {}, sendReserveAuth: () => {} } as unknown as PaymentMux;
 
     expect(manager.isOpeningReservePending(SELLER)).toBe(false);
