@@ -7,7 +7,9 @@ import {
   openAIResponsesReasoningItem,
   makeStreamingStartResponse,
   mapFinishReasonToAnthropicStopReason,
+  openAIResponsesEnding,
   openAIResponsesFunctionCallId,
+  openAIResponsesItemStatus,
   openAIResponsesMessageId,
   parseJsonSafe,
   parseSseBuffer,
@@ -164,7 +166,7 @@ function createChatStreamNormalizer(options: StreamTransformInternals): Protocol
         id: info.id,
         model: info.model,
         finishReason: info.finishReason,
-        endTurn: responsesEndTurn(info.toolCalls.length),
+        endTurn: responsesEndTurn(info.toolCalls.length, info.finishReason),
         usage: info.usage,
         toolCalls: info.toolCalls,
       });
@@ -733,6 +735,8 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
   let nextOutputIndex = 0;
   let messageOutputIndex: number | null = null;
   const toolOutputIndexes = new Map<number, number>();
+  // The item the answer wrote last, the text or a tool call's index: an answer cut at a limit was cut there.
+  let lastWritten: 'text' | number | null = null;
 
   const pushEvent = (
     emitted: Array<{ event?: string; data: unknown | string }>,
@@ -765,22 +769,22 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
   };
   // The finished message and tool calls, in output_index order.
   type AnswerItem =
-    | { type: 'message'; id: string; role: 'assistant'; status: 'completed'; content: Array<{ type: 'output_text'; text: string; annotations: unknown[] }>; phase?: 'commentary' }
-    | { type: 'function_call'; outputIndex: number; id: string; call_id: string; name: string; arguments: string; status: 'completed' };
-  const answerItems = (): Array<{ index: number; item: AnswerItem }> => {
+    | { type: 'message'; id: string; role: 'assistant'; status: 'completed' | 'incomplete'; content: Array<{ type: 'output_text'; text: string; annotations: unknown[] }>; phase?: 'commentary' }
+    | { type: 'function_call'; outputIndex: number; id: string; call_id: string; name: string; arguments: string; status: 'completed' | 'incomplete' };
+  const answerItems = (ending: ReturnType<typeof openAIResponsesEnding>): Array<{ index: number; item: AnswerItem }> => {
     const phase = toolCalls.size > 0 ? { phase: 'commentary' as const } : {};
     const items: Array<{ index: number; item: AnswerItem }> = [];
     if (outputStarted) {
       items.push({
         index: getMessageOutputIndex(),
-        item: { type: 'message', id: getMessageId(), role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: textBuffer, annotations: [] }], ...phase },
+        item: { type: 'message', id: getMessageId(), role: 'assistant', status: openAIResponsesItemStatus(ending, lastWritten === 'text'), content: [{ type: 'output_text', text: textBuffer, annotations: [] }], ...phase },
       });
     }
     for (const toolCall of sortedToolCalls(toolCalls)) {
       const outputIndex = getToolOutputIndex(toolCall.index);
       items.push({
         index: outputIndex,
-        item: { type: 'function_call', outputIndex, id: openAIResponsesFunctionCallId(toolCall.id), call_id: toolCall.id, name: toolCall.name, arguments: toolCall.arguments, status: 'completed' },
+        item: { type: 'function_call', outputIndex, id: openAIResponsesFunctionCallId(toolCall.id), call_id: toolCall.id, name: toolCall.name, arguments: toolCall.arguments, status: openAIResponsesItemStatus(ending, lastWritten === toolCall.index, toolCall.arguments) },
       });
     }
     return items.sort((a, b) => a.index - b.index);
@@ -847,6 +851,7 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
           closeReasoning(emitted);
           ensureTextOutputStarted(emitted);
           textBuffer += event.delta;
+          lastWritten = 'text';
           pushEvent(emitted, 'response.output_text.delta', {
             output_index: getMessageOutputIndex(),
             item_id: getMessageId(),
@@ -888,6 +893,7 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
             arguments: '',
           };
           toolCalls.set(event.index, toolCall);
+          lastWritten = event.index;
           const itemId = openAIResponsesFunctionCallId(toolCall.id);
           pushEvent(emitted, 'response.output_item.added', {
             output_index: getToolOutputIndex(event.index),
@@ -912,6 +918,7 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
           };
           const toolCall = { ...existing, arguments: existing.arguments + event.argumentsDelta };
           toolCalls.set(event.index, toolCall);
+          lastWritten = event.index;
           pushEvent(emitted, 'response.function_call_arguments.delta', {
             output_index: getToolOutputIndex(event.index),
             item_id: openAIResponsesFunctionCallId(toolCall.id),
@@ -923,11 +930,12 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
 
         if (event.type === 'response_done') {
           ensureResponseCreated(emitted, null);
+          const ending = openAIResponsesEnding(event.finishReason);
           if (!outputDone) {
             outputDone = true;
             const msgId = getMessageId();
             closeReasoning(emitted);
-            for (const { item } of answerItems()) {
+            for (const { item } of answerItems(ending)) {
               if (item.type === 'message') {
                 pushEvent(emitted, 'response.output_text.done', {
                   output_index: getMessageOutputIndex(),
@@ -957,16 +965,16 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
             }
           }
 
-          pushEvent(emitted, 'response.completed', {
+          pushEvent(emitted, `response.${ending.status}`, {
             response: {
               id: getResponseId(),
               object: 'response',
               model: responseModel,
-              status: 'completed',
+              ...ending,
               created_at: createdAt,
               output: [
                 ...(reasoning === 'none' ? [] : [getReasoningItem()]),
-                ...answerItems().map(({ item }) => {
+                ...answerItems(ending).map(({ item }) => {
                   if (item.type === 'message') return item;
                   const { outputIndex: _outputIndex, ...functionCall } = item;
                   return functionCall;

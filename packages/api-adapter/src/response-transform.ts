@@ -288,8 +288,10 @@ function buildOpenAIResponsesStream(body: Record<string, unknown>): Uint8Array {
     );
   };
 
+  // The answer's ending is the final event's to tell.
+  const { incomplete_details: _ending, ...started } = body;
   pushEvent('response.created', {
-    response: { ...body, status: 'in_progress', output: [], output_text: '' },
+    response: { ...started, status: 'in_progress', output: [], output_text: '' },
   });
 
   const output = Array.isArray(body.output) ? body.output as Record<string, unknown>[] : [];
@@ -363,7 +365,7 @@ function buildOpenAIResponsesStream(body: Record<string, unknown>): Uint8Array {
     }
   }
 
-  pushEvent('response.completed', { response: body });
+  pushEvent(`response.${body.status}`, { response: body });
   sseEvents.push('data: [DONE]\n\n');
 
   return encodeText(sseEvents.join(''));

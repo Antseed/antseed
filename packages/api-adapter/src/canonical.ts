@@ -2,6 +2,8 @@ import {
   chatReasoningText,
   extractReportedUsage,
   mapFinishReasonToAnthropicStopReason,
+  openAIResponsesEnding,
+  openAIResponsesItemStatus,
   openAIResponsesFunctionCallId,
   openAIResponsesMessageId,
   openAIResponsesReasoningItem,
@@ -693,7 +695,7 @@ export function normalizeOpenAIChatResponseBody(
     model,
     output,
     stopReason,
-    endTurn: responsesEndTurn(output.filter((item) => item.type === 'function_call').length),
+    endTurn: responsesEndTurn(output.filter((item) => item.type === 'function_call').length, stopReason),
     ...(reasoning.trim().length > 0 ? { reasoning, reasoningModel: fallbacks.requestedModel || model } : {}),
     usage,
   };
@@ -822,6 +824,9 @@ export function renderCanonicalResponseToOpenAIResponsesBody(response: Canonical
     .filter((item): item is Extract<CanonicalOutputItem, { type: 'text' }> => item.type === 'text');
   const text = textItems.map((item) => item.text).join('');
   const phase = textItems.find((item) => item.phase)?.phase;
+  const ending = openAIResponsesEnding(response.stopReason);
+  // The item the answer was writing when it ended.
+  const last = response.output.at(-1);
 
   if (response.reasoning) {
     output.push(openAIResponsesReasoningItem(response.id, response.reasoning, response.reasoningModel ?? response.model));
@@ -832,7 +837,7 @@ export function renderCanonicalResponseToOpenAIResponsesBody(response: Canonical
       type: 'message',
       id: openAIResponsesMessageId(response.id),
       role: 'assistant',
-      status: 'completed',
+      status: openAIResponsesItemStatus(ending, last?.type === 'text'),
       content: [{ type: 'output_text', text, annotations: [] }],
       ...(phase ? { phase } : {}),
     });
@@ -846,7 +851,7 @@ export function renderCanonicalResponseToOpenAIResponsesBody(response: Canonical
       call_id: item.id,
       name: item.name,
       arguments: stringifyToolArguments(item.arguments),
-      status: 'completed',
+      status: openAIResponsesItemStatus(ending, item === last, item.arguments),
     });
   }
 
@@ -854,7 +859,7 @@ export function renderCanonicalResponseToOpenAIResponsesBody(response: Canonical
     id: response.id,
     object: 'response',
     model: response.model,
-    status: 'completed',
+    ...ending,
     created_at: Math.floor(Date.now() / 1000),
     output,
     output_text: text,

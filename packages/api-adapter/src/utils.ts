@@ -174,9 +174,10 @@ export function reasoningUsageFields(
 /**
  * `end_turn` for a chat answer translated to Responses: the turn ends exactly when the answer
  * makes no tool call. Whether text is a finished answer is the model's to say, not the adapter's.
+ * An answer cut off by the output cap or a content filter did not end its turn.
  */
-export function responsesEndTurn(toolCallCount: number): boolean {
-  return toolCallCount === 0;
+export function responsesEndTurn(toolCallCount: number, finishReason: string | null): boolean {
+  return toolCallCount === 0 && openAIResponsesEnding(finishReason).status === 'completed';
 }
 
 /** Plain API-shape facts parsed from image generation requests. */
@@ -618,6 +619,40 @@ export function toStringContent(value: unknown): string {
     return toStringContentBlock(value as Record<string, unknown>);
   }
   return String(value);
+}
+
+/** How a Responses answer reports a canonical finish reason: one cut at a limit is `incomplete`, with the reason. */
+export function openAIResponsesEnding(finishReason: string | null): {
+  status: 'completed' | 'incomplete';
+  incomplete_details?: { reason: string };
+} {
+  if (finishReason === 'length') return { status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' } };
+  if (finishReason === 'content_filter') return { status: 'incomplete', incomplete_details: { reason: 'content_filter' } };
+  return { status: 'completed' };
+}
+
+/**
+ * The status of one item of a Responses answer, streamed or not. An answer cut at a limit was cut in the item it
+ * was writing (`writtenLast`), and in any tool call whose arguments stop mid-value; the other items are whole.
+ */
+export function openAIResponsesItemStatus(
+  ending: { status: 'completed' | 'incomplete' },
+  writtenLast: boolean,
+  toolArguments?: unknown,
+): 'completed' | 'incomplete' {
+  if (ending.status === 'completed') return 'completed';
+  return writtenLast || !toolArgumentsWhole(toolArguments) ? 'incomplete' : 'completed';
+}
+
+/** Whether a tool call's arguments end where they should: none at all, or one whole JSON value. */
+function toolArgumentsWhole(args: unknown): boolean {
+  if (typeof args !== 'string' || args.trim() === '') return true;
+  try {
+    JSON.parse(args);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function mapFinishReasonToAnthropicStopReason(value: unknown): string | null {
