@@ -9,7 +9,7 @@ import { buildRoutingServices, findPinnedRoutingService } from './routing-servic
 import { readFileSync, watchFile, unwatchFile } from 'node:fs'
 import { TELEMETRY_TRAFFIC_HEADER, telemetryClientTool, telemetryProtocol, traceFor, trafficTag, type BuyerTelemetry, type ConversationKeySource, type SwitchReason } from '../telemetry/buyer.js'
 import { finishReasonFromBody } from '../telemetry/finish-reason.js'
-import { reasoningItemsInRequest, reasoningSentToSeller, replyFacts } from '../telemetry/reply-facts.js'
+import { reasoningReplayed, requestReasoningTexts } from '../telemetry/reply-facts.js'
 import { readFile, writeFile, rename, mkdir, readdir, stat, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
@@ -891,6 +891,9 @@ function adaptOpenAICompatibleErrorResponse(
     body: Buffer.from(JSON.stringify(wrappedError)),
   }
 }
+
+/** The APIs the buyer translates between; telemetry reports translation only for them. */
+const TRANSLATABLE_PROTOCOLS: ReadonlySet<string> = new Set(['anthropic-messages', 'openai-chat-completions', 'openai-responses'])
 
 /** A seller error sent as an event stream, as `protocol`'s JSON error body (see `errorEventStreamAsJson`). */
 function errorEventStreamAsJsonFor(
@@ -5825,12 +5828,20 @@ export class BuyerProxy {
     if (attemptTrace) {
       // The id this attempt's answer carries in `x-antseed-request-id` (a router attempt has its own).
       attemptTrace.useRequestId(requestForPeer.requestId)
-      attemptTrace.route = {
-        translated: selectedRoutePlan.selection?.requiresTransform === true,
-        sellerProtocol: selectedRoutePlan.selection?.targetProtocol ?? requestProtocol,
-        reasoningItems: requestProtocol === 'openai-responses'
-          ? { received: reasoningItemsInRequest(serializedReq.body), replayed: reasoningSentToSeller(requestForPeer.body) }
-          : null,
+      // Translation happens only between the three chat APIs; other requests always pass through.
+      if (requestProtocol && TRANSLATABLE_PROTOCOLS.has(requestProtocol)) {
+        let reasoningItems: { received: number; replayed: number } | null = null
+        if (requestProtocol === 'openai-responses') {
+          if (attemptTrace.clientReasoningTexts === undefined) attemptTrace.clientReasoningTexts = requestReasoningTexts(serializedReq.body)
+          const texts = attemptTrace.clientReasoningTexts
+          const replayed = texts && texts.length > 0 ? reasoningReplayed(texts, requestForPeer.body) : 0
+          reasoningItems = texts && replayed !== null ? { received: texts.length, replayed } : null
+        }
+        attemptTrace.route = {
+          translated: selectedRoutePlan.selection?.requiresTransform === true,
+          sellerProtocol: selectedRoutePlan.selection?.targetProtocol ?? requestProtocol,
+          reasoningItems,
+        }
       }
     }
 
@@ -5996,7 +6007,7 @@ export class BuyerProxy {
             ? telemetry
             : computeResponseTelemetry(requestForPeer, { ...response, body: fullBody }, selectedPeer)
           usageTrace.noteUsage(fullTelemetry.usage)
-          usageTrace.reply = replyFacts(response.headers['content-type'], fullBody, peerResponseProtocol)
+          usageTrace.noteReplyBody(response.headers['content-type'], fullBody, peerResponseProtocol)
           usageTrace.noteAnswerDetails({
             finishReason: finishReasonFromBody(response.headers['content-type'], fullBody),
             estimatedCostUsd: fullTelemetry.estimatedCostUsd,
@@ -6149,7 +6160,7 @@ export class BuyerProxy {
         const answerTrace = response.statusCode < 400 ? traceFor(res) : undefined
         if (answerTrace) {
           answerTrace.noteUsage(telemetry.usage)
-          answerTrace.reply = replyFacts(upstreamResponse.headers['content-type'], upstreamResponse.body, peerResponseProtocol)
+          answerTrace.noteReplyBody(upstreamResponse.headers['content-type'], upstreamResponse.body, peerResponseProtocol)
           answerTrace.noteAnswerDetails({
             finishReason: finishReasonFromBody(response.headers['content-type'], response.body),
             estimatedCostUsd: telemetry.estimatedCostUsd,

@@ -6,6 +6,7 @@ import { ANTSEED_BUYER_FAULT_ERROR_CODE, ANTSEED_REQUIRE_TEE_HEADER, DEFAULT_BUY
 import { SPEND_ATTRIBUTION_HEADER } from '../proxy/spend-attribution.js'
 import { decodeServedSelection, ROUTE_SELECTION_HEADER, type ServedSelection } from '../proxy/route-selection.js'
 import { coveredByFreeAllowance, ROUTER_PEER_ID_HEADER, ROUTER_RANK_HEADER, ROUTER_SERVICE_HEADER } from '../proxy/telemetry.js'
+import { TELEMETRY_TRAFFIC_HEADER } from '../telemetry/buyer.js'
 import { BUYER_IDENTITY_HEADER, MAX_VIDEO_COST_HEADER } from '../proxy/request-utils.js'
 import { GATEWAY_CONTROL_HEADER, ROUTING_POLICY_HEADER, encodePolicyHeader, meaningfulPolicy, narrowPolicy, policyAllowsModel, type RoutingPolicy } from '../routing-policy/policy.js'
 import { effectiveKeyLimits, newRequestTag, videoJobKey, type AdmitOptions, type GatewayAccounting, type KeyContext } from './accounting.js'
@@ -1610,6 +1611,9 @@ const STRIPPED_HEADERS = new Set([
   // Proxy-internal hooks for the local verifier; a key holder must not choose them.
   'x-antseed-request-id',
   'x-antseed-capture-response-auth-preimages',
+  // The operator's telemetry, not a key holder's, says what is test traffic (a test gateway sets
+  // the buyer's ANTSEED_TELEMETRY_TRAFFIC instead).
+  TELEMETRY_TRAFFIC_HEADER,
 ])
 
 /** Client headers passed on to the buyer, minus everything the key (not the client) decides. */

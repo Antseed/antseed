@@ -71,12 +71,11 @@ class ReplyReader {
     if ((type === 'text' || type === 'text_delta') && hasText(block['text'])) this.text = true
   }
 
-  private responsesItem(item: Json, fallbackKey: string): void {
+  /** `key` names the item's place in the answer, so its added, done and final copies count once. */
+  private responsesItem(item: Json, key: string): void {
     const type = item['type']
-    if (type === 'function_call' || type === 'custom_tool_call') {
-      const key = [item['call_id'], item['id']].find((value) => typeof value === 'string' && value.length > 0)
-      this.calls.add(`item:${key ?? fallbackKey}`)
-    }
+    // Calls of the client's own tools; built-in tools (web search and the like) are the seller's.
+    if (type === 'function_call' || type === 'custom_tool_call') this.calls.add(key)
     if (type === 'message' && Array.isArray(item['content'])
       && item['content'].some((part) => hasText(asObject(part)?.['text']))) this.text = true
   }
@@ -127,7 +126,10 @@ class ReplyReader {
     if (event['type'] === 'response.output_text.delta' && hasText(event['delta'])) this.text = true
     if (event['type'] === 'response.output_item.added' || event['type'] === 'response.output_item.done') {
       const item = asObject(event['item'])
-      if (item) this.responsesItem(item, `output:${String(event['output_index'] ?? this.calls.size)}`)
+      if (!item) return
+      const index = event['output_index']
+      const id = [item['call_id'], item['id']].find((value) => typeof value === 'string' && value.length > 0)
+      this.responsesItem(item, typeof index === 'number' ? `output:${index}` : `item:${String(id ?? this.calls.size)}`)
     }
   }
 }
@@ -138,8 +140,10 @@ class ReplyReader {
  * where the usage itemises reasoning, so another API's field is never read.
  */
 export function replyFacts(contentType: string | undefined, body: Uint8Array, protocol: string | null): ReplyFacts | null {
-  if (body.length === 0 || body.length > MAX_BODY_BYTES) return null
-  const reader = new ReplyReader(protocol ? REASONING_TOKEN_FIELDS[protocol] ?? null : null)
+  // Only a chat answer is a reply: an image, speech or decision answer has no text or tool calls to count.
+  const reasoningField = protocol ? REASONING_TOKEN_FIELDS[protocol] : undefined
+  if (!reasoningField || body.length === 0 || body.length > MAX_BODY_BYTES) return null
+  const reader = new ReplyReader(reasoningField)
   const text = Buffer.from(body).toString('utf8')
   let recognised = false
   const feed = (payload: string): void => {
@@ -166,7 +170,7 @@ export function replyFacts(contentType: string | undefined, body: Uint8Array, pr
 }
 
 function parseBody(body: Uint8Array): Json | null {
-  if (body.length === 0 || body.length > 16 * MAX_BODY_BYTES) return null
+  if (body.length === 0 || body.length > MAX_BODY_BYTES) return null
   try {
     return asObject(JSON.parse(Buffer.from(body).toString('utf8')))
   } catch {
@@ -174,36 +178,58 @@ function parseBody(body: Uint8Array): Json | null {
   }
 }
 
-/** Reasoning items a Responses client sent back in its request's `input`. */
-export function reasoningItemsInRequest(body: Uint8Array): number {
-  const input = parseBody(body)?.['input']
-  return Array.isArray(input) ? input.filter((item) => asObject(item)?.['type'] === 'reasoning').length : 0
+/**
+ * The `reasoning` items a Responses client sent back in its request's `input`,
+ * each as its reasoning text ('' when it has none the buyer can read, such as
+ * another provider's encrypted state). Null when the body is not read: too
+ * large, or not JSON. Only counts derived from it leave the process.
+ */
+export function requestReasoningTexts(body: Uint8Array): string[] | null {
+  const parsed = parseBody(body)
+  if (!parsed) return null
+  const input = parsed['input']
+  if (!Array.isArray(input)) return []
+  return input.flatMap((item) => {
+    const entry = asObject(item)
+    if (entry?.['type'] !== 'reasoning') return []
+    const content = Array.isArray(entry['content']) ? entry['content'] : []
+    return [content
+      .map((part) => asObject(part))
+      .filter((part): part is Json => part?.['type'] === 'reasoning_text' && typeof part['text'] === 'string')
+      .map((part) => part['text'] as string)
+      .join('')]
+  })
 }
 
 /**
- * Earlier reasoning the request carries on to its seller, in the seller's API:
- * Responses `reasoning` items, chat assistant messages with `reasoning_content`
- * (or `reasoning`), and Anthropic `thinking` blocks.
+ * How many of the client's reasoning items (`texts`) went on to the seller in
+ * `body`, the request the buyer sent: Responses `reasoning` items as they are,
+ * and for a chat seller each item whose text the assistant messages'
+ * `reasoning_content` carries (the adapter joins a turn's items into one
+ * message, so items are matched by text, not counted by message). Null when
+ * the body is not read.
  */
-export function reasoningSentToSeller(body: Uint8Array): number {
+export function reasoningReplayed(texts: readonly string[], body: Uint8Array): number | null {
   const parsed = parseBody(body)
-  if (!parsed) return 0
-  let count = 0
+  if (!parsed) return null
   if (Array.isArray(parsed['input'])) {
-    count += parsed['input'].filter((item) => asObject(item)?.['type'] === 'reasoning').length
+    return parsed['input'].filter((item) => asObject(item)?.['type'] === 'reasoning').length
   }
-  if (Array.isArray(parsed['messages'])) {
-    for (const message of parsed['messages']) {
-      const entry = asObject(message)
-      if (!entry || entry['role'] !== 'assistant') continue
-      if (hasText(entry['reasoning_content']) || hasText(entry['reasoning'])) count += 1
-      if (Array.isArray(entry['content'])) {
-        count += entry['content'].filter((block) => {
-          const type = asObject(block)?.['type']
-          return type === 'thinking' || type === 'redacted_thinking'
-        }).length
-      }
+  const carried: string[] = []
+  let thinkingBlocks = 0
+  for (const message of Array.isArray(parsed['messages']) ? parsed['messages'] : []) {
+    const entry = asObject(message)
+    if (!entry || entry['role'] !== 'assistant') continue
+    for (const field of ['reasoning_content', 'reasoning']) {
+      if (hasText(entry[field])) carried.push(entry[field] as string)
+    }
+    if (Array.isArray(entry['content'])) {
+      thinkingBlocks += entry['content'].filter((block) => {
+        const type = asObject(block)?.['type']
+        return type === 'thinking' || type === 'redacted_thinking'
+      }).length
     }
   }
-  return count
+  const matched = texts.filter((text) => text.length > 0 && carried.some((sent) => sent.includes(text))).length
+  return Math.min(texts.length, matched + thinkingBlocks)
 }

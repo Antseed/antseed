@@ -295,7 +295,7 @@ async function finishedProps(
   t: TestContext,
   req: Readable,
   options: { okBody?: object; env?: NodeJS.ProcessEnv; sellerProtocol?: string } = {},
-): Promise<{ props: Record<string, unknown>; res: FakeResponse; forwarded: Record<string, string>[]; sentBodies: unknown[] }> {
+): Promise<{ props: Record<string, unknown>; res: FakeResponse; forwarded: Record<string, string>[]; sentBodies: unknown[]; events: PostHogEvent[] }> {
   const { proxy, telemetry, events, forwarded } = await proxyWithTelemetry(t, options.env ?? {}, 200, options.okBody)
   const sentBodies: unknown[] = []
   const sendRequest = (proxy as any)._node.sendRequest
@@ -310,7 +310,7 @@ async function finishedProps(
   const res = await send(proxy, req)
   await telemetry.close()
   const props = events.find((event) => event.event === 'buyer_request_finished')!.properties
-  return { props, res, forwarded, sentBodies }
+  return { props, res, forwarded, sentBodies, events }
 }
 
 function responsesRequest(body: object, headers: Record<string, string> = {}): Readable {
@@ -369,6 +369,19 @@ test('reply facts: tool calls, text and reasoning tokens from each protocol, str
     choices: [{ message: { content: 'Hello.' } }], usage: { output_tokens_details: { reasoning_tokens: 7 } },
   })), 'openai-chat-completions'), { toolCalls: 0, hasText: true, reasoningTokens: null })
   assert.equal(replyFacts('application/json', Buffer.from('not json'), 'openai-chat-completions'), null)
+
+  // The same call announced with its item id and finished with its call id counts once, by its place.
+  assert.equal(replyFacts('text/event-stream', sse(
+    { type: 'response.output_item.added', output_index: 1, item: { type: 'function_call', id: 'fc_1', name: 'run', arguments: '' } },
+    { type: 'response.output_item.done', output_index: 1, item: { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'run', arguments: '{}' } },
+  ), 'openai-responses')?.toolCalls, 1)
+  // A built-in tool is the seller's own: a reply with a web search and text has no client tool call.
+  assert.deepEqual(replyFacts('application/json', Buffer.from(JSON.stringify({
+    object: 'response',
+    output: [{ type: 'web_search_call', id: 'ws_1' }, { type: 'message', content: [{ type: 'output_text', text: 'Found it.' }] }],
+  })), 'openai-responses'), { toolCalls: 0, hasText: true, reasoningTokens: null })
+  // An image, speech or decision answer is no reply.
+  assert.equal(replyFacts('application/json', Buffer.from('{"created":1,"data":[{"b64_json":"aGk="}]}'), 'openai-images'), null)
 })
 
 test('translation and seller protocol: passed through, or translated to the seller\'s API', async (t) => {
@@ -401,6 +414,13 @@ test('reasoning replay: how many reasoning items the client sent, and how many w
   const messages = (sentBodies[0] as { messages: Array<{ reasoning_content?: string }> }).messages
   assert.deepEqual(messages.filter((message) => message.reasoning_content).map((message) => message.reasoning_content), ['Check the disk.'])
 
+  // Two items of one turn travel together on one assistant message: both replayed, none dropped.
+  const split = { ...mine, id: 'rs_3', content: [{ type: 'reasoning_text', text: 'Then the logs.' }] }
+  const merged = await finishedProps(t, responsesRequest({ model: 'gpt-5', input: [input[0], mine, split, ...input.slice(2, 4)], include: ['reasoning.encrypted_content'] }))
+  assert.equal(merged.props['reasoning_items_received'], '2_3')
+  assert.equal(merged.props['reasoning_items_replayed'], '2_3')
+  assert.equal(merged.props['reasoning_items_dropped'], '0')
+
   // A request without reasoning items says nothing about replay.
   const none = (await finishedProps(t, responsesRequest({ model: 'gpt-5', input: 'hi' }))).props
   assert.equal(none['reasoning_items_received'], '0')
@@ -413,6 +433,19 @@ test('request_id is the x-antseed-request-id the client received', async (t) => 
   const { props, res } = await finishedProps(t, request({ model: 'gpt-5', messages: [{ role: 'user', content: 'hi' }] }))
   assert.match(String(res.headers['x-antseed-request-id']), /^[0-9a-f-]{36}$/)
   assert.equal(props['request_id'], res.headers['x-antseed-request-id'])
+})
+
+test('a request id a local client supplies is used when it is a random v4 UUID, and never otherwise', async (t) => {
+  const v4 = 'DEADBEEF-DEAD-4EEF-8EAD-DEADBEEFDEAD'
+  const supplied = await finishedProps(t, request({ model: 'gpt-5', messages: [{ role: 'user', content: 'hi' }] }, { 'x-antseed-request-id': v4 }))
+  assert.equal(supplied.res.headers['x-antseed-request-id'], v4)
+  assert.equal(supplied.props['request_id'], v4, 'the id the client sees, as it sent it')
+  // A v1 id carries a MAC address and a time: it may name the request, but it is never sent.
+  const v1 = 'c232ab00-9414-11ec-b3c8-9e6bdeced846'
+  const timeBased = await finishedProps(t, request({ model: 'gpt-5', messages: [{ role: 'user', content: 'hi' }] }, { 'x-antseed-request-id': v1 }))
+  assert.equal(timeBased.res.headers['x-antseed-request-id'], v1)
+  assert.notEqual(timeBased.props['request_id'], v1)
+  assert.match(String(timeBased.props['request_id']), /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
 })
 
 test('the longest silence between stream writes to the client, as a bucket', () => {
@@ -428,12 +461,31 @@ test('the longest silence between stream writes to the client, as a bucket', () 
   whole.noteAttempt('a'.repeat(40), 0)
   whole.noteAnswered(500, 200)
   assert.equal('max_stream_gap_bucket' in whole.finish(200, false, 600)!, false, 'only for a streamed answer')
+
+  // A stream that goes silent until the client gives up: the silence at the end is the gap.
+  const stalled = new RequestTrace(0, true)
+  stalled.noteAttempt('a'.repeat(40), 0)
+  stalled.noteFirstByte(1_000)
+  stalled.noteStreamWrite(1_100)
+  const cancelled = stalled.finish(200, true, 400_000)!
+  assert.equal(cancelled['outcome'], 'cancelled')
+  assert.equal(cancelled['max_stream_gap_bucket'], '120s_plus')
+
+  // A stream silent for minutes before its last write still ends normally.
+  const late = new RequestTrace(0, true)
+  late.noteAttempt('a'.repeat(40), 0)
+  late.noteFirstByte(1_000)
+  late.noteStreamWrite(200_000)
+  const success = late.finish(200, false, 200_050)!
+  assert.equal(success['outcome'], 'success')
+  assert.equal(success['max_stream_gap_bucket'], '120s_plus')
 })
 
 test('test traffic: tagged by a request header or the buyer\'s environment, and never forwarded', async (t) => {
   const body = { model: 'gpt-5', messages: [{ role: 'user', content: 'hi' }] }
   const tagged = await finishedProps(t, request(body, { 'x-antseed-telemetry-traffic': 'test' }))
   assert.equal(tagged.props['traffic'], 'test')
+  assert.equal(tagged.events.find((event) => event.event === 'buyer_seller_attempt')!.properties['traffic'], 'test', 'per-seller counts can leave test traffic out')
   assert.equal(Object.keys(tagged.forwarded[0]!).some((name) => name.includes('traffic')), false)
 
   const unknown = await finishedProps(t, request(body, { 'x-antseed-telemetry-traffic': 'my-secret-campaign' }))
@@ -1069,6 +1121,10 @@ test('image, decision-model and video requests each send buyer_request_finished'
   assert.deepEqual(finished.map((props) => props['video_action'] ?? null), [null, null, null, 'create', 'retrieve'])
   assert.deepEqual(finished.map((props) => props['outcome']), ['success', 'success', 'success', 'success', 'success'])
   for (const props of finished.slice(0, 3)) assert.equal(props['seller_id'], SECRET_PEER)
+  for (const props of finished) {
+    // Not a chat request: never translated, and its answer is no reply with text or tool calls.
+    for (const key of ['translation', 'seller_protocol', 'tool_calls_bucket', 'text_only_reply']) assert.equal(key in props, false, `${String(props['protocol'])}: ${key}`)
+  }
   assert.equal(JSON.stringify(events).includes('secret'), false, 'no prompt or state leaves the process')
   assert.equal(forwarded.some((names) => names.includes('telemetry')), false, 'nothing added for the seller')
 })

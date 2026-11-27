@@ -34,7 +34,7 @@ import {
   type TelemetryClient,
 } from '@antseed/telemetry'
 import { CLI_EVENT_CATALOG, CLIENT_TOOLS, CONNECTED_APP_TOOLS, REQUEST_PROTOCOLS, ROUTING_VERSION, SELLER_ID_PATTERN, TRAFFIC_TAGS } from './catalog.js'
-import type { ReplyFacts } from './reply-facts.js'
+import { replyFacts } from './reply-facts.js'
 import { posthogConfig, resolveCliConsent } from './settings.js'
 import { detectInstallMethod } from '../update/install-method.js'
 import pkg from '../../package.json' with { type: 'json' }
@@ -213,8 +213,13 @@ export class RequestTrace {
   rateLimited = false
   /** How the final attempt reached its seller. */
   route: AttemptRoute | null = null
-  /** What the final attempt's successful answer held. */
-  reply: ReplyFacts | null = null
+  /**
+   * In-memory only, never sent: the reasoning texts of the client's request
+   * (null when not read), read once for all its attempts.
+   */
+  clientReasoningTexts: string[] | null | undefined = undefined
+  /** The final attempt's answer as the seller sent it, read only when the request finishes. */
+  private replySource: { contentType: string | undefined; body: Uint8Array; protocol: string | null } | null = null
   /** The final attempt's last write of a streamed answer, and its longest silence between two writes. */
   private lastStreamWriteAtMs: number | null = null
   private maxStreamGapMs: number | null = null
@@ -250,7 +255,7 @@ export class RequestTrace {
     this.finishReason = null
     this.estimatedCostMicroUsd = null
     this.route = null
-    this.reply = null
+    this.replySource = null
     this.lastStreamWriteAtMs = null
     this.maxStreamGapMs = null
   }
@@ -261,7 +266,15 @@ export class RequestTrace {
    * kind the proxy makes; anything else keeps the random id.
    */
   useRequestId(id: string): void {
-    if (RANDOM_REQUEST_ID_PATTERN.test(id)) this.requestId = id.toLowerCase()
+    if (RANDOM_REQUEST_ID_PATTERN.test(id)) this.requestId = id
+  }
+
+  /**
+   * The seller's answer, in its own protocol, to read the reply facts from
+   * once the request has finished (never while the client waits for it).
+   */
+  noteReplyBody(contentType: string | undefined, body: Uint8Array, protocol: string | null): void {
+    this.replySource = { contentType, body, protocol }
   }
 
   /** A streamed answer's write to the client after its first byte. */
@@ -427,6 +440,15 @@ export class RequestTrace {
     const ttftMs = this.firstByteAtMs === null ? null : Math.max(0, this.firstByteAtMs - this.startedAtMs)
     const sellerTtftMs = this.firstByteAtMs === null ? null : Math.max(0, this.firstByteAtMs - this.attemptStartedAtMs)
     const durationMs = Math.max(0, nowMs - this.startedAtMs)
+    // The silence after the last write counts too: a stream that stalls until
+    // the client gives up has its longest gap at the end.
+    const streamGapMs = this.streamed && this.lastStreamWriteAtMs !== null
+      ? Math.max(this.maxStreamGapMs ?? 0, nowMs - this.lastStreamWriteAtMs)
+      : null
+    const reply = outcome === 'success' && this.replySource
+      ? replyFacts(this.replySource.contentType, this.replySource.body, this.replySource.protocol)
+      : null
+    this.replySource = null
     return {
       request_id: this.requestId,
       protocol: this.protocol,
@@ -470,10 +492,8 @@ export class RequestTrace {
         : {}),
       ...(outcome === 'success' && this.finishReason ? { finish_reason: this.finishReason } : {}),
       ...routeProperties(this.route),
-      ...(outcome === 'success' && this.reply ? replyProperties(this.reply) : {}),
-      ...(outcome === 'success' && this.streamed
-        ? { max_stream_gap_bucket: streamGapBucket(this.maxStreamGapMs ?? 0) }
-        : {}),
+      ...(reply ? replyProperties(reply) : {}),
+      ...(streamGapMs !== null ? { max_stream_gap_bucket: streamGapBucket(streamGapMs) } : {}),
       ...(this.traffic ? { traffic: this.traffic } : {}),
     }
   }
@@ -495,7 +515,7 @@ function routeProperties(route: AttemptRoute | null): Record<string, unknown> {
   }
 }
 
-function replyProperties(reply: ReplyFacts): Record<string, unknown> {
+function replyProperties(reply: NonNullable<ReturnType<typeof replyFacts>>): Record<string, unknown> {
   return {
     tool_calls_bucket: smallCountBucket(reply.toolCalls),
     text_only_reply: reply.hasText && reply.toolCalls === 0,
@@ -552,6 +572,7 @@ export function attemptEventProperties(trace: RequestTrace): Array<Record<string
       streamed: attempt.streamed,
       duration_ms: Math.round(Math.max(0, endedAtMs - attempt.startedAtMs)),
       ...(attempt.firstByteAtMs !== null ? { seller_ttft_ms: Math.round(Math.max(0, attempt.firstByteAtMs - attempt.startedAtMs)) } : {}),
+      ...(trace.traffic ? { traffic: trace.traffic } : {}),
     }]
   })
 }

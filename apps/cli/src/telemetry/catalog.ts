@@ -151,7 +151,7 @@ export const CLI_EVENT_CATALOG: EventCatalog = {
     keys: set(
       'request_id', 'attempt_number', 'seller_id', 'seller_tier', 'protocol', 'public_model_id', 'route_mode',
       'client_tool', 'routing_version', 'outcome', 'failure_reason', 'http_status', 'empty_answer', 'streamed',
-      'duration_ms', 'seller_ttft_ms',
+      'duration_ms', 'seller_ttft_ms', 'traffic',
     ),
     values: {
       seller_tier: SELLER_TIERS,
@@ -161,6 +161,7 @@ export const CLI_EVENT_CATALOG: EventCatalog = {
       routing_version: ROUTING_VERSIONS,
       outcome: OUTCOMES,
       failure_reason: ATTEMPT_FAILURE_REASONS,
+      traffic: TRAFFIC_TAGS,
     },
     patterns: { request_id: RANDOM_REQUEST_ID_PATTERN, public_model_id: PUBLIC_MODEL_ID_PATTERN, seller_id: SELLER_ID_PATTERN },
     ranges: {
