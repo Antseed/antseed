@@ -7,6 +7,7 @@ export {
   selectTargetProtocolForRequest,
   transformRequest,
   transformResponse,
+  withoutAdapterReasoningItems,
 } from '@antseed/api-adapter'
 
 export type {

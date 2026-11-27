@@ -1438,7 +1438,7 @@ describe('transformRequest responses to chat', () => {
     expect(body.user).toBe('user-123');
   });
 
-  it('preserves Responses phases and prevents commentary-only completion in chat tool workflows', () => {
+  it('sends Responses commentary as plain assistant text and adds no instructions', () => {
     const request = makeResponsesRequest({
       body: new TextEncoder().encode(JSON.stringify({
         model: 'gpt-5.6-sol',
@@ -1460,13 +1460,8 @@ describe('transformRequest responses to chat', () => {
     const body = JSON.parse(new TextDecoder().decode(result!.request.body)) as Record<string, unknown>;
     const messages = body.messages as Array<Record<string, unknown>>;
 
-    expect(messages[0]?.role).toBe('system');
-    expect(messages[0]?.content).toContain('do not end with commentary alone');
-    expect(messages[1]).toEqual({
-      role: 'assistant',
-      name: 'commentary',
-      content: 'I am checking the diff.',
-    });
+    expect(messages[0]).toEqual({ role: 'system', content: 'Keep working until the task is complete.' });
+    expect(messages[1]).toEqual({ role: 'assistant', content: 'I am checking the diff.' });
   });
 
   it('converts Responses API flat tools to Chat Completions nested format', () => {
@@ -1484,9 +1479,6 @@ describe('transformRequest responses to chat', () => {
     expect(body.tools).toEqual([{
       type: 'function',
       function: { name: 'search', description: 'Search the web', parameters: { type: 'object' } },
-    }, {
-      type: 'function',
-      function: { name: 'final_answer', parameters: { properties: {}, type: 'object' } },
     }]);
     expect(body.tool_choice).toBe('auto');
   });
@@ -2413,34 +2405,7 @@ describe('createStreamingAdapter chat to responses', () => {
     expect(JSON.parse(completed!.data).response.output[0].phase).toBe('commentary');
   });
 
-  it('tells Codex to stop when chat-only models use the explicit final-answer tool', () => {
-    const finalText = 'The test suite now covers both cases.';
-    const request = makeResponsesRequest({
-      body: new TextEncoder().encode(JSON.stringify({
-        model: 'kimi-k3',
-        instructions: 'Continue working with tools until done.',
-        input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Add tests.' }] }],
-        tools: [{ type: 'function', name: 'exec_command', parameters: { type: 'object' } }],
-      })),
-    });
-    const transformed = transformRequest(request, { from: 'openai-responses', to: 'openai-chat-completions' })!;
-    const chatResponse = makeOpenAIResponse({
-      body: new TextEncoder().encode(JSON.stringify({
-        id: 'chatcmpl-interim',
-        model: 'kimi-k3',
-        choices: [{ index: 0, finish_reason: 'tool_calls', message: { role: 'assistant', content: finalText, tool_calls: [{ id: 'call_final', type: 'function', function: { name: 'final_answer', arguments: '{}' } }] } }],
-        usage: { prompt_tokens: 20, completion_tokens: 7 },
-      })),
-    });
-    const adapted = adaptResponseForTest('openai-chat-completions', 'openai-responses', chatResponse, { fallbackModel: 'kimi-k3' });
-    const body = JSON.parse(new TextDecoder().decode(adapted.body)) as Record<string, unknown>;
-
-    expect(JSON.parse(new TextDecoder().decode(transformed.request.body)).messages[0].content)
-      .toContain('include the next tool call');
-    expect(body.end_turn).toBe(true);
-  });
-
-  it('tells Codex to continue after unmarked chat text responses', () => {
+  it('ends the Codex turn after a chat answer without a tool call', () => {
     const chatResponse = makeOpenAIResponse({
       body: new TextEncoder().encode(JSON.stringify({
         id: 'chatcmpl-final',
@@ -2452,10 +2417,10 @@ describe('createStreamingAdapter chat to responses', () => {
     const adapted = adaptResponseForTest('openai-chat-completions', 'openai-responses', chatResponse, { fallbackModel: 'kimi-k3' });
     const body = JSON.parse(new TextDecoder().decode(adapted.body)) as Record<string, unknown>;
 
-    expect(body.end_turn).toBe(false);
+    expect(body.end_turn).toBe(true);
   });
 
-  it('converts unmarked chat text streams into explicit tool terminations', () => {
+  it('ends the Codex turn after a streamed chat answer without a tool call', () => {
     const adapter = createStreamAdapterForTest('openai-chat-completions', 'openai-responses', '');
     const chunks = adapter.adaptChunk({
       requestId: 'req-interim-stream',
