@@ -4816,6 +4816,73 @@ test('accept-sse transformed responses requests stream adapted client events wit
   assert.doesNotMatch(res.body, /event: response\.completed/)
 })
 
+/** A Messages stream request through the buyer proxy to a Chat Completions seller that writes its own reasoning. */
+async function messagesStreamThroughChatSeller(thinking: Record<string, unknown> | undefined) {
+  const peer = makePeer('a', ['openai'])
+  peer.providerServiceApiProtocols = {
+    openai: { services: { 'example-model': ['openai-chat-completions'] } },
+  }
+  let capturedRequestBody: Record<string, unknown> | null = null
+  const proxy = makeBuyerProxyWithPeers([peer], [peer])
+  ;(proxy as any)._node.sendRequestStream = async (
+    _peer: PeerInfo,
+    request: { requestId: string; body: Uint8Array },
+    callbacks: {
+      onResponseStart: (response: { requestId: string; statusCode: number; headers: Record<string, string>; body: Uint8Array }, metadata: { streaming: boolean }) => void
+      onResponseChunk: (chunk: { requestId: string; data: Uint8Array; done: boolean }) => void
+    },
+  ) => {
+    capturedRequestBody = parseJsonBody(request.body)
+    callbacks.onResponseStart({
+      requestId: request.requestId,
+      statusCode: 200,
+      headers: { 'content-type': 'text/event-stream' },
+      body: new Uint8Array(),
+    }, { streaming: true })
+    const frame = (delta: Record<string, unknown>, finish: string | null = null) =>
+      `data: ${JSON.stringify({ id: 'chatcmpl-1', model: 'example-model', choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`
+    callbacks.onResponseChunk({
+      requestId: request.requestId,
+      data: Buffer.from(
+        frame({ reasoning_content: 'Own thoughts.' }) + frame({ content: 'hi' }) + frame({}, 'stop') + 'data: [DONE]\n\n',
+      ),
+      done: false,
+    })
+    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'text/event-stream' }, body: Buffer.from('') }
+  }
+  const res = await invokeProxy(proxy, makeProxyRequest({
+    path: '/v1/messages',
+    headers: { 'accept': 'text/event-stream', 'x-antseed-pin-peer': peer.peerId },
+    body: {
+      model: 'example-model',
+      max_tokens: 4096,
+      messages: [{ role: 'user', content: 'hello' }],
+      ...(thinking ? { thinking } : {}),
+    },
+  }))
+  return { res, capturedRequestBody: capturedRequestBody as Record<string, unknown> | null }
+}
+
+test('a Messages client that asked for thinking gets the thoughts of a Chat Completions seller as a thinking block', async () => {
+  const { res, capturedRequestBody } = await messagesStreamThroughChatSeller({ type: 'enabled', budget_tokens: 2000 })
+  assert.equal(res.statusCode, 200)
+  assert.equal(capturedRequestBody?.['reasoning_effort'], 'medium')
+  assert.match(res.body, /"content_block":\{"type":"thinking"/)
+  assert.match(res.body, /"thinking_delta","thinking":"Own thoughts\."/)
+  assert.match(res.body, /"index":1,"content_block":\{"type":"text"/)
+})
+
+test('a Messages client that did not ask for thinking gets no thinking block, whatever the seller writes', async () => {
+  for (const thinking of [undefined, { type: 'disabled' }]) {
+    const { res, capturedRequestBody } = await messagesStreamThroughChatSeller(thinking)
+    assert.equal(res.statusCode, 200)
+    assert.equal(capturedRequestBody?.['reasoning_effort'], undefined)
+    assert.doesNotMatch(res.body, /thinking/)
+    assert.match(res.body, /"index":0,"content_block":\{"type":"text"/)
+    assert.match(res.body, /"text":"hi"/)
+  }
+})
+
 test('transformed pre-stream seller errors preserve peer guidance', async () => {
   const peer = makePeer('a', ['openai-responses'])
   peer.providerServiceApiProtocols = {

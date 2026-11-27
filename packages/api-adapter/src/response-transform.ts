@@ -17,6 +17,12 @@ export interface ServiceApiResponseTransformOptions {
   fallbackModel?: string | null;
   /** A Responses client that keeps reasoning state gets a chat model's reasoning (see `includeReasoning` on transformRequest). */
   includeReasoning?: boolean;
+  /**
+   * A Messages client gets a `thinking` block only when it asked for thoughts (`includeThinking` of
+   * `transformRequest`'s result). Without it, thoughts a seller wrote on its own are left out, as they
+   * were before. Other client protocols are not affected.
+   */
+  includeThinking?: boolean;
 }
 
 type ResponseNormalizer = (
@@ -60,7 +66,10 @@ export function transformResponse(
     requestedModel: options.fallbackModel ?? null,
   });
   const { reasoning: _reasoning, reasoningModel: _reasoningModel, ...withoutReasoning } = normalized;
-  const canonical: CanonicalLlmResponse = options.includeReasoning === true ? normalized : withoutReasoning;
+  const kept: CanonicalLlmResponse = options.includeReasoning === true ? normalized : withoutReasoning;
+  const canonical: CanonicalLlmResponse = options.to === 'anthropic-messages' && options.includeThinking !== true
+    ? { ...kept, output: kept.output.filter((item) => item.type !== 'reasoning') }
+    : kept;
   const body = render(canonical);
 
   if (options.streamRequested) {
@@ -177,21 +186,20 @@ function buildAnthropicMessagesStream(
   });
 
   for (const [index, block] of content.entries()) {
-    const isText = block.type === 'text';
-    pushEvent('content_block_start', {
-      type: 'content_block_start',
-      index,
-      content_block: isText
-        ? { type: 'text', text: '' }
-        : { type: 'tool_use', id: block.id, name: block.name, input: {} },
-    });
-    pushEvent('content_block_delta', {
-      type: 'content_block_delta',
-      index,
-      delta: isText
-        ? { type: 'text_delta', text: block.text }
-        : { type: 'input_json_delta', partial_json: JSON.stringify(block.input ?? {}) },
-    });
+    let contentBlock: Record<string, unknown>;
+    let delta: Record<string, unknown>;
+    if (block.type === 'thinking') {
+      contentBlock = { type: 'thinking', thinking: '' };
+      delta = { type: 'thinking_delta', thinking: block.thinking };
+    } else if (block.type === 'text') {
+      contentBlock = { type: 'text', text: '' };
+      delta = { type: 'text_delta', text: block.text };
+    } else {
+      contentBlock = { type: 'tool_use', id: block.id, name: block.name, input: {} };
+      delta = { type: 'input_json_delta', partial_json: JSON.stringify(block.input ?? {}) };
+    }
+    pushEvent('content_block_start', { type: 'content_block_start', index, content_block: contentBlock });
+    pushEvent('content_block_delta', { type: 'content_block_delta', index, delta });
     pushEvent('content_block_stop', { type: 'content_block_stop', index });
   }
 
@@ -228,6 +236,10 @@ function buildOpenAIChatStream(response: CanonicalLlmResponse): Uint8Array {
 
   let toolCallIndex = 0;
   for (const item of response.output) {
+    if (item.type === 'reasoning') {
+      pushChunk({ reasoning_content: item.text });
+      continue;
+    }
     if (item.type === 'text') {
       if (item.text.length > 0) pushChunk({ content: item.text });
       continue;

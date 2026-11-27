@@ -22,6 +22,12 @@ export interface ServiceApiStreamTransformOptions {
   fallbackModel?: string | null;
   /** A Responses client that keeps reasoning state gets a chat model's reasoning (see `includeReasoning` on transformRequest). */
   includeReasoning?: boolean;
+  /**
+   * A Messages client gets a `thinking` block only when it asked for thoughts (`includeThinking` of
+   * `transformRequest`'s result). Without it, thoughts a seller wrote on its own are left out, as they
+   * were before. Other client protocols are not affected.
+   */
+  includeThinking?: boolean;
 }
 
 interface CanonicalStreamToolCall {
@@ -92,12 +98,13 @@ export function createStreamingAdapter(
   };
   const normalizer = createNormalizer(internals);
   const renderer = createRenderer(internals);
+  const dropsThoughts = options.to === 'anthropic-messages' && options.includeThinking !== true;
 
   return {
     adaptStart: makeStreamingStartResponse,
     adaptChunk(chunk) {
       const events = normalizer.feed(chunk);
-      return renderer.render(events, chunk);
+      return renderer.render(dropsThoughts ? events.filter((event) => event.type !== 'reasoning_delta') : events, chunk);
     },
   };
 }
@@ -240,6 +247,11 @@ function createAnthropicStreamNormalizer(options: StreamTransformInternals): Pro
           const delta = data.delta && typeof data.delta === 'object'
             ? data.delta as Record<string, unknown>
             : {};
+          if (delta.type === 'thinking_delta' && typeof delta.thinking === 'string') {
+            emitStart(emitted);
+            if (delta.thinking.length > 0) emitted.push({ type: 'reasoning_delta', delta: delta.thinking });
+            continue;
+          }
           if (delta.type === 'text_delta' && typeof delta.text === 'string') {
             emitStart(emitted);
             emitted.push({ type: 'text_delta', delta: delta.text });
@@ -443,6 +455,11 @@ function createChatStreamRenderer(options: StreamTransformInternals): ProtocolSt
           continue;
         }
 
+        if (event.type === 'reasoning_delta') {
+          chunks.push(renderChunk({ reasoning_content: event.delta }));
+          continue;
+        }
+
         if (event.type === 'text_delta') {
           chunks.push(renderChunk({ content: event.delta }));
           continue;
@@ -488,6 +505,9 @@ function createAnthropicStreamRenderer(options: StreamTransformInternals): Proto
   let messageStarted = false;
   let textBlockStarted = false;
   let hadTextBlock = false;
+  // Thoughts are the first block of a message, when there are any: a thinking block opens only before
+  // any text or tool call, and everything after it is numbered one higher.
+  let thinkingBlockState: 'none' | 'open' | 'closed' = 'none';
   let openToolIndex: number | null = null;
   // The open tool block's arguments so far, and the calls that started while
   // they were still incomplete. Some upstreams interleave parallel calls'
@@ -500,7 +520,15 @@ function createAnthropicStreamRenderer(options: StreamTransformInternals): Proto
   let responseId = '';
   let responseModel = options.fallbackModel ?? 'unknown';
 
-  const toolBlockIndex = (index: number): number => index + (hadTextBlock ? 1 : 0);
+  const thinkingBlocks = (): number => (thinkingBlockState === 'none' ? 0 : 1);
+  const textBlockIndex = (): number => thinkingBlocks();
+  const toolBlockIndex = (index: number): number => index + thinkingBlocks() + (hadTextBlock ? 1 : 0);
+
+  const closeThinking = (emitted: Array<{ event?: string; data: unknown | string }>): void => {
+    if (thinkingBlockState !== 'open') return;
+    thinkingBlockState = 'closed';
+    emitted.push({ event: 'content_block_stop', data: { type: 'content_block_stop', index: 0 } });
+  };
 
   const startMessage = (
     emitted: Array<{ event?: string; data: unknown | string }>,
@@ -600,8 +628,28 @@ function createAnthropicStreamRenderer(options: StreamTransformInternals): Proto
           continue;
         }
 
+        if (event.type === 'reasoning_delta') {
+          startMessage(emitted, null);
+          // Thoughts that come after the answer began have no place before it: dropped, never reordered.
+          if (thinkingBlockState === 'closed' || hadTextBlock || openToolIndex !== null || heldTools.size > 0) continue;
+          if (thinkingBlockState === 'none') {
+            if (event.delta.trim().length === 0) continue;
+            thinkingBlockState = 'open';
+            emitted.push({
+              event: 'content_block_start',
+              data: { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } },
+            });
+          }
+          emitted.push({
+            event: 'content_block_delta',
+            data: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: event.delta } },
+          });
+          continue;
+        }
+
         if (event.type === 'text_delta') {
           startMessage(emitted, null);
+          closeThinking(emitted);
           releaseHeldTools(emitted, true);
           closeOpenTool(emitted);
           if (!textBlockStarted) {
@@ -609,20 +657,21 @@ function createAnthropicStreamRenderer(options: StreamTransformInternals): Proto
             hadTextBlock = true;
             emitted.push({
               event: 'content_block_start',
-              data: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+              data: { type: 'content_block_start', index: textBlockIndex(), content_block: { type: 'text', text: '' } },
             });
           }
           emitted.push({
             event: 'content_block_delta',
-            data: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: event.delta } },
+            data: { type: 'content_block_delta', index: textBlockIndex(), delta: { type: 'text_delta', text: event.delta } },
           });
           continue;
         }
 
         if (event.type === 'tool_call_start') {
           startMessage(emitted, null);
+          closeThinking(emitted);
           if (textBlockStarted) {
-            emitted.push({ event: 'content_block_stop', data: { type: 'content_block_stop', index: 0 } });
+            emitted.push({ event: 'content_block_stop', data: { type: 'content_block_stop', index: textBlockIndex() } });
             textBlockStarted = false;
           }
           if (openToolIndex === event.index || heldTools.has(event.index)) continue;
@@ -652,10 +701,11 @@ function createAnthropicStreamRenderer(options: StreamTransformInternals): Proto
 
         if (event.type === 'response_done') {
           startMessage(emitted, null);
+          closeThinking(emitted);
           releaseHeldTools(emitted, true);
           closeOpenTool(emitted);
           if (textBlockStarted) {
-            emitted.push({ event: 'content_block_stop', data: { type: 'content_block_stop', index: 0 } });
+            emitted.push({ event: 'content_block_stop', data: { type: 'content_block_stop', index: textBlockIndex() } });
             textBlockStarted = false;
           }
           emitted.push({
