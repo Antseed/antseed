@@ -314,6 +314,88 @@ test('migration 18 on a database with history keeps pruned counts and rolls the 
   }
 })
 
+/** What gateways before the rollup did to prune: move request counts into request_rollups, then delete the rows. */
+function pruneLikeBefore(store: GatewayStore, before: number): void {
+  store.database.prepare(`
+    INSERT INTO request_rollups (hour_start, key_id, workspace_id, member_id, model, seller_peer_id, end_user, router_peer_id, requests, failed_requests)
+    SELECT (r.started_at / ${HOUR}) * ${HOUR}, r.key_id, r.workspace_id, r.member_id, r.model, r.seller_peer_id, r.end_user, r.router_peer_id,
+      COUNT(*), SUM(r.finished_at IS NOT NULL AND (r.status IS NULL OR r.status >= 400))
+    FROM gateway_requests r WHERE r.started_at < ? GROUP BY 1, 2, 3, 4, 5, 6, 7, 8
+  `).run(before)
+  store.database.prepare('DELETE FROM gateway_requests WHERE started_at < ?').run(before)
+}
+
+/** Windows that start or end inside the pruned hours (pruned up to `BASE + 1 h 40 min`), or both. */
+const PRUNED_WINDOWS: Array<{ from?: number; to?: number }> = [
+  {},
+  { from: BASE, to: BASE + 90 * 60_000 },
+  { from: BASE, to: BASE + HOUR + 50 * 60_000 },
+  { from: BASE + 20 * 60_000, to: BASE + 2 * HOUR + 10 * 60_000 },
+  { from: BASE + HOUR + 10 * 60_000, to: BASE + HOUR + 50 * 60_000 },
+  { to: BASE + HOUR + 30 * 60_000 },
+  { from: BASE + HOUR + 30 * 60_000 },
+]
+
+test('reports over hours pruned before the rollup count them as they always did, partial edges included', async () => {
+  const { dir, cleanup } = tempDir()
+  try {
+    let store = new GatewayStore(dir, () => BASE + 6 * HOUR)
+    const w = setUp(store, 51)
+    run(store, w, 800, BASE)
+    // An older gateway: no rollup yet, and its retention pruned the log up to 10:40 (mid-hour).
+    store.database.exec(`
+      DROP TRIGGER usage_hourly_request_insert; DROP TRIGGER usage_hourly_request_update;
+      DROP TRIGGER usage_hourly_ledger_insert; DROP TRIGGER usage_hourly_ledger_update;
+      DROP TABLE usage_hourly; DROP TABLE usage_rollup_state;
+    `)
+    pruneLikeBefore(store, BASE + HOUR + 40 * 60_000)
+    store.database.pragma('user_version = 17')
+    store.close()
+
+    store = new GatewayStore(dir, () => BASE + 6 * HOUR)
+    const read = () => PRUNED_WINDOWS.flatMap((window) => [
+      ...GROUPINGS.map(([groupBy, splitBy]) => normalized(store.usageReport(window, groupBy, splitBy))),
+      ...w.keys.map((keyId) => store.usageStats(keyId, window.from ?? 0)),
+      Object.fromEntries(store.keyUsageSummaries(w.keys, window.from ?? 0)),
+    ])
+    assert.equal(store.usageRollupReady(), false)
+    const beforeBackfill = read()
+    assert.equal(await store.backfillUsageRollup({ chunkSize: 40 }), true)
+    assert.deepEqual(read(), beforeBackfill)
+    store.close()
+  } finally {
+    cleanup()
+  }
+})
+
+test('a report ending inside an hour pruned after the rollup counts the hour\'s pruned requests whole and its spend exactly', async () => {
+  const { dir, cleanup } = tempDir()
+  const store = new GatewayStore(dir, () => BASE + 6 * HOUR)
+  try {
+    const w = setUp(store, 61)
+    run(store, w, 800, BASE)
+    const hour = BASE + HOUR
+    const cutoff = hour + 40 * 60_000
+    const prunedPart = store.usageReport({ from: hour, to: cutoff }, null).totals
+    const firstHalf = store.usageReport({ from: hour, to: hour + 30 * 60_000 }, null).totals
+    const wholeHour = store.usageReport({ from: hour, to: hour + HOUR }, 'model')
+    assert.notEqual(prunedPart.requests, firstHalf.requests, 'requests between the report\'s end and the cutoff')
+    assert.ok(await store.pruneRequests(cutoff) > 0)
+
+    // As before the rollup: the pruned requests of the hour a report ends in count whole, the spend to its end.
+    const report = store.usageReport({ from: hour, to: hour + 30 * 60_000 }, null).totals
+    assert.equal(report.requests, prunedPart.requests)
+    assert.equal(report.failedRequests, prunedPart.failedRequests)
+    assert.equal(report.spentUsdc, firstHalf.spentUsdc)
+    assert.equal(report.outputTokens >= firstHalf.outputTokens, true)
+    // Whole hours are unchanged by pruning.
+    assert.deepEqual(normalized(store.usageReport({ from: hour, to: hour + HOUR }, 'model')), normalized(wholeHour))
+  } finally {
+    store.close()
+    cleanup()
+  }
+})
+
 test('savings count each billed request once per model, and stray spend as a request of its own', () => {
   const { dir, cleanup } = tempDir()
   const store = new GatewayStore(dir, () => BASE + HOUR)

@@ -1427,38 +1427,53 @@ export class GatewayStore {
    * and the partial hours at either end from the log and the ledger. A
    * partial hour still reads from the rollup when that is exact: nothing was
    * recorded in the rest of the hour, and none of it was pruned.
+   *
+   * Pruned hours keep the hour granularity reads had before the rollup: an
+   * hour a window starts in counts what the log kept from the start on, and
+   * an hour it ends in counts its pruned requests whole. That last one reads
+   * the hour from the rollup and takes away (`sign` -1) what the log and the
+   * ledger still have after the end, so spend stays exact (the ledger is
+   * never pruned).
    */
-  private _usageWindow(from: number | null | undefined, to: number | null | undefined): { hours: { from: number | null; to: number | null } | null; raw: Array<{ from: number; to: number }> } {
+  private _usageWindow(from: number | null | undefined, to: number | null | undefined): { hours: { from: number | null; to: number | null } | null; raw: UsageRange[] } {
     const lo = from ?? null
     const hi = to ?? null
     if (lo !== null && hi !== null && hi <= lo) return { hours: null, raw: [] }
     const floor = (time: number) => Math.floor(time / HOUR_MS) * HOUR_MS
     let hoursFrom = lo
     let hoursTo = hi
-    const raw: Array<{ from: number; to: number }> = []
+    const raw: UsageRange[] = []
     if (lo !== null && lo !== floor(lo)) {
       const hour = floor(lo)
       if (hi !== null && hi <= hour + HOUR_MS) {
         return this._hourReadsWhole(hour, [[hour, lo], [hi, hour + HOUR_MS]])
           ? { hours: { from: hour, to: hour + HOUR_MS }, raw: [] }
-          : { hours: null, raw: [{ from: lo, to: hi }] }
+          : { hours: null, raw: [{ from: lo, to: hi, sign: 1 }] }
       }
       if (this._hourReadsWhole(hour, [[hour, lo]])) hoursFrom = hour
       else {
-        raw.push({ from: lo, to: hour + HOUR_MS })
+        raw.push({ from: lo, to: hour + HOUR_MS, sign: 1 })
         hoursFrom = hour + HOUR_MS
       }
     }
     if (hi !== null && hi !== floor(hi)) {
       const hour = floor(hi)
-      if (this._hourReadsWhole(hour, [[hi, hour + HOUR_MS]])) hoursTo = hour + HOUR_MS
+      if (this._hourPruned(hour)) {
+        raw.push({ from: hi, to: hour + HOUR_MS, sign: -1 })
+        hoursTo = hour + HOUR_MS
+      } else if (this._hourReadsWhole(hour, [[hi, hour + HOUR_MS]])) hoursTo = hour + HOUR_MS
       else {
-        raw.push({ from: hour, to: hi })
+        raw.push({ from: hour, to: hi, sign: 1 })
         hoursTo = hour
       }
     }
     const hours = hoursFrom !== null && hoursTo !== null && hoursTo <= hoursFrom ? null : { from: hoursFrom, to: hoursTo }
     return { hours, raw }
+  }
+
+  /** Whether request-log rows of `hour` may have been pruned. */
+  private _hourPruned(hour: number): boolean {
+    return hour < this._rollupState().requests_pruned_before
   }
 
   /**
@@ -1467,7 +1482,7 @@ export class GatewayStore {
    * outside (its part inside is read from what the log kept, as before).
    */
   private _hourReadsWhole(hour: number, outside: Array<[number, number]>): boolean {
-    if (hour < this._rollupState().requests_pruned_before) return false
+    if (this._hourPruned(hour)) return false
     return outside.every(([from, to]) => from >= to || !(this._stmt(`
       SELECT EXISTS (SELECT 1 FROM gateway_requests WHERE started_at >= ? AND started_at < ?)
         OR EXISTS (SELECT 1 FROM ledger_entries WHERE created_at >= ? AND created_at < ?) AS found
@@ -1582,10 +1597,11 @@ export class GatewayStore {
         `).all(window.hours.from ?? 0) as Array<{ peer: string; requests: number }>)
       }
       for (const range of window.raw) {
-        counts.push(...this._stmt(`
+        const rows = this._stmt(`
           SELECT seller_peer_id AS peer, COUNT(*) AS requests FROM gateway_requests
           WHERE started_at >= ? AND started_at < ? AND seller_peer_id IS NOT NULL GROUP BY seller_peer_id
-        `).all(range.from, range.to) as Array<{ peer: string; requests: number }>)
+        `).all(range.from, range.to) as Array<{ peer: string; requests: number }>
+        counts.push(...rows.map((row) => ({ ...row, requests: row.requests * range.sign })))
       }
       for (const row of counts) entry(row.peer).requests += row.requests
     }
@@ -1724,6 +1740,7 @@ export class GatewayStore {
       `${groupExpression(groupBy, columns)} AS g, ${splitBy ? groupExpression(splitBy, columns) : 'NULL'} AS s`
     const requestRows: UsageRequestRow[] = []
     const tokenRows: UsageTokenRow[] = []
+    let subtracted = false
     if (!this._readsRollup()) {
       this._usageRowsFromLog(filter, select, true, requestRows, tokenRows)
     } else {
@@ -1738,9 +1755,13 @@ export class GatewayStore {
         requestRows.push(...rows)
         tokenRows.push(...rows)
       }
-      for (const range of window.raw) this._usageRowsFromLog({ ...filter, from: range.from, to: range.to }, select, false, requestRows, tokenRows)
+      for (const range of window.raw) {
+        subtracted ||= range.sign < 0
+        this._usageRowsFromLog({ ...filter, from: range.from, to: range.to }, select, false, requestRows, tokenRows, range.sign)
+      }
     }
-    return this._mergeUsage(groupBy, splitBy, requestRows, tokenRows)
+    // What was taken away can leave a group (or split) with nothing in the window.
+    return this._mergeUsage(groupBy, splitBy, requestRows, tokenRows, subtracted)
   }
 
   /**
@@ -1748,6 +1769,7 @@ export class GatewayStore {
    * request counts (and, with `withPruned`, those of rows pruned before the
    * rollup existed), spend and tokens, and the tokens of requests whose spend
    * carries none (not reported yet, or never) from what their responses said.
+   * `sign` -1 adds them negated, to take them away from the rollup's rows.
    */
   private _usageRowsFromLog(
     filter: UsageFilter,
@@ -1755,37 +1777,52 @@ export class GatewayStore {
     withPruned: boolean,
     requestRows: UsageRequestRow[],
     tokenRows: UsageTokenRow[],
+    sign: 1 | -1 = 1,
   ): void {
+    const requestsSigned = (rows: UsageRequestRow[]) => rows.map((row) => ({ ...row, requests: row.requests * sign, failed: row.failed * sign }))
+    const tokensSigned = (rows: UsageTokenRow[]) => rows.map((row) => ({
+      ...row,
+      spent: (row.spent ?? 0) * sign,
+      input_tokens: (row.input_tokens ?? 0) * sign,
+      cached_input_tokens: row.cached_input_tokens * sign,
+      output_tokens: row.output_tokens * sign,
+    }))
     const req = scopeSql(filter, REQUEST_COLUMNS)
-    requestRows.push(...this._stmt(`
+    requestRows.push(...requestsSigned(this._stmt(`
       SELECT ${select(REQUEST_COLUMNS)}, COUNT(*) AS requests, COALESCE(SUM(${FAILED_SQL}), 0) AS failed
       FROM gateway_requests r ${whereClause(req.where)} GROUP BY g, s
-    `).all(...req.params) as UsageRequestRow[])
+    `).all(...req.params) as UsageRequestRow[]))
     if (withPruned) {
       const roll = scopeSql(filter, ROLLUP_COLUMNS)
-      requestRows.push(...this._stmt(`
+      requestRows.push(...requestsSigned(this._stmt(`
         SELECT ${select(ROLLUP_COLUMNS)}, SUM(u.requests) AS requests, SUM(u.failed_requests) AS failed
         FROM request_rollups u ${whereClause(roll.where)} GROUP BY g, s
-      `).all(...roll.params) as UsageRequestRow[])
+      `).all(...roll.params) as UsageRequestRow[]))
     }
     const led = scopeSql(filter, LEDGER_COLUMNS)
     led.where.push("l.kind = 'spend'")
-    tokenRows.push(...this._stmt(`
+    tokenRows.push(...tokensSigned(this._stmt(`
       SELECT ${select(LEDGER_COLUMNS)}, COALESCE(-SUM(l.amount_usdc), 0) AS spent, COALESCE(SUM(l.input_tokens), 0) AS input_tokens,
         COALESCE(SUM(l.cached_input_tokens), 0) AS cached_input_tokens, COALESCE(SUM(l.output_tokens), 0) AS output_tokens
       FROM ledger_entries l ${whereClause(led.where)} GROUP BY g, s
-    `).all(...led.params) as UsageTokenRow[])
+    `).all(...led.params) as UsageTokenRow[]))
     const fallback = scopeSql(filter, REQUEST_COLUMNS)
     fallback.where.push(REPORTED_TOKENS_ONLY_SQL)
-    tokenRows.push(...this._stmt(`
+    tokenRows.push(...tokensSigned(this._stmt(`
       SELECT ${select(REQUEST_COLUMNS)}, SUM(r.usage_input_tokens) AS input_tokens, COALESCE(SUM(r.usage_cached_input_tokens), 0) AS cached_input_tokens,
         COALESCE(SUM(r.usage_output_tokens), 0) AS output_tokens
       FROM gateway_requests r ${whereClause(fallback.where)} GROUP BY g, s
-    `).all(...fallback.params) as UsageTokenRow[])
+    `).all(...fallback.params) as UsageTokenRow[]))
   }
 
   /** Totals plus one row per group (and split) from the rows of `usageReport`'s sources. */
-  private _mergeUsage(groupBy: UsageGroupBy | null, splitBy: UsageGroupBy | null, requestRows: readonly UsageRequestRow[], tokenRows: readonly UsageTokenRow[]): { totals: UsageTotalsRow; groups: UsageGroupRow[] } {
+  private _mergeUsage(
+    groupBy: UsageGroupBy | null,
+    splitBy: UsageGroupBy | null,
+    requestRows: readonly UsageRequestRow[],
+    tokenRows: readonly UsageTokenRow[],
+    dropEmpty = false,
+  ): { totals: UsageTotalsRow; groups: UsageGroupRow[] } {
     const groups = new Map<string | null, { totals: UsageTotalsRow; splits: Map<string | null, UsageTotalsRow> }>()
     const entries = (group: string | null, split: string | null): UsageTotalsRow[] => {
       let found = groups.get(group)
@@ -1813,6 +1850,12 @@ export class GatewayStore {
         target.inputTokens += row.input_tokens ?? 0
         target.cachedInputTokens += row.cached_input_tokens
         target.outputTokens += row.output_tokens
+      }
+    }
+    if (dropEmpty) {
+      for (const [group, entry] of groups) {
+        if (isEmptyUsage(entry.totals)) groups.delete(group)
+        else for (const [split, part] of entry.splits) if (isEmptyUsage(part)) entry.splits.delete(split)
       }
     }
     const totals = emptyUsageTotals()
@@ -1924,6 +1967,18 @@ export class GatewayStore {
   usageByModelForKeys(keyIds: readonly string[]): ModelUsage[] {
     if (keyIds.length === 0) return []
     const ids = JSON.stringify(keyIds)
+    const byModel = new Map<string, ModelUsage>()
+    const add = (model: string, row: Omit<ModelUsage, 'model'>) => {
+      const current = byModel.get(model) ?? { model, amountUsdc: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, requests: 0 }
+      byModel.set(model, {
+        model,
+        amountUsdc: current.amountUsdc + row.amountUsdc,
+        inputTokens: current.inputTokens + row.inputTokens,
+        cachedInputTokens: current.cachedInputTokens + row.cachedInputTokens,
+        outputTokens: current.outputTokens + row.outputTokens,
+        requests: current.requests + row.requests,
+      })
+    }
     if (this._readsRollup()) {
       // Per key first, as below: a key's negative net spend on a model never cancels another key's.
       const rows = this._stmt(`
@@ -1932,16 +1987,9 @@ export class GatewayStore {
         FROM usage_hourly h WHERE h.key_id IN (SELECT value FROM json_each(?)) AND (h.served_model <> '' OR h.model <> '')
         GROUP BY h.key_id, 1
       `).all(ids) as Array<{ model: string; amount: number; input_tokens: number; cached_input_tokens: number; output_tokens: number; requests: number }>
-      const byModel = new Map<string, ModelUsage>()
       for (const row of rows) {
-        const current = byModel.get(row.model) ?? { model: row.model, amountUsdc: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, requests: 0 }
-        byModel.set(row.model, {
-          model: row.model,
-          amountUsdc: current.amountUsdc + Math.max(0, row.amount),
-          inputTokens: current.inputTokens + row.input_tokens,
-          cachedInputTokens: current.cachedInputTokens + row.cached_input_tokens,
-          outputTokens: current.outputTokens + row.output_tokens,
-          requests: current.requests + row.requests,
+        add(row.model, {
+          amountUsdc: Math.max(0, row.amount), inputTokens: row.input_tokens, cachedInputTokens: row.cached_input_tokens, outputTokens: row.output_tokens, requests: row.requests,
         })
       }
       return [...byModel.values()].filter((usage) => usage.requests > 0 || usage.amountUsdc > 0 || usage.inputTokens + usage.cachedInputTokens + usage.outputTokens > 0)
@@ -1972,23 +2020,11 @@ export class GatewayStore {
         WHERE r.key_id IN (SELECT value FROM json_each(?)) AND COALESCE(r.served_model, r.model) IS NOT NULL AND ${REPORTED_TOKENS_ONLY_SQL}
       ) GROUP BY key_id, model
     `).all(ids, ids) as Array<{ model: string; requests: number }>
-    const requests = new Map<string, number>()
-    for (const row of counted) requests.set(row.model, (requests.get(row.model) ?? 0) + row.requests)
-    const byModel = new Map<string, ModelUsage>()
-    const add = (model: string, row: Omit<ModelUsage, 'model' | 'requests'>) => {
-      const current = byModel.get(model) ?? { model, amountUsdc: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, requests: 0 }
-      byModel.set(model, {
-        model,
-        amountUsdc: current.amountUsdc + row.amountUsdc,
-        inputTokens: current.inputTokens + row.inputTokens,
-        cachedInputTokens: current.cachedInputTokens + row.cachedInputTokens,
-        outputTokens: current.outputTokens + row.outputTokens,
-        requests: 0,
-      })
-    }
-    for (const row of ledger) add(row.model, { amountUsdc: Math.max(0, row.amount), inputTokens: row.input_tokens, cachedInputTokens: row.cached_input_tokens, outputTokens: row.output_tokens })
-    for (const row of reported) add(row.model, { amountUsdc: 0, inputTokens: row.input_tokens, cachedInputTokens: row.cached_input_tokens, outputTokens: row.output_tokens })
-    return [...byModel.values()].map((usage) => ({ ...usage, requests: requests.get(usage.model) ?? 0 }))
+    const none = { amountUsdc: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, requests: 0 }
+    for (const row of ledger) add(row.model, { ...none, amountUsdc: Math.max(0, row.amount), inputTokens: row.input_tokens, cachedInputTokens: row.cached_input_tokens, outputTokens: row.output_tokens })
+    for (const row of reported) add(row.model, { ...none, inputTokens: row.input_tokens, cachedInputTokens: row.cached_input_tokens, outputTokens: row.output_tokens })
+    for (const row of counted) add(row.model, { ...none, requests: row.requests })
+    return [...byModel.values()]
   }
 
   usageStats(keyId: string, since = 0): KeyUsageStats {
@@ -2008,7 +2044,7 @@ export class GatewayStore {
         inputTokens: row.input_tokens, cachedInputTokens: row.cached_input_tokens, outputTokens: row.output_tokens,
       })
     }
-    for (const range of window.raw) addKeyUsage(usage, this._keyUsageFromLog(keyId, range.from, range.to, false))
+    for (const range of window.raw) addKeyUsage(usage, this._keyUsageFromLog(keyId, range.from, range.to, false), range.sign)
     return usage
   }
 
@@ -2089,7 +2125,7 @@ export class GatewayStore {
         `).all(ids, range.from, range.to) as Array<{ key_id: string; spent: number }>
         for (const row of spent) {
           const summary = summaries.get(row.key_id)
-          if (summary) summary.spentSinceUsdc += row.spent
+          if (summary) summary.spentSinceUsdc += row.spent * range.sign
         }
       }
       return summaries
@@ -2576,8 +2612,11 @@ const HOURLY_TOTALS = USAGE_TOTALS
 type UsageRequestRow = { g: string | null; s: string | null; requests: number; failed: number }
 type UsageTokenRow = { g: string | null; s: string | null; spent?: number; input_tokens: number; cached_input_tokens: number; output_tokens: number }
 
-function addKeyUsage(target: KeyUsageStats, add: KeyUsageStats): void {
-  for (const field of Object.keys(target) as Array<keyof KeyUsageStats>) target[field] += add[field]
+/** A partial hour a usage read takes from the log and the ledger: added, or (-1) taken away from the rollup's whole hour. */
+type UsageRange = { from: number; to: number; sign: 1 | -1 }
+
+function addKeyUsage(target: KeyUsageStats, add: KeyUsageStats, sign: 1 | -1 = 1): void {
+  for (const field of Object.keys(target) as Array<keyof KeyUsageStats>) target[field] += add[field] * sign
 }
 const TOUCH_INTERVAL_MS = 60 * 1000
 const MAX_TRACKED_TOUCHES = 10_000
@@ -2647,6 +2686,10 @@ function capUserGroups<Row extends UsageSplitRow>(groupBy: UsageGroupBy, rows: R
     for (const field of Object.keys(emptyUsageTotals()) as Array<keyof UsageTotalsRow>) other[field] += row[field]
   }
   return [...rows.slice(0, MAX_USER_GROUPS), other as Row]
+}
+
+function isEmptyUsage(usage: UsageTotalsRow): boolean {
+  return Object.values(usage).every((value) => value === 0)
 }
 
 function emptyUsageTotals(): UsageTotalsRow {
