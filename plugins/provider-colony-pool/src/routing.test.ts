@@ -605,6 +605,22 @@ describe('routing, failover and ranking in the pool', () => {
     expect((await running).statusCode).toBe(200);
   });
 
+  it('answers 413 for a request too large for one worker frame, before any worker sees it, and blames no one', async () => {
+    await setup();
+    const worker = await connect('answer');
+    const prompt = 'x'.repeat(13 * 1024 * 1024);
+    const sealed = await sealRequest({ body: enc({ model: SERVICE, messages: [{ role: 'user', content: prompt }] }), worker: worker.address, workerKey: workerKeyHex(worker.key.publicKey) });
+
+    const response = await provider.handleRequest({ requestId: 'huge', method: 'POST', path: '/v1/chat/completions', headers: {}, body: sealed.body });
+
+    expect(response.statusCode).toBe(413);
+    expect(JSON.parse(dec(response.body)).error.code).toBe('request_too_large');
+    expect(worker.requests).toHaveLength(0);
+    expect(summary(worker)).toMatchObject({ reliability: null, benchedUntil: null });
+    // The worker is still connected and serves the next request.
+    expect((await provider.handleRequest(await requestFor(worker, 'next'))).statusCode).toBe(200);
+  });
+
   it('assigns the next buyer other workers first, so buyers holding several workers still spread out', async () => {
     await setup();
     const all = [await connect('answer'), await connect('answer'), await connect('answer'), await connect('answer')];

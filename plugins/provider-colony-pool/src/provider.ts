@@ -19,7 +19,7 @@ import {
   workerE2EProviderCapability,
 } from '@antseed/node/worker-e2e';
 import type { WorkerLedger } from './ledger.js';
-import { NoWorkerAvailableError, WorkerBusyError, WorkerReassignError, WorkerUnavailableError, type ColonyPool } from './pool.js';
+import { NoWorkerAvailableError, RequestTooLargeError, WorkerBusyError, WorkerReassignError, WorkerUnavailableError, type ColonyPool } from './pool.js';
 
 /** Request IDs the seller's model health checker uses for its probes. */
 const HEALTH_PROBE_PREFIX = 'health-';
@@ -186,6 +186,7 @@ export class ColonyPoolProvider implements Provider {
       return { requestId: req.requestId, statusCode: response.status, headers: response.headers, body: response.body };
     } catch (err) {
       if (err instanceof NoWorkerAvailableError) return errorResponse(req.requestId, 503, err.message);
+      if (err instanceof RequestTooLargeError) return errorResponse(req.requestId, 413, err.message, 'request_too_large');
       return errorResponse(req.requestId, 502, err instanceof Error ? err.message : String(err));
     }
   }
@@ -252,6 +253,10 @@ export class ColonyPoolProvider implements Provider {
           },
         }, callbacks?.signal, { reassign: canReassign });
       } catch (err) {
+        if (err instanceof RequestTooLargeError) {
+          resolve(errorResponse(req.requestId, 413, err.message, 'request_too_large'));
+          return;
+        }
         if (err instanceof WorkerReassignError) {
           resolve(errorResponse(req.requestId, WORKER_UNAVAILABLE_STATUS, err.message, WORKER_REASSIGN_CODE));
           return;

@@ -389,7 +389,10 @@ it for 10 minutes, so the next buyer's set starts with other workers. While
 the recipients are only busy, the request waits for a slot, first come
 first served, up to 15 seconds and 64 waiting requests; past either the pool
 answers `503` `{"error":{"code":"worker_busy"}}` with `retry-after`, and the
-buyer keeps its set. When that worker fails before any byte reached the buyer (it
+buyer keeps its set. A request whose `request` frame would exceed the
+workers' 16 MiB WebSocket frame limit (the sealed body goes base64, so about
+12 MiB of body) is answered `413` `{"error":{"code":"request_too_large"}}`
+before any worker receives it, and counts against no worker. When that worker fails before any byte reached the buyer (it
 never picked the request up, did not answer in time, disconnected, refused it,
 or is benched), the pool sends the same envelope to the next recipient, with
 no round trip to the buyer. It never sends it to a worker outside the set the

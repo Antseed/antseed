@@ -181,13 +181,26 @@ export class WorkerUnavailableError extends Error {
   }
 }
 
-/** Every worker that could take the request stayed busy; the buyer's assignment is still good. */
 /** The request's workers are busy and another is free: handed back unsent, for the buyer to encrypt for another. */
 export class WorkerReassignError extends Error {
   constructor(workers: string) {
     super(`Worker ${workers} is busy and another worker is free; encrypt the request for another`);
     this.name = 'WorkerReassignError';
   }
+}
+
+/** The request would not fit in one pool-to-worker frame, so no worker could receive it. */
+export class RequestTooLargeError extends Error {
+  constructor(readonly bytes: number, readonly limit: number) {
+    super(`Request is ${bytes} bytes once framed for the worker; a worker takes at most ${limit}`);
+    this.name = 'RequestTooLargeError';
+  }
+}
+
+/** Bytes of the `request` frame that carries `req` (the body goes base64, so 4/3 of its size). */
+export function requestFrameBytes(req: DispatchRequest): number {
+  const envelope = JSON.stringify({ t: 'request', id: '00000000-0000-0000-0000-000000000000', method: req.method, path: req.path, headers: req.headers, body: '' });
+  return Buffer.byteLength(envelope) + Math.ceil(req.body.byteLength / 3) * 4;
 }
 
 export class WorkerBusyError extends Error {
@@ -480,9 +493,12 @@ export class ColonyPool {
    * encrypt it for another worker), a request no worker has received yet is
    * handed back instead of waiting whenever another worker has a free slot
    * (WorkerReassignError): it is never sent to a second worker, so a request
-   * readable by one Mac stays read by one.
+   * readable by one Mac stays read by one. Throws RequestTooLargeError,
+   * before any worker sees it, for a request over the worker's frame limit.
    */
   dispatch(recipients: readonly string[], service: string, req: DispatchRequest, handlers: DispatchHandlers, signal?: AbortSignal, options: { reassign?: boolean } = {}): void {
+    const bytes = requestFrameBytes(req);
+    if (bytes > MAX_FRAME_BYTES) throw new RequestTooLargeError(bytes, MAX_FRAME_BYTES);
     const set = [...new Set(recipients.map((address) => address.toLowerCase()))].slice(0, MAX_WORKER_RECIPIENTS);
     const tried = new Set<string>();
     const failures: string[] = [];
@@ -621,17 +637,14 @@ export class ColonyPool {
 
   private async sealedRoundTrip(worker: ConnectedWorker, body: Uint8Array, requestId: string, path: string, timeoutMs: number): Promise<PlainResponse> {
     const sealed = await sealRequest({ body, worker: worker.address, workerKey: worker.certificate.key });
+    const req: DispatchRequest = { requestId, method: 'POST', path, headers: { 'content-type': 'application/json' }, body: sealed.body };
+    const bytes = requestFrameBytes(req);
+    if (bytes > MAX_FRAME_BYTES) throw new RequestTooLargeError(bytes, MAX_FRAME_BYTES);
     return new Promise((resolve, reject) => {
       let status = 0;
       let headers: Record<string, string> = {};
       const chunks: Uint8Array[] = [];
-      this.send(worker, {
-        requestId,
-        method: 'POST',
-        path,
-        headers: { 'content-type': 'application/json' },
-        body: sealed.body,
-      }, {
+      this.send(worker, req, {
         onStart: (code, responseHeaders) => { status = code; headers = responseHeaders; },
         onChunk: (data) => { chunks.push(data); },
         onEnd: () => {
