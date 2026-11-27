@@ -867,7 +867,8 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     expect(h.seller.isOneOffChannel(channelId)).toBe(false);
   });
 
-  it('closes at no more than the serious fee on the opening reserve when the topUp after accept reverts', async () => {
+  it('keeps a job whose topUp after accept reverts at the serious fee, and holds the buyer back like an unpaid video', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
     const h = setup({ topUpBehavior: 'revert' });
     await openChannelWithChat(h);
 
@@ -879,17 +880,134 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     expect(h.providerCreates).toHaveLength(1);
     const { channelId } = onlyOneOff(h);
     expect(h.topUp).toHaveBeenCalledOnce();
-    expect(h.close).toHaveBeenCalledOnce();
-    expect(h.close.mock.calls[0]![1]).toBe(channelId);
-    expect(h.close.mock.calls[0]![2]).toBe(SERIOUS_FEE);
-    expect(h.chain.get(channelId)).toMatchObject({ deposit: FIRST_RESERVE, settled: SERIOUS_FEE, status: 2 });
+    // The channel stays at its opening reserve, with the threshold auth as the most it can settle.
+    expect(h.close).not.toHaveBeenCalled();
+    expect(h.chain.get(channelId)).toMatchObject({ deposit: FIRST_RESERVE, settled: 0n, status: 1 });
+    expect(h.seller.getAcceptedCumulative(channelId)).toBe(SERIOUS_FEE);
+    expect(h.seller.getChannel(channelId)).toMatchObject({ authMax: SERIOUS_FEE.toString(), latestReserveAuthSig: null });
+    // One running job alone does not hold the buyer back.
+    expect(h.seller.videoJobHold(h.buyerIdentity.peerId, 'next')).toBeNull();
 
-    // The job is left uncharged beyond that, like an unpaid video: its delivery charges nothing more.
+    // Its delivery cannot be paid on this channel: the buyer is held back as for any video it took without paying.
     expect((await h.send(h.retrieveRequest('retrieve-1', 'job-1'))).statusCode).toBe(200);
     await h.settle();
-    expect(h.close).toHaveBeenCalledOnce();
-    expect(h.chain.get(channelId)).toMatchObject({ settled: SERIOUS_FEE, status: 2 });
+    expect(h.close).not.toHaveBeenCalled();
+    expect(h.seller.videoJobHold(h.buyerIdentity.peerId, 'next')?.code).toBe('video_payment_pending');
+
+    // The TTL closes it at no more than the serious fee.
+    advanceClock(24 * 60 * 60_000 + 1);
+    await h.seller.checkTimeouts();
+    expect(h.close.mock.calls.map((call) => [call[1], call[2]])).toEqual([[channelId, SERIOUS_FEE]]);
+    expect(h.chain.get(channelId)).toMatchObject({ deposit: FIRST_RESERVE, settled: SERIOUS_FEE, status: 2 });
     expect(h.chain.get(h.sessionChannelId())).toMatchObject({ status: 1 });
+  });
+
+  it('runs no more jobs whose topUp fails than the open-jobs limit allows', async () => {
+    const h = setup({ topUpBehavior: 'revert' });
+
+    const answers = await sendVideos(h, UNPAID_LIMIT + 2, 'unfunded');
+
+    expect(statusesOf(answers)).toEqual([...repeat(200, UNPAID_LIMIT), 409, 409]);
+    expect(errorOf(answers.at(-1)!).code).toBe('video_jobs_open_limit');
+    expect(h.providerCreates).toHaveLength(UNPAID_LIMIT);
+    expect(h.close).not.toHaveBeenCalled();
+  }, 60_000);
+
+  it('does not run a create sent before the AuthAck while the deposit check is still reading', async () => {
+    const h = setup();
+    let releaseRead!: () => void;
+    const readHeld = new Promise<void>((resolve) => { releaseRead = resolve; });
+    const config = (h.seller as unknown as { _config: { readBuyerAvailableDeposit: () => Promise<bigint> } })._config;
+    const read = vi.fn(async () => { await readHeld; return 0n; });
+    config.readBuyerAvailableDeposit = read;
+
+    const waitingForAck = h.send(h.videoRequest('video-1'));
+    waitingForAck.catch(() => undefined);
+    await vi.waitFor(() => expect(read).toHaveBeenCalled(), { timeout: 3_000 });
+    const { channelId } = onlyOneOff(h);
+
+    // A buyer that does not wait for the AuthAck: the channel cannot be claimed yet.
+    expect(h.seller.getOneOffChannelForRequest(h.buyerIdentity.peerId, 'video-1')).toBeNull();
+    expect(h.seller.claimOneOffChannel(channelId)).toBe(false);
+
+    releaseRead();
+    await expect(waitingForAck).rejects.toMatchObject({ code: 'buyer-session-state' });
+    await h.settle();
+    expect(h.providerCreates).toHaveLength(0);
+    expect(h.close.mock.calls.map((call) => call[2])).toEqual([0n]);
+  });
+
+  it('does not hand out a job its channel closed under, and charges nothing for it', async () => {
+    const h = setup({ holdCreates: true });
+    const pending = h.send(h.videoRequest('video-1'));
+    await vi.waitFor(() => expect(h.providerCreates).toHaveLength(1));
+    const { channelId } = onlyOneOff(h);
+
+    // Something closes the channel while the create is with the provider.
+    expect(await h.seller.closeOneOffChannel(channelId, 'closed under the create')).toBe(true);
+    h.releaseCreate();
+    const response = await pending;
+    await h.settle();
+
+    expect(response.statusCode).toBe(503);
+    expect(h.topUp).not.toHaveBeenCalled();
+    expect(h.close.mock.calls.map((call) => call[2])).toEqual([0n]);
+    expect((await h.send(h.retrieveRequest('retrieve-1', 'job-1'))).statusCode).not.toBe(200);
+  });
+
+  it('keeps an accepted, topped-up channel open when the periodic check read it before the accept', async () => {
+    const h = setup({ holdCreates: true });
+    const pending = h.send(h.videoRequest('video-1'));
+    await vi.waitFor(() => expect(h.providerCreates).toHaveLength(1));
+    const { channelId } = onlyOneOff(h);
+
+    // The periodic check reads the store, then waits on the chain read.
+    const readChain = vi.mocked(h.seller.channelsClient.getSession).getMockImplementation()!;
+    let releaseRead!: () => void;
+    const readHeld = new Promise<void>((resolve) => { releaseRead = resolve; });
+    let holdNext = true;
+    vi.mocked(h.seller.channelsClient.getSession).mockImplementation(async (id) => {
+      if (holdNext) { holdNext = false; await readHeld; }
+      return readChain(id);
+    });
+    const check = h.seller.checkTimeouts();
+
+    // Meanwhile the provider accepts and the topUp lands.
+    h.releaseCreate();
+    expect((await pending).statusCode).toBe(200);
+    await vi.waitFor(() => expect(h.seller.getReserveMax(channelId)).toBe(VIDEO_PRICE));
+
+    releaseRead();
+    await check;
+    await h.settle();
+    expect(h.close).not.toHaveBeenCalled();
+    expect(h.chain.get(channelId)).toMatchObject({ deposit: VIDEO_PRICE, settled: SERIOUS_FEE, status: 1 });
+
+    expect((await h.send(h.retrieveRequest('retrieve-1', 'job-1'))).statusCode).toBe(200);
+    await h.settle();
+    expect(h.close.mock.calls.map((call) => call[2])).toEqual([VIDEO_PRICE]);
+  });
+
+  it('runs only as many parallel creates as the buyer deposits can top up', async () => {
+    const h = setup();
+    // Deposits cover the rest of one price beyond its opening reserve; a landed topUp locks it.
+    const rest = VIDEO_PRICE - FIRST_RESERVE;
+    const config = (h.seller as unknown as { _config: { readBuyerAvailableDeposit: () => Promise<bigint> } })._config;
+    config.readBuyerAvailableDeposit = async () => {
+      const locked = [...h.chain.values()].filter((channel) => channel.status === 1 && channel.deposit > FIRST_RESERVE)
+        .reduce((sum, channel) => sum + channel.deposit - FIRST_RESERVE, 0n);
+      return rest - locked;
+    };
+
+    const answers = await Promise.all([h.send(h.videoRequest('video-a')), h.send(h.videoRequest('video-b'))]);
+    await h.settle();
+
+    expect(answers.map((answer) => answer.statusCode).sort()).toEqual([200, 409]);
+    const refused = answers.find((answer) => answer.statusCode === 409)!;
+    expect(errorOf(refused).code).toBe('one_off_channel_unfunded');
+    expect(h.providerCreates).toHaveLength(1);
+    expect(h.topUp).toHaveBeenCalledOnce();
+    expect(h.close.mock.calls.map((call) => call[2])).toEqual([0n]);
   });
 
   it('refuses the create before it runs when the buyer deposits cannot cover the rest of the price', async () => {
@@ -967,6 +1085,8 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     const { channelId } = onlyOneOff(h);
 
     // The buyer's operator calls requestClose() on-chain; the contract then refuses the topUp.
+    const readChain = vi.mocked(h.seller.channelsClient.getSession).getMockImplementation()!;
+    vi.mocked(h.seller.channelsClient.getSession).mockImplementation(async (id) => ({ ...(await readChain(id)), closeRequestedAt: 1n }));
     await h.seller.handleCloseRequested(channelId);
     h.topUp.mockImplementation(async () => { throw new Error('execution reverted: CloseAlreadyRequested'); });
     h.releaseCreate();

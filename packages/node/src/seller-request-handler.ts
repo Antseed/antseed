@@ -709,6 +709,12 @@ export class SellerRequestHandler {
           this._sendJsonError(mux, request.requestId, 409, 'one_off_channel_used', 'The payment channel opened for this video was already used');
           return;
         }
+        // The rest of the price is locked only once the create is accepted: the buyer's deposits must still cover it.
+        if (!(await spm.fundOneOffCreate(oneOff.sessionId))) {
+          this._closeOneOffBestEffort(oneOff.sessionId, 'deposits do not cover the price');
+          this._sendJsonError(mux, request.requestId, 409, 'one_off_channel_unfunded', 'Your deposits no longer cover the price of this video');
+          return;
+        }
         oneOffChannelId = oneOff.sessionId;
       }
 
@@ -1532,6 +1538,16 @@ export class SellerRequestHandler {
     const charge: PendingResourceCharge | undefined = billing && channelId && billing.costUsdc > 0n
       ? { channelId, service, amount: billing.costUsdc, billingUsage: billing.billingUsage, ...(durationSeconds ? { durationSeconds } : {}) }
       : undefined;
+    // A channel closed under the running create (its deposits fell short, a restart) could never charge this job.
+    if (charge && this._deps.sellerPaymentManager && !this._deps.sellerPaymentManager.oneOffCreateAcceptable(charge.channelId)) {
+      debugWarn(`[SellerHandler] Video job ${resourceId} accepted on a one-off channel that is no longer open; not handing it out`);
+      return {
+        requestId: request.requestId,
+        statusCode: 503,
+        headers: { 'content-type': 'application/json' },
+        body: new TextEncoder().encode(JSON.stringify({ error: { code: 'one_off_channel_closed', message: 'The payment channel for this video closed before the job started' } })),
+      };
+    }
     try {
       this._deps.resourceOwnershipStore?.recordAcceptedCreate(route.protocol, resourceId, buyerPeerId.toLowerCase(), charge);
       if (charge) this._deps.sellerPaymentManager?.markOneOffCreateAccepted(charge.channelId);

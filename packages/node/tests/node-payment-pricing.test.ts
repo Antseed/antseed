@@ -411,6 +411,8 @@ function oneOffSpmMock(options: { opened?: boolean; reserve?: bigint } = {}) {
     oneOffChannelCovers(channelId: string, amount: bigint) {
       return (byId(channelId)?.reserve ?? 1_000_000n) >= amount;
     },
+    fundOneOffCreate: vi.fn(async () => true),
+    oneOffCreateAcceptable: (channelId: string) => byId(channelId) != null,
   };
 }
 
