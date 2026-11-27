@@ -1106,6 +1106,11 @@ export class SellerRequestHandler {
         });
         return;
       }
+      if (cancelled()) {
+        // Cancelled during the admission checks above: the provider never starts and nothing is billed.
+        debugLog(`[SellerHandler] Request ${request.requestId.slice(0, 8)} cancelled by the buyer before the provider started`);
+        return;
+      }
       if (isBillable) spm!.beginBillableRequest(buyerPeerId);
       this.adjustProviderLoad(provider.name, 1);
       try {

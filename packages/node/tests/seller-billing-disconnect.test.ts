@@ -861,6 +861,21 @@ describe.each<AnswerKind>(['cancellable-throws', 'cancellable-ends'])('a streame
     expect(h.manager.getCumulativeSpend(CHANNEL_A), 'the estimate of the streamed part, not the full answer').toBe(streamedCost);
   });
 
+  it('never starts the provider for a request cancelled during its admission checks', async () => {
+    const h = await setup(kind);
+    expect(await h.openChannel(CHANNEL_A)).toBe('reserved');
+    // The cancel lands while the seller waits on the buyer's payments, before it reads the request's signal.
+    vi.spyOn(h.manager, 'waitForPendingAuths').mockImplementationOnce(async () => {
+      await h.cancel('cancelled-in-admission');
+    });
+
+    await h.send('cancelled-in-admission');
+
+    expect(h.upstream.calls, 'upstream calls for a cancelled request').toBe(0);
+    expect(h.manager.getCumulativeSpend(CHANNEL_A)).toBe(0n);
+    expect(h.needAuths).not.toHaveBeenCalled();
+  });
+
   it('bills nothing for a request cancelled before its answer started', async () => {
     const h = await setup(kind);
     expect(await h.openChannel(CHANNEL_A)).toBe('reserved');

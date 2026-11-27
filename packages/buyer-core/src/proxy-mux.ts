@@ -225,18 +225,29 @@ export class ProxyMux {
     return this._servedDownloads.has(requestId) ? this.requestSignal(requestId) : undefined;
   }
 
-  /** Seller side: the request is cancelled: abort it, and drop its upload if its body is still arriving. */
+  /**
+   * Seller side: the request is cancelled. An upload whose body is still arriving is dropped, never
+   * handled. A request already handed to the handler is aborted, and its controller stays until the
+   * handler ends, so a handler still in admission checks reads the cancel when it asks for the signal.
+   */
   private _cancelServedRequest(requestId: string): void {
-    const upload = this._pendingUploads.get(requestId);
-    if (upload) {
-      clearTimeout(upload.timer);
-      this._releasePending(upload.byteCount);
-      for (const c of upload.chunks) c.fill(0);
-      this._pendingUploads.delete(requestId);
+    const controller = this._requestControllers.get(requestId);
+    if (this._disposeUpload(requestId)) {
+      this._requestControllers.delete(requestId);
     }
-    this._requestControllers.get(requestId)?.abort(new Error('Cancelled by the buyer'));
-    this._requestControllers.delete(requestId);
+    controller?.abort(new Error('Cancelled by the buyer'));
     this._finishServedDownload(requestId);
+  }
+
+  /** Seller side: clear a pending upload's timer, byte budget and buffers. False when none is pending. */
+  private _disposeUpload(requestId: string): boolean {
+    const entry = this._pendingUploads.get(requestId);
+    if (!entry) return false;
+    clearTimeout(entry.timer);
+    this._releasePending(entry.byteCount);
+    for (const c of entry.chunks) c.fill(0);
+    this._pendingUploads.delete(requestId);
+    return true;
   }
 
   /** Seller side: the request was served; a download's pending chunk waits end with it. */
@@ -593,13 +604,7 @@ export class ProxyMux {
    * response to the buyer.
    */
   private _abortUpload(requestId: string, statusCode: number, reason: string): void {
-    const entry = this._pendingUploads.get(requestId);
-    if (!entry) return;
-
-    clearTimeout(entry.timer);
-    this._releasePending(entry.byteCount);
-    for (const c of entry.chunks) c.fill(0);
-    this._pendingUploads.delete(requestId);
+    if (!this._disposeUpload(requestId)) return;
     this._finishServedRequest(requestId);
 
     this.sendProxyResponse({
