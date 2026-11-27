@@ -6,9 +6,12 @@ import {
   renderCanonicalResponseToAnthropicMessagesBody,
   renderCanonicalResponseToOpenAIChatBody,
   renderCanonicalResponseToOpenAIResponsesBody,
+  namespacedToolFor,
   type CanonicalLlmResponse,
+  type NamespacedToolNames,
 } from './canonical.js';
-import { encodeJson, encodeText, parseJsonObject, reasoningUsageFields, type ReportedUsage } from './utils.js';
+import { createLeadingThinkMarkupFilter, type ThinkMarkupPiece } from './think-markup.js';
+import { encodeJson, encodeText, parseJsonObject, reasoningUsageFields, responsesEndTurn, type ReportedUsage } from './utils.js';
 
 export interface ServiceApiResponseTransformOptions {
   from: ServiceApiProtocol;
@@ -17,6 +20,14 @@ export interface ServiceApiResponseTransformOptions {
   fallbackModel?: string | null;
   /** A Responses client that keeps reasoning state gets a chat model's reasoning (see `includeReasoning` on transformRequest). */
   includeReasoning?: boolean;
+  /** The request's flattened namespace functions (see `namespacedTools` on transformRequest). */
+  namespacedTools?: NamespacedToolNames;
+  /**
+   * A Messages client gets a `thinking` block only when it asked for thoughts (`includeThinking` of
+   * `transformRequest`'s result). Without it, thoughts a seller wrote on its own are left out, as they
+   * were before. Other client protocols are not affected.
+   */
+  includeThinking?: boolean;
 }
 
 type ResponseNormalizer = (
@@ -54,13 +65,19 @@ export function transformResponse(
     return transformErrorResponse(response, parsed, options);
   }
 
-  const normalized = normalize(parsed, {
+  const normalized = withoutLeadingThinkMarkup(normalize(parsed, {
     id: fallbackResponseId(response.requestId, options.to),
     model: options.fallbackModel ?? 'unknown',
     requestedModel: options.fallbackModel ?? null,
-  });
+  }), options.fallbackModel ?? null);
   const { reasoning: _reasoning, reasoningModel: _reasoningModel, ...withoutReasoning } = normalized;
-  const canonical: CanonicalLlmResponse = options.includeReasoning === true ? normalized : withoutReasoning;
+  const shown = withNamespacedCalls(
+    options.includeReasoning === true ? normalized : withoutReasoning,
+    options.to === 'openai-responses' ? options.namespacedTools : undefined,
+  );
+  const canonical: CanonicalLlmResponse = options.to === 'anthropic-messages' && options.includeThinking !== true
+    ? { ...shown, output: shown.output.filter((item) => item.type !== 'reasoning') }
+    : shown;
   const body = render(canonical);
 
   if (options.streamRequested) {
@@ -75,6 +92,76 @@ export function transformResponse(
     ...response,
     headers: jsonHeaders(response.headers),
     body: encodeJson(body),
+  };
+}
+
+/**
+ * The answer without think markup a seller leaked at the start of its text (see `think-markup.ts`), read the way
+ * a stream reads it: one filter over the answer's items in order, so markup split across text blocks (as a
+ * Messages answer can have it) is found too, and held text settles before a tool call. A leading block's text
+ * joins the reasoning; text left empty is dropped. A block that never closed is thinking only when the answer
+ * was cut off or went on to call a tool: when the turn ended there, it is the answer.
+ */
+function withoutLeadingThinkMarkup(response: CanonicalLlmResponse, requestedModel: string | null): CanonicalLlmResponse {
+  type OutputItem = CanonicalLlmResponse['output'][number];
+  type TextItem = Extract<OutputItem, { type: 'text' }>;
+  if (!response.output.some((item) => item.type === 'text')) return response;
+  const filter = createLeadingThinkMarkupFilter();
+  const output: OutputItem[] = [];
+  let thoughts = '';
+  let phase: TextItem['phase'];
+  const place = (pieces: ThinkMarkupPiece[]): void => {
+    const text = pieces.filter((piece) => piece.kind === 'text').map((piece) => piece.text).join('');
+    thoughts += pieces.filter((piece) => piece.kind === 'reasoning').map((piece) => piece.text).join('');
+    if (text.length > 0) output.push({ type: 'text', text, ...(phase ? { phase } : {}) });
+  };
+  for (const item of response.output) {
+    if (item.type === 'text') {
+      phase = item.phase;
+      place(filter.push(item.text));
+      continue;
+    }
+    if (item.type === 'function_call') place(filter.release());
+    output.push(item);
+  }
+  const toolCalls = response.output.filter((item) => item.type === 'function_call').length;
+  place(filter.end(responsesEndTurn(toolCalls, response.stopReason)));
+
+  const unchanged = thoughts.length === 0
+    && output.length === response.output.length
+    && output.every((item, index) => item === response.output[index]
+      || (item.type === 'text' && (response.output[index] as TextItem).text === item.text));
+  if (unchanged) return response;
+  // The block's thoughts join the answer's thoughts, as both kept forms: the output item (Messages thinking
+  // blocks, Chat `reasoning_content`) and the reasoning Responses clients get.
+  if (thoughts.length > 0) {
+    const index = output.findIndex((other) => other.type === 'reasoning');
+    if (index >= 0) {
+      const existing = output[index] as Extract<OutputItem, { type: 'reasoning' }>;
+      output[index] = { ...existing, text: existing.text + thoughts };
+    } else {
+      output.unshift({ type: 'reasoning', text: thoughts });
+    }
+  }
+  const reasoning = (response.reasoning ?? '') + thoughts;
+  return {
+    ...response,
+    output,
+    ...(reasoning.trim().length > 0
+      ? { reasoning, reasoningModel: response.reasoningModel ?? (requestedModel || response.model) }
+      : {}),
+  };
+}
+
+/** A call to a flattened namespace function as the client defined it: the tool's own name and its namespace. */
+function withNamespacedCalls(response: CanonicalLlmResponse, namespacedTools: NamespacedToolNames | undefined): CanonicalLlmResponse {
+  if (!namespacedTools || Object.keys(namespacedTools).length === 0) return response;
+  return {
+    ...response,
+    output: response.output.map((item) => {
+      const origin = item.type === 'function_call' ? namespacedToolFor(namespacedTools, item.name) : undefined;
+      return origin ? { ...item, name: origin.name, namespace: origin.namespace } : item;
+    }),
   };
 }
 
@@ -177,21 +264,20 @@ function buildAnthropicMessagesStream(
   });
 
   for (const [index, block] of content.entries()) {
-    const isText = block.type === 'text';
-    pushEvent('content_block_start', {
-      type: 'content_block_start',
-      index,
-      content_block: isText
-        ? { type: 'text', text: '' }
-        : { type: 'tool_use', id: block.id, name: block.name, input: {} },
-    });
-    pushEvent('content_block_delta', {
-      type: 'content_block_delta',
-      index,
-      delta: isText
-        ? { type: 'text_delta', text: block.text }
-        : { type: 'input_json_delta', partial_json: JSON.stringify(block.input ?? {}) },
-    });
+    let contentBlock: Record<string, unknown>;
+    let delta: Record<string, unknown>;
+    if (block.type === 'thinking') {
+      contentBlock = { type: 'thinking', thinking: '' };
+      delta = { type: 'thinking_delta', thinking: block.thinking };
+    } else if (block.type === 'text') {
+      contentBlock = { type: 'text', text: '' };
+      delta = { type: 'text_delta', text: block.text };
+    } else {
+      contentBlock = { type: 'tool_use', id: block.id, name: block.name, input: {} };
+      delta = { type: 'input_json_delta', partial_json: JSON.stringify(block.input ?? {}) };
+    }
+    pushEvent('content_block_start', { type: 'content_block_start', index, content_block: contentBlock });
+    pushEvent('content_block_delta', { type: 'content_block_delta', index, delta });
     pushEvent('content_block_stop', { type: 'content_block_stop', index });
   }
 
@@ -228,6 +314,10 @@ function buildOpenAIChatStream(response: CanonicalLlmResponse): Uint8Array {
 
   let toolCallIndex = 0;
   for (const item of response.output) {
+    if (item.type === 'reasoning') {
+      pushChunk({ reasoning_content: item.text });
+      continue;
+    }
     if (item.type === 'text') {
       if (item.text.length > 0) pushChunk({ content: item.text });
       continue;
@@ -264,8 +354,10 @@ function buildOpenAIResponsesStream(body: Record<string, unknown>): Uint8Array {
     );
   };
 
+  // The answer's ending is the final event's to tell.
+  const { incomplete_details: _ending, ...started } = body;
   pushEvent('response.created', {
-    response: { ...body, status: 'in_progress', output: [], output_text: '' },
+    response: { ...started, status: 'in_progress', output: [], output_text: '' },
   });
 
   const output = Array.isArray(body.output) ? body.output as Record<string, unknown>[] : [];
@@ -339,7 +431,7 @@ function buildOpenAIResponsesStream(body: Record<string, unknown>): Uint8Array {
     }
   }
 
-  pushEvent('response.completed', { response: body });
+  pushEvent(`response.${body.status}`, { response: body });
   sseEvents.push('data: [DONE]\n\n');
 
   return encodeText(sseEvents.join(''));

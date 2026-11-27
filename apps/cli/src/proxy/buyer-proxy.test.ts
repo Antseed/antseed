@@ -1968,7 +1968,7 @@ function makeBuyerProxyWithPeers(
   now?: () => number,
   routingPreferences?: ModelRoutingPreferences,
   modelRoutingClient?: ModelRoutingClientApi,
-  options: Pick<BuyerProxyConfig, 'referencePrices'> = {},
+  options: Pick<BuyerProxyConfig, 'referencePrices' | 'streamKeepAliveMs'> = {},
 ): BuyerProxy {
   const proxy = new BuyerProxy({ adaptiveRouting: { spreadTolerance: 0, explorationRate: 0 },
     port: 0,
@@ -4648,6 +4648,150 @@ test('a chat model\'s reasoning reaches a streaming Responses client only when i
   assert.doesNotMatch(await streamed(), /reasoning_text|antseed\.reasoning/)
 })
 
+for (const client of [
+  { protocol: 'Responses', path: '/v1/responses', body: { model: 'model-a', stream: true, input: 'Write the file.' }, keepAlive: 'response.in_progress', end: 'response.completed' },
+  { protocol: 'Messages', path: '/v1/messages', body: { model: 'model-a', stream: true, max_tokens: 1024, messages: [{ role: 'user', content: 'Write the file.' }] }, keepAlive: 'ping', end: 'message_stop' },
+]) {
+  test(`a translated ${client.protocol} stream stays alive while a chat seller is silent before a whole tool call`, async () => {
+    // A client that gives up on a stream silent for longer than this, as Codex does after its idle timeout.
+    const clientIdleTimeoutMs = 300
+    const silenceMs = 700
+    const peer = makePeer('a', ['openai'])
+    peer.providerServiceApiProtocols = { openai: { services: { 'model-a': ['openai-chat-completions'] } } }
+    const proxy = makeBuyerProxyWithPeers([peer], [peer], null, undefined, undefined, undefined, { streamKeepAliveMs: 100 })
+    ;(proxy as any)._node.sendRequest = async () => { throw new Error('not buffered') }
+    ;(proxy as any)._node.sendRequestStream = async (
+      _peer: PeerInfo,
+      request: { requestId: string },
+      callbacks: { onResponseStart: (...args: unknown[]) => void; onResponseChunk: (chunk: unknown) => void },
+    ) => {
+      const frame = (delta: Record<string, unknown>, finish: string | null = null) => Buffer.from(`data: ${JSON.stringify({
+        id: 'chatcmpl-1', object: 'chat.completion.chunk', model: 'model-a', choices: [{ index: 0, delta, finish_reason: finish }],
+      })}\n\n`)
+      const headers = { 'content-type': 'text/event-stream' }
+      const send = (data: Buffer, done = false) => callbacks.onResponseChunk({ requestId: request.requestId, data, done })
+      callbacks.onResponseStart({ requestId: request.requestId, statusCode: 200, headers, body: new Uint8Array() }, { streaming: true })
+      send(frame({ role: 'assistant', content: 'Writing it now.' }))
+      await new Promise((resolve) => setTimeout(resolve, silenceMs))
+      send(frame({ tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'write', arguments: '{"path":"a.txt"}' } }] }))
+      send(frame({}, 'tool_calls'))
+      send(Buffer.from('data: [DONE]\n\n'), true)
+      return { requestId: request.requestId, statusCode: 200, headers, body: new Uint8Array() }
+    }
+
+    const res = makeProxyResponse()
+    const writes: number[] = []
+    const write = res.write.bind(res)
+    res.write = (chunk) => {
+      writes.push(Date.now())
+      return write(chunk)
+    }
+    await (proxy as any)._handleRequest(makeProxyRequest({ path: client.path, headers: { 'x-antseed-pin-peer': peer.peerId }, body: client.body }), res)
+
+    assert.equal(res.statusCode, 200)
+    const longestSilence = Math.max(...writes.slice(1).map((at, i) => at - writes[i]!))
+    assert.ok(longestSilence < clientIdleTimeoutMs, `the client saw ${longestSilence} ms without a byte, past its ${clientIdleTimeoutMs} ms idle timeout`)
+    const names = res.body.split('\n').filter((line) => line.startsWith('event: ')).map((line) => line.slice('event: '.length))
+    assert.ok(names.includes(client.keepAlive), `a ${client.keepAlive} event kept the stream alive`)
+    assert.equal(names.at(-1), client.end)
+    assert.match(res.body, /a\.txt/)
+    // Nothing is written once the answer ended.
+    const ended = writes.length
+    await new Promise((resolve) => setTimeout(resolve, 250))
+    assert.equal(writes.length, ended)
+  })
+}
+
+test('a stream passed through untranslated gets no keep-alive, however long the seller is silent', async () => {
+  const peer = makePeer('a', ['openai-responses'])
+  peer.providerServiceApiProtocols = { 'openai-responses': { services: { 'model-a': ['openai-responses'] } } }
+  const proxy = makeBuyerProxyWithPeers([peer], [peer], null, undefined, undefined, undefined, { streamKeepAliveMs: 50 })
+  const sellerBytes = [
+    'event: response.created\ndata: {"type":"response.created","response":{"id":"resp_1","status":"in_progress","output":[]}}\n\n',
+    'event: response.completed\ndata: {"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[]}}\n\n',
+  ]
+  ;(proxy as any)._node.sendRequest = async () => { throw new Error('not buffered') }
+  ;(proxy as any)._node.sendRequestStream = async (
+    _peer: PeerInfo,
+    request: { requestId: string },
+    callbacks: { onResponseStart: (...args: unknown[]) => void; onResponseChunk: (chunk: unknown) => void },
+  ) => {
+    const headers = { 'content-type': 'text/event-stream' }
+    callbacks.onResponseStart({ requestId: request.requestId, statusCode: 200, headers, body: new Uint8Array() }, { streaming: true })
+    callbacks.onResponseChunk({ requestId: request.requestId, data: Buffer.from(sellerBytes[0]!), done: false })
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    callbacks.onResponseChunk({ requestId: request.requestId, data: Buffer.from(sellerBytes[1]!), done: true })
+    return { requestId: request.requestId, statusCode: 200, headers, body: new Uint8Array() }
+  }
+  const res = await invokeProxy(proxy, makeProxyRequest({
+    path: '/v1/responses',
+    headers: { 'x-antseed-pin-peer': peer.peerId },
+    body: { model: 'model-a', stream: true, input: 'hi' },
+  }))
+  assert.equal(res.statusCode, 200)
+  assert.equal(res.body, sellerBytes.join(''))
+})
+
+for (const stream of [true, false]) {
+  test(`a Codex namespace tool reaches a chat seller flat and its call returns with its namespace (${stream ? 'streamed' : 'buffered'})`, async () => {
+    const peer = makePeer('a', ['openai'])
+    peer.providerServiceApiProtocols = { openai: { services: { 'model-a': ['openai-chat-completions'] } } }
+    const proxy = makeBuyerProxyWithPeers([peer], [peer])
+    let sentBody: Record<string, unknown> | null = null
+    const call = { id: 'call_1', type: 'function', function: { name: 'spawn_agent', arguments: '{"message":"hi"}' } }
+    ;(proxy as any)._node.sendRequest = async (_peer: PeerInfo, request: { requestId: string; body: Uint8Array }) => {
+      sentBody = JSON.parse(new TextDecoder().decode(request.body)) as Record<string, unknown>
+      return {
+        requestId: request.requestId,
+        statusCode: 200,
+        headers: { 'content-type': 'application/json' },
+        body: Buffer.from(JSON.stringify({
+          id: 'chatcmpl-1', model: 'model-a', usage: { prompt_tokens: 1, completion_tokens: 1 },
+          choices: [{ index: 0, finish_reason: 'tool_calls', message: { role: 'assistant', content: null, tool_calls: [call] } }],
+        })),
+      }
+    }
+    ;(proxy as any)._node.sendRequestStream = async (
+      _peer: PeerInfo,
+      request: { requestId: string; body: Uint8Array },
+      callbacks: { onResponseStart: (...args: unknown[]) => void; onResponseChunk: (chunk: unknown) => void },
+    ) => {
+      sentBody = JSON.parse(new TextDecoder().decode(request.body)) as Record<string, unknown>
+      const frame = (delta: Record<string, unknown>, finish: string | null = null) => Buffer.from(`data: ${JSON.stringify({
+        id: 'chatcmpl-1', object: 'chat.completion.chunk', model: 'model-a', choices: [{ index: 0, delta, finish_reason: finish }],
+      })}\n\n`)
+      const headers = { 'content-type': 'text/event-stream' }
+      callbacks.onResponseStart({ requestId: request.requestId, statusCode: 200, headers, body: new Uint8Array() }, { streaming: true })
+      for (const data of [frame({ role: 'assistant', tool_calls: [{ index: 0, ...call }] }), frame({}, 'tool_calls')]) {
+        callbacks.onResponseChunk({ requestId: request.requestId, data, done: false })
+      }
+      callbacks.onResponseChunk({ requestId: request.requestId, data: Buffer.from('data: [DONE]\n\n'), done: true })
+      return { requestId: request.requestId, statusCode: 200, headers, body: new Uint8Array() }
+    }
+    const fn = (name: string) => ({ type: 'function', name, parameters: { type: 'object' } })
+    const res = await invokeProxy(proxy, makeProxyRequest({
+      path: '/v1/responses',
+      headers: { 'x-antseed-pin-peer': peer.peerId },
+      body: {
+        model: 'model-a', stream, input: 'Start a helper.', parallel_tool_calls: true,
+        tools: [fn('exec_command'), { type: 'namespace', name: 'multi_agent_v1', description: 'Agents.', tools: [fn('spawn_agent')] }, { type: 'web_search' }],
+      },
+    }))
+    assert.equal(res.statusCode, 200)
+    const sent = sentBody as Record<string, unknown> | null
+    assert.deepEqual((sent?.tools as Array<{ function: { name: string } }>).map((tool) => tool.function.name), ['exec_command', 'spawn_agent'])
+    assert.equal(sent?.parallel_tool_calls, true)
+
+    const output = stream
+      ? (JSON.parse(res.body.split('\n').find((line) => line.startsWith('data: {"type":"response.completed"'))!.slice('data: '.length)) as { response: { output: unknown[] } }).response.output
+      : (JSON.parse(res.body) as { output: unknown[] }).output
+    assert.deepEqual(output.map((item) => {
+      const { type, name, namespace, call_id } = item as Record<string, unknown>
+      return { type, name, namespace, call_id }
+    }), [{ type: 'function_call', name: 'spawn_agent', namespace: 'multi_agent_v1', call_id: 'call_1' }])
+  })
+}
+
 test('a Responses request to a Responses seller loses only the reasoning items the adapter made', async () => {
   const peer = makePeer('a', ['openai-responses'])
   peer.providerServiceApiProtocols = { 'openai-responses': { services: { 'example-model': ['openai-responses'] } } }
@@ -4814,6 +4958,73 @@ test('accept-sse transformed responses requests stream adapted client events wit
   assert.match(res.body, /event: content_block_delta/)
   assert.match(res.body, /"text":"hi"/)
   assert.doesNotMatch(res.body, /event: response\.completed/)
+})
+
+/** A Messages stream request through the buyer proxy to a Chat Completions seller that writes its own reasoning. */
+async function messagesStreamThroughChatSeller(thinking: Record<string, unknown> | undefined) {
+  const peer = makePeer('a', ['openai'])
+  peer.providerServiceApiProtocols = {
+    openai: { services: { 'example-model': ['openai-chat-completions'] } },
+  }
+  let capturedRequestBody: Record<string, unknown> | null = null
+  const proxy = makeBuyerProxyWithPeers([peer], [peer])
+  ;(proxy as any)._node.sendRequestStream = async (
+    _peer: PeerInfo,
+    request: { requestId: string; body: Uint8Array },
+    callbacks: {
+      onResponseStart: (response: { requestId: string; statusCode: number; headers: Record<string, string>; body: Uint8Array }, metadata: { streaming: boolean }) => void
+      onResponseChunk: (chunk: { requestId: string; data: Uint8Array; done: boolean }) => void
+    },
+  ) => {
+    capturedRequestBody = parseJsonBody(request.body)
+    callbacks.onResponseStart({
+      requestId: request.requestId,
+      statusCode: 200,
+      headers: { 'content-type': 'text/event-stream' },
+      body: new Uint8Array(),
+    }, { streaming: true })
+    const frame = (delta: Record<string, unknown>, finish: string | null = null) =>
+      `data: ${JSON.stringify({ id: 'chatcmpl-1', model: 'example-model', choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`
+    callbacks.onResponseChunk({
+      requestId: request.requestId,
+      data: Buffer.from(
+        frame({ reasoning_content: 'Own thoughts.' }) + frame({ content: 'hi' }) + frame({}, 'stop') + 'data: [DONE]\n\n',
+      ),
+      done: false,
+    })
+    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'text/event-stream' }, body: Buffer.from('') }
+  }
+  const res = await invokeProxy(proxy, makeProxyRequest({
+    path: '/v1/messages',
+    headers: { 'accept': 'text/event-stream', 'x-antseed-pin-peer': peer.peerId },
+    body: {
+      model: 'example-model',
+      max_tokens: 4096,
+      messages: [{ role: 'user', content: 'hello' }],
+      ...(thinking ? { thinking } : {}),
+    },
+  }))
+  return { res, capturedRequestBody: capturedRequestBody as Record<string, unknown> | null }
+}
+
+test('a Messages client that asked for thinking gets the thoughts of a Chat Completions seller as a thinking block', async () => {
+  const { res, capturedRequestBody } = await messagesStreamThroughChatSeller({ type: 'enabled', budget_tokens: 2000 })
+  assert.equal(res.statusCode, 200)
+  assert.equal(capturedRequestBody?.['reasoning_effort'], 'medium')
+  assert.match(res.body, /"content_block":\{"type":"thinking"/)
+  assert.match(res.body, /"thinking_delta","thinking":"Own thoughts\."/)
+  assert.match(res.body, /"index":1,"content_block":\{"type":"text"/)
+})
+
+test('a Messages client that did not ask for thinking gets no thinking block, whatever the seller writes', async () => {
+  for (const thinking of [undefined, { type: 'disabled' }]) {
+    const { res, capturedRequestBody } = await messagesStreamThroughChatSeller(thinking)
+    assert.equal(res.statusCode, 200)
+    assert.equal(capturedRequestBody?.['reasoning_effort'], undefined)
+    assert.doesNotMatch(res.body, /thinking/)
+    assert.match(res.body, /"index":0,"content_block":\{"type":"text"/)
+    assert.match(res.body, /"text":"hi"/)
+  }
 })
 
 test('transformed pre-stream seller errors preserve peer guidance', async () => {

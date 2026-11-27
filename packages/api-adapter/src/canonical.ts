@@ -2,6 +2,8 @@ import {
   chatReasoningText,
   extractReportedUsage,
   mapFinishReasonToAnthropicStopReason,
+  openAIResponsesEnding,
+  openAIResponsesItemStatus,
   openAIResponsesFunctionCallId,
   openAIResponsesMessageId,
   openAIResponsesReasoningItem,
@@ -17,6 +19,31 @@ export interface CanonicalFunctionTool {
   name: string;
   description?: string;
   parameters: Record<string, unknown>;
+  /**
+   * The Responses `namespace` tool this function came from, and its name there. `name` is the flat name a
+   * target without namespaces sees (see normalizeResponsesTools); a call to it goes back as `origin`.
+   */
+  origin?: NamespacedToolName;
+}
+
+/** A function inside a Responses `namespace` tool: Codex groups some tools so and expects calls back with both. */
+export interface NamespacedToolName {
+  namespace: string;
+  name: string;
+}
+
+/** The functions a request flattened out of its namespace tools, by the flat name the seller sees. */
+export type NamespacedToolNames = Record<string, NamespacedToolName>;
+
+/** The function a seller's call to the flat `name` is for, when it was flattened out of a namespace. */
+export function namespacedToolFor(namespacedTools: NamespacedToolNames | undefined, name: string): NamespacedToolName | undefined {
+  return namespacedTools && Object.hasOwn(namespacedTools, name) ? namespacedTools[name] : undefined;
+}
+
+/** The flat names a request's tools were given, for mapping a seller's calls back (see `origin`). */
+export function namespacedToolNames(request: CanonicalLlmRequest): NamespacedToolNames {
+  // fromEntries, so a function named like an Object.prototype member is a key like any other.
+  return Object.fromEntries((request.tools ?? []).flatMap((tool) => (tool.origin ? [[tool.name, { ...tool.origin }]] : [])));
 }
 
 export type CanonicalToolChoice =
@@ -45,8 +72,17 @@ const OPENAI_LOWEST_EFFORT = 'minimal';
 const MESSAGES_LOWEST_EFFORT = 'low';
 
 /**
- * The reasoning effort a Messages request names. A thinking budget names no effort, and none is
- * made up from it.
+ * The effort a Messages request that switches thinking on (`enabled` or `adaptive`) gets when it names none.
+ * A client's own `output_config.effort` always wins over it. Known limit: some models answer with
+ * empty thoughts below `high`, so a client that wants thoughts from them must name
+ * `output_config.effort: "high"`. A thinking budget is never turned into a level of its own.
+ */
+const THINKING_DEFAULT_EFFORT = 'medium';
+
+/**
+ * The reasoning effort a Messages request names: its `output_config.effort`, or, when only thinking is
+ * switched on (`enabled` with a budget, or `adaptive`), `THINKING_DEFAULT_EFFORT`. A `budget_tokens` names
+ * no level of its own, and none is made up from it.
  *
  * With thinking switched off, no effort is carried at all. Off is the Messages default, which a
  * client may only be restating, so it is not turned into the OpenAI protocols' `none`: that is a
@@ -54,14 +90,16 @@ const MESSAGES_LOWEST_EFFORT = 'low';
  * either, since the one field the OpenAI protocols have would switch reasoning on.
  */
 function reasoningEffortFromAnthropic(body: Record<string, unknown>): string | undefined {
-  const thinking = body.thinking;
-  if (thinking && typeof thinking === 'object' && (thinking as Record<string, unknown>).type === 'disabled') {
-    return undefined;
-  }
+  const thinking = body.thinking && typeof body.thinking === 'object' && !Array.isArray(body.thinking)
+    ? body.thinking as Record<string, unknown>
+    : undefined;
+  if (thinking?.type === 'disabled') return undefined;
   const config = body.output_config;
-  if (!config || typeof config !== 'object' || Array.isArray(config)) return undefined;
-  const effort = (config as Record<string, unknown>).effort;
-  return typeof effort === 'string' && effort.length > 0 ? effort : undefined;
+  if (config && typeof config === 'object' && !Array.isArray(config)) {
+    const effort = (config as Record<string, unknown>).effort;
+    if (typeof effort === 'string' && effort.length > 0) return effort;
+  }
+  return thinking?.type === 'enabled' || thinking?.type === 'adaptive' ? THINKING_DEFAULT_EFFORT : undefined;
 }
 
 /**
@@ -122,6 +160,8 @@ export interface CanonicalLlmRequest {
   stop?: string | string[];
   tools?: CanonicalFunctionTool[];
   toolChoice?: CanonicalToolChoice;
+  /** Whether the model may call several tools in one answer (`parallel_tool_calls`); sent only with tools. */
+  parallelToolCalls?: boolean;
   metadata?: Record<string, unknown>;
   user?: string;
   promptCacheKey?: string;
@@ -132,15 +172,21 @@ function assignToolsAndToolChoice(
   body: Record<string, unknown>,
   tools: unknown[] | undefined,
   toolChoice: unknown,
+  parallelToolCalls?: boolean,
 ): void {
   if (!tools || tools.length === 0) return;
   body.tools = tools;
   if (toolChoice !== undefined) body.tool_choice = toolChoice;
+  if (parallelToolCalls !== undefined) body.parallel_tool_calls = parallelToolCalls;
 }
 
 export type CanonicalOutputItem =
+  /**
+   * The model's thoughts as text. A Messages `thinking` block and a Chat `reasoning_content` land here. No signature is kept or made up: the OpenAI protocols have none.
+   */
+  | { type: 'reasoning'; text: string }
   | { type: 'text'; text: string; phase?: CanonicalResponseMessagePhase }
-  | { type: 'function_call'; id: string; name: string; arguments: Record<string, unknown> | string };
+  | { type: 'function_call'; id: string; name: string; arguments: Record<string, unknown> | string; namespace?: string };
 
 export interface CanonicalLlmResponse {
   id: string;
@@ -153,6 +199,19 @@ export interface CanonicalLlmResponse {
   /** The model the reasoning's tag names: the one the request asked for, else the seller's label. */
   reasoningModel?: string;
   usage: ReportedUsage;
+}
+
+/** Whether a thought has anything to show: whitespace alone would only make an empty `thinking` block. */
+function hasContent(text: string): boolean {
+  return text.trim().length > 0;
+}
+
+/** All the thoughts of a canonical response, as one text. */
+export function canonicalReasoningText(output: CanonicalOutputItem[]): string {
+  return output
+    .filter((item): item is Extract<CanonicalOutputItem, { type: 'reasoning' }> => item.type === 'reasoning')
+    .map((item) => item.text)
+    .join('\n\n');
 }
 
 function responseFunctionCallId(id: string): string {
@@ -243,7 +302,7 @@ export function renderCanonicalRequestToOpenAIChatBody(
   if (request.stop !== undefined) body.stop = request.stop;
   const tools = renderCanonicalToolsToOpenAIChat(request.tools);
   const toolChoice = renderCanonicalToolChoiceToOpenAIChat(request.toolChoice);
-  assignToolsAndToolChoice(body, tools, toolChoice);
+  assignToolsAndToolChoice(body, tools, toolChoice, request.parallelToolCalls);
   if (request.metadata) body.metadata = request.metadata;
   if (request.user) body.user = request.user;
   // Routes the request to the cache that holds this conversation's prefix.
@@ -300,7 +359,7 @@ export function renderCanonicalRequestToOpenAIResponsesBody(
   if (request.stop !== undefined) body.stop = request.stop;
   const tools = renderCanonicalToolsToOpenAIResponses(request.tools);
   const toolChoice = renderCanonicalToolChoiceToOpenAIResponses(request.toolChoice);
-  assignToolsAndToolChoice(body, tools, toolChoice);
+  assignToolsAndToolChoice(body, tools, toolChoice, request.parallelToolCalls);
   if (options.includeMetadata !== false && request.metadata) body.metadata = request.metadata;
   if (options.includeUser !== false && request.user) body.user = request.user;
   if (request.promptCacheKey) body.prompt_cache_key = request.promptCacheKey;
@@ -412,7 +471,7 @@ export function renderCanonicalRequestToAnthropicMessagesBody(request: Canonical
       if (lastTool) lastTool.cache_control = EPHEMERAL_CACHE_CONTROL;
     }
   }
-  const toolChoice = renderCanonicalToolChoiceToAnthropic(request.toolChoice);
+  const toolChoice = renderCanonicalToolChoiceToAnthropic(request.toolChoice, request.parallelToolCalls);
   assignToolsAndToolChoice(body, tools, toolChoice);
   if (request.metadata || request.user) {
     body.metadata = {
@@ -469,6 +528,8 @@ export function normalizeAnthropicMessagesRequestBody(body: Record<string, unkno
   if (tools) request.tools = tools;
   const toolChoice = normalizeAnthropicToolChoice(body.tool_choice);
   if (toolChoice !== undefined) request.toolChoice = toolChoice;
+  // Messages says "one tool call at a time" on its tool_choice; the other standards, with parallel_tool_calls.
+  if ((body.tool_choice as Record<string, unknown> | null | undefined)?.disable_parallel_tool_use === true) request.parallelToolCalls = false;
   if (body.metadata && typeof body.metadata === 'object' && !Array.isArray(body.metadata)) {
     const metadata = body.metadata as Record<string, unknown>;
     request.metadata = metadata;
@@ -546,6 +607,7 @@ export function normalizeOpenAIChatRequestBody(body: Record<string, unknown>): C
   if (Array.isArray(body.tools)) request.tools = normalizeChatTools(body.tools);
   const toolChoice = normalizeChatToolChoice(body.tool_choice);
   if (toolChoice !== undefined) request.toolChoice = toolChoice;
+  if (typeof body.parallel_tool_calls === 'boolean') request.parallelToolCalls = body.parallel_tool_calls;
   if (body.metadata && typeof body.metadata === 'object' && !Array.isArray(body.metadata)) {
     request.metadata = body.metadata as Record<string, unknown>;
   }
@@ -565,6 +627,8 @@ export function normalizeOpenAIResponsesRequestBody(body: Record<string, unknown
   if (typeof body.instructions === 'string' && body.instructions.length > 0) {
     request.instructions = body.instructions;
   }
+  // Read first: a namespace call in the history goes to the seller under the flat name its tool has here.
+  if (Array.isArray(body.tools)) request.tools = normalizeResponsesTools(body.tools);
 
   const input = body.input;
   if (typeof input === 'string') {
@@ -601,11 +665,14 @@ export function normalizeOpenAIResponsesRequestBody(body: Record<string, unknown
       }
 
       if (type === 'function_call') {
+        const name = typeof msg.name === 'string' ? msg.name : '';
         request.input.push({
           type: 'function_call',
           id: typeof msg.call_id === 'string' && msg.call_id.length > 0
             ? msg.call_id : (typeof msg.id === 'string' ? msg.id : ''),
-          name: typeof msg.name === 'string' ? msg.name : '',
+          name: typeof msg.namespace === 'string' && msg.namespace.length > 0
+            ? flatToolName(request.tools, msg.namespace, name)
+            : name,
           arguments: typeof msg.arguments === 'string' ? msg.arguments : JSON.stringify(msg.arguments ?? {}),
           ...takeReasoning(),
         });
@@ -638,9 +705,9 @@ export function normalizeOpenAIResponsesRequestBody(body: Record<string, unknown
   if (typeof body.temperature === 'number') request.temperature = body.temperature;
   if (typeof body.top_p === 'number') request.topP = body.top_p;
   if (typeof body.stop === 'string' || Array.isArray(body.stop)) request.stop = body.stop as string | string[];
-  if (Array.isArray(body.tools)) request.tools = normalizeResponsesTools(body.tools);
-  const toolChoice = normalizeResponsesToolChoice(body.tool_choice);
+  const toolChoice = normalizeResponsesToolChoice(body.tool_choice, request.tools);
   if (toolChoice !== undefined) request.toolChoice = toolChoice;
+  if (typeof body.parallel_tool_calls === 'boolean') request.parallelToolCalls = body.parallel_tool_calls;
   if (body.metadata && typeof body.metadata === 'object' && !Array.isArray(body.metadata)) {
     request.metadata = body.metadata as Record<string, unknown>;
   }
@@ -666,9 +733,11 @@ export function normalizeOpenAIChatResponseBody(
     : {};
 
   const text = toStringContent(message.content);
+  // The thoughts of the message (`reasoning_content`, or `reasoning`), never an encrypted item a relay passed on.
   const reasoning = chatReasoningText(message);
   const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
   const output: CanonicalOutputItem[] = [];
+  if (hasContent(reasoning)) output.push({ type: 'reasoning', text: reasoning });
   if (text.length > 0) {
     output.push({ type: 'text', text, phase: toolCalls.length > 0 ? 'commentary' : undefined });
   }
@@ -693,7 +762,7 @@ export function normalizeOpenAIChatResponseBody(
     model,
     output,
     stopReason,
-    endTurn: responsesEndTurn(output.filter((item) => item.type === 'function_call').length),
+    endTurn: responsesEndTurn(output.filter((item) => item.type === 'function_call').length, stopReason),
     ...(reasoning.trim().length > 0 ? { reasoning, reasoningModel: fallbacks.requestedModel || model } : {}),
     usage,
   };
@@ -753,7 +822,7 @@ function openAIResponsesStopReason(
 
 export function normalizeAnthropicMessagesResponseBody(
   body: Record<string, unknown>,
-  fallbacks: { id: string; model: string },
+  fallbacks: { id: string; model: string; requestedModel?: string | null },
 ): CanonicalLlmResponse {
   const id = typeof body.id === 'string' && body.id.length > 0 ? body.id : fallbacks.id;
   const model = typeof body.model === 'string' && body.model.length > 0 ? body.model : fallbacks.model;
@@ -763,6 +832,12 @@ export function normalizeAnthropicMessagesResponseBody(
   for (const blockRaw of content) {
     if (!blockRaw || typeof blockRaw !== 'object') continue;
     const block = blockRaw as Record<string, unknown>;
+    // A `redacted_thinking` block is opaque by design: there is nothing in it to translate.
+    if (block.type === 'thinking') {
+      const text = typeof block.thinking === 'string' ? block.thinking : '';
+      if (hasContent(text)) output.push({ type: 'reasoning', text });
+      continue;
+    }
     if (block.type === 'text') {
       const text = typeof block.text === 'string' ? block.text : '';
       if (text.length > 0) output.push({ type: 'text', text });
@@ -782,7 +857,17 @@ export function normalizeAnthropicMessagesResponseBody(
 
   const usage = extractReportedUsage(body, 'anthropic-messages');
   const stopReason = anthropicStopReasonToOpenAI(body.stop_reason);
-  return { id, model, output, stopReason, usage };
+  // The thoughts are also the answer's reasoning, which a Responses client that keeps reasoning state gets as a
+  // `reasoning` item, as it does from a stream of the same answer.
+  const reasoning = canonicalReasoningText(output);
+  return {
+    id,
+    model,
+    output,
+    stopReason,
+    ...(hasContent(reasoning) ? { reasoning, reasoningModel: fallbacks.requestedModel || model } : {}),
+    usage,
+  };
 }
 
 export function renderCanonicalResponseToOpenAIChatBody(response: CanonicalLlmResponse): Record<string, unknown> {
@@ -790,6 +875,7 @@ export function renderCanonicalResponseToOpenAIChatBody(response: CanonicalLlmRe
     .filter((item): item is { type: 'text'; text: string } => item.type === 'text')
     .map((item) => item.text)
     .join('');
+  const reasoning = canonicalReasoningText(response.output);
   const toolCalls = response.output
     .filter((item): item is Extract<CanonicalOutputItem, { type: 'function_call' }> => item.type === 'function_call')
     .map((item) => ({
@@ -808,6 +894,7 @@ export function renderCanonicalResponseToOpenAIChatBody(response: CanonicalLlmRe
       message: {
         role: 'assistant',
         content: text.length > 0 ? text : null,
+        ...(reasoning.length > 0 ? { reasoning_content: reasoning } : {}),
         ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
       },
       finish_reason: response.stopReason ?? (toolCalls.length > 0 ? 'tool_calls' : 'stop'),
@@ -822,6 +909,9 @@ export function renderCanonicalResponseToOpenAIResponsesBody(response: Canonical
     .filter((item): item is Extract<CanonicalOutputItem, { type: 'text' }> => item.type === 'text');
   const text = textItems.map((item) => item.text).join('');
   const phase = textItems.find((item) => item.phase)?.phase;
+  const ending = openAIResponsesEnding(response.stopReason);
+  // The item the answer was writing when it ended.
+  const last = response.output.at(-1);
 
   if (response.reasoning) {
     output.push(openAIResponsesReasoningItem(response.id, response.reasoning, response.reasoningModel ?? response.model));
@@ -832,7 +922,7 @@ export function renderCanonicalResponseToOpenAIResponsesBody(response: Canonical
       type: 'message',
       id: openAIResponsesMessageId(response.id),
       role: 'assistant',
-      status: 'completed',
+      status: openAIResponsesItemStatus(ending, last?.type === 'text'),
       content: [{ type: 'output_text', text, annotations: [] }],
       ...(phase ? { phase } : {}),
     });
@@ -845,8 +935,9 @@ export function renderCanonicalResponseToOpenAIResponsesBody(response: Canonical
       id: openAIResponsesFunctionCallId(item.id),
       call_id: item.id,
       name: item.name,
+      ...(item.namespace ? { namespace: item.namespace } : {}),
       arguments: stringifyToolArguments(item.arguments),
-      status: 'completed',
+      status: openAIResponsesItemStatus(ending, item === last, item.arguments),
     });
   }
 
@@ -854,7 +945,7 @@ export function renderCanonicalResponseToOpenAIResponsesBody(response: Canonical
     id: response.id,
     object: 'response',
     model: response.model,
-    status: 'completed',
+    ...ending,
     created_at: Math.floor(Date.now() / 1000),
     output,
     output_text: text,
@@ -865,6 +956,7 @@ export function renderCanonicalResponseToOpenAIResponsesBody(response: Canonical
 
 export function renderCanonicalResponseToAnthropicMessagesBody(response: CanonicalLlmResponse): Record<string, unknown> {
   const content = response.output.map((item) => {
+    if (item.type === 'reasoning') return { type: 'thinking', thinking: item.text };
     if (item.type === 'text') return { type: 'text', text: item.text };
     return {
       type: 'tool_use',
@@ -1187,17 +1279,62 @@ function normalizeChatTools(tools: unknown[]): CanonicalFunctionTool[] | undefin
   return out.length > 0 ? out : undefined;
 }
 
+/**
+ * A Responses request's function tools, as functions any target can offer.
+ *
+ * - A `namespace` tool's functions become plain functions where the namespace was. Each keeps its own name,
+ *   which the client's instructions use, unless a plain function or an earlier namespace has it; then it is
+ *   `<namespace>__<name>` (see prefixedToolName). `origin` keeps the namespace, so a call goes back as the
+ *   client defined the tool.
+ * - Built-in tools the provider runs (`web_search`, `file_search`, `code_interpreter`, `image_generation`,
+ *   `computer_use_preview`, `mcp`, `local_shell`, ...) and freeform `custom` tools are dropped: a Chat
+ *   Completions or Messages seller can run none of them, and an unknown tool type would fail the request.
+ */
 function normalizeResponsesTools(tools: unknown[]): CanonicalFunctionTool[] | undefined {
-  const out: CanonicalFunctionTool[] = [];
-  for (const raw of tools) {
-    if (!raw || typeof raw !== 'object') continue;
-    const tool = raw as Record<string, unknown>;
-    if (tool.type !== 'function' || typeof tool.name !== 'string' || tool.name.length === 0) continue;
+  const functionTool = (tool: Record<string, unknown>): CanonicalFunctionTool | null => {
+    if (tool.type !== 'function' || typeof tool.name !== 'string' || tool.name.length === 0) return null;
     const entry: CanonicalFunctionTool = { name: tool.name, parameters: toolParameters(tool.parameters) };
     if (typeof tool.description === 'string' && tool.description.length > 0) entry.description = tool.description;
-    out.push(entry);
+    return entry;
+  };
+  const objects = tools.filter((raw): raw is Record<string, unknown> => Boolean(raw) && typeof raw === 'object' && !Array.isArray(raw));
+  // Plain functions keep their names whatever comes first; namespaced ones take what is left.
+  const taken = new Set(objects.map(functionTool).filter((tool) => tool !== null).map((tool) => tool.name));
+
+  const out: CanonicalFunctionTool[] = [];
+  for (const tool of objects) {
+    const plain = functionTool(tool);
+    if (plain) {
+      out.push(plain);
+      continue;
+    }
+    if (tool.type !== 'namespace' || typeof tool.name !== 'string' || tool.name.length === 0 || !Array.isArray(tool.tools)) continue;
+    for (const raw of tool.tools) {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+      const inner = functionTool(raw as Record<string, unknown>);
+      if (!inner) continue;
+      const origin = { namespace: tool.name, name: inner.name };
+      let name = taken.has(inner.name) ? prefixedToolName(tool.name, inner.name) : inner.name;
+      for (let n = 2; taken.has(name); n++) name = prefixedToolName(tool.name, inner.name, `_${n}`);
+      taken.add(name);
+      out.push({ ...inner, name, origin });
+    }
   }
   return out.length > 0 ? out : undefined;
+}
+
+/** The flat name a request gave the function `name` of `namespace`; one it no longer offers keeps a prefixed name. */
+function flatToolName(tools: CanonicalFunctionTool[] | undefined, namespace: string, name: string): string {
+  const tool = tools?.find((candidate) => candidate.origin?.namespace === namespace && candidate.origin.name === name);
+  return tool?.name ?? prefixedToolName(namespace, name);
+}
+
+/** The longest function name Chat Completions and Messages accept. */
+const MAX_FUNCTION_NAME_LENGTH = 64;
+
+/** `<namespace>__<name><suffix>`, with the front cut off when it is longer than a function name may be. */
+function prefixedToolName(namespace: string, name: string, suffix = ''): string {
+  return `${namespace}__${name}`.slice(-(MAX_FUNCTION_NAME_LENGTH - suffix.length)) + suffix;
 }
 
 function renderCanonicalToolsToAnthropic(
@@ -1263,7 +1400,7 @@ function normalizeChatToolChoice(toolChoice: unknown): CanonicalToolChoice | und
   return undefined;
 }
 
-function normalizeResponsesToolChoice(toolChoice: unknown): CanonicalToolChoice | undefined {
+function normalizeResponsesToolChoice(toolChoice: unknown, tools: CanonicalFunctionTool[] | undefined): CanonicalToolChoice | undefined {
   if (typeof toolChoice === 'string') {
     if (toolChoice === 'auto' || toolChoice === 'none' || toolChoice === 'required') return toolChoice;
     return undefined;
@@ -1271,16 +1408,24 @@ function normalizeResponsesToolChoice(toolChoice: unknown): CanonicalToolChoice 
   if (!toolChoice || typeof toolChoice !== 'object' || Array.isArray(toolChoice)) return undefined;
   const choice = toolChoice as Record<string, unknown>;
   if (choice.type === 'function' && typeof choice.name === 'string') {
-    return { type: 'function', name: choice.name };
+    // A namespace function goes by the flat name its tool has in this request.
+    const name = typeof choice.namespace === 'string' && choice.namespace.length > 0
+      ? flatToolName(tools, choice.namespace, choice.name)
+      : choice.name;
+    return { type: 'function', name };
   }
   return undefined;
 }
 
-function renderCanonicalToolChoiceToAnthropic(toolChoice: CanonicalToolChoice | undefined): unknown {
-  if (toolChoice === 'required') return { type: 'any' };
-  if (toolChoice === 'auto' || toolChoice === 'none') return { type: toolChoice };
-  if (toolChoice?.type === 'function') return { type: 'tool', name: toolChoice.name };
-  return undefined;
+function renderCanonicalToolChoiceToAnthropic(toolChoice: CanonicalToolChoice | undefined, parallelToolCalls?: boolean): unknown {
+  let choice: Record<string, unknown> | undefined;
+  if (toolChoice === 'required') choice = { type: 'any' };
+  else if (toolChoice === 'auto' || toolChoice === 'none') choice = { type: toolChoice };
+  else if (toolChoice?.type === 'function') choice = { type: 'tool', name: toolChoice.name };
+  // `parallel_tool_calls: false` is Messages' `disable_parallel_tool_use`, which every tool_choice but `none` takes.
+  if (parallelToolCalls !== false) return choice;
+  if (choice?.type === 'none') return choice;
+  return { ...(choice ?? { type: 'auto' }), disable_parallel_tool_use: true };
 }
 
 function renderCanonicalToolChoiceToOpenAIChat(toolChoice: CanonicalToolChoice | undefined): unknown {

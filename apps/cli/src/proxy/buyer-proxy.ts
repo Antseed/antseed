@@ -1,5 +1,6 @@
 import { nativeVideoRoute, type NativeVideoProtocol } from '@antseed/api-adapter'
 import { ResourceRoutes } from './resource-routes.js'
+import { DEFAULT_STREAM_KEEP_ALIVE_MS, startStreamKeepAlive, type StreamKeepAlive } from './stream-keep-alive.js'
 import { prepareVideoRequest, recordVideoAcceptance } from './native-video-proxy.js'
 import { downloadVideo, VideoDownloadSlots } from './video-download.js'
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http'
@@ -298,6 +299,11 @@ export interface BuyerProxyConfig {
   telemetry?: BuyerTelemetry
   /** `buyer.maxVideoDownloads`: finished videos streamed to clients at once. Default 6. */
   maxVideoDownloads?: number
+  /**
+   * How long a translated stream may send the client nothing before the buyer writes a keep-alive event
+   * (`stream-keep-alive.ts`). Default 15 s. Test seam.
+   */
+  streamKeepAliveMs?: number
 }
 
 /** The DepositsClient reads `GET /_antseed/balances` needs. */
@@ -1469,6 +1475,7 @@ export class BuyerProxy {
   private _stateWriteChain: Promise<void> = Promise.resolve()
   private readonly _resourceRoutes = new ResourceRoutes()
   private readonly _videoDownloadSlots: VideoDownloadSlots
+  private readonly _streamKeepAliveMs: number
   /** Retrieves of one video job run one at a time, so a job retired as failed cannot be delivered by a retrieve already under way. */
   private readonly _videoJobQueues = new Map<string, Promise<void>>()
   /** Jobs whose retirement is being saved: left out of the saved routes, still routable in memory until the save succeeds. */
@@ -1556,6 +1563,7 @@ export class BuyerProxy {
 
   constructor(config: BuyerProxyConfig) {
     this._videoDownloadSlots = new VideoDownloadSlots(config.maxVideoDownloads ?? DEFAULT_BUYER_MAX_VIDEO_DOWNLOADS)
+    this._streamKeepAliveMs = config.streamKeepAliveMs ?? DEFAULT_STREAM_KEEP_ALIVE_MS
     this._minPeerReputation = config.minPeerReputation ?? null
     this._maxPricing = config.maxPricing ? { ...config.maxPricing } : null
     this._maxReserveAmountUsdc = config.maxReserveAmountUsdc ?? null
@@ -5759,6 +5767,8 @@ export class BuyerProxy {
           streamRequested: transformed.streamRequested,
           fallbackModel: transformed.requestedModel,
           includeReasoning: transformed.includeReasoning,
+          namespacedTools: transformed.namespacedTools,
+          includeThinking: transformed.includeThinking,
         }) ?? response
       if (transformed.streamRequested) {
         streamResponseAdapter = createStreamingAdapter({
@@ -5766,6 +5776,8 @@ export class BuyerProxy {
           to: strategy.from,
           fallbackModel: transformed.requestedModel,
           includeReasoning: transformed.includeReasoning,
+          namespacedTools: transformed.namespacedTools,
+          includeThinking: transformed.includeThinking,
         })
         if (!streamResponseAdapter) {
           res.writeHead(502, { 'content-type': 'text/plain' })
@@ -5838,6 +5850,8 @@ export class BuyerProxy {
         let streamed = false
         let firstFrameAt = 0
         let streamStartBody: Uint8Array = new Uint8Array()
+        // A translated stream only: one passed through is the seller's own, byte for byte.
+        let keepAlive: StreamKeepAlive | null = null
         const response = await this._node.sendRequestStream(selectedPeer, requestForPeer, {
           onResponseStart: (startResponse: SerializedHttpResponse, metadata: RequestStreamResponseMetadata) => {
             if (!metadata.streaming) return
@@ -5866,6 +5880,14 @@ export class BuyerProxy {
             if (adaptedStartResponse.body.length > 0) {
               res.write(Buffer.from(adaptedStartResponse.body))
             }
+            const adapterKeepAlive = streamResponseAdapter?.keepAlive?.bind(streamResponseAdapter)
+            if (adapterKeepAlive) {
+              keepAlive = startStreamKeepAlive(adapterKeepAlive, (bytes) => {
+                if (res.writableEnded || res.destroyed) return false
+                res.write(Buffer.from(bytes))
+                return true
+              }, this._streamKeepAliveMs)
+            }
           },
           onResponseChunk: (chunk: SerializedHttpResponseChunk) => {
             if (!streamed) return
@@ -5876,8 +5898,10 @@ export class BuyerProxy {
             for (const adaptedChunk of adaptedChunks) {
               if (adaptedChunk.data.length > 0) {
                 res.write(Buffer.from(adaptedChunk.data))
+                keepAlive?.touch()
               }
             }
+            if (chunk.done) keepAlive?.stop()
           },
         }, {
           signal: attemptSignal,
@@ -5885,7 +5909,7 @@ export class BuyerProxy {
           captureResponseAuthPreimages: captureResponseAuthPreimages === '1',
           ...(buyerIdentity ? { buyerIdentity } : {}),
           ...(teeBinding ? { channelBinding: teeBinding } : {}),
-        })
+        }).finally(() => keepAlive?.stop())
 
         recordRouterUsage(this._modelRoutingClient, routingConversationKey, requestForPeer, response, selectedPeer, requestSignal)
 

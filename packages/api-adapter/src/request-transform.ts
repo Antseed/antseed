@@ -6,7 +6,9 @@ import {
   renderCanonicalRequestToAnthropicMessagesBody,
   renderCanonicalRequestToOpenAIChatBody,
   renderCanonicalRequestToOpenAIResponsesBody,
+  namespacedToolNames,
   type CanonicalLlmRequest,
+  type NamespacedToolNames,
 } from './canonical.js';
 import {
   encodeJson,
@@ -27,6 +29,18 @@ export interface ServiceApiRequestTransformResult {
    * then return a chat model's reasoning to it as a `reasoning` item.
    */
   includeReasoning: boolean;
+  /**
+   * The functions flattened out of the request's `namespace` tools, by the name the seller sees. Pass it to
+   * `createStreamingAdapter` and `transformResponse`, which then return a call to one of them to a Responses
+   * client with the tool's own name and its `namespace`, as the client defined it.
+   */
+  namespacedTools: NamespacedToolNames;
+  /**
+   * Whether the client asked for thoughts: a Messages request with `thinking` `enabled` or `adaptive`.
+   * Pass it as `includeThinking` to `transformResponse` and `createStreamingAdapter`, so a Messages
+   * client that did not ask is not sent a `thinking` block a seller wrote on its own.
+   */
+  includeThinking: boolean;
 }
 
 export interface ServiceApiRequestTransformOptions {
@@ -90,6 +104,7 @@ export function transformRequest(
 
   const normalized = normalize(body);
   const streamRequested = options.streamRequested ?? normalized.stream;
+  const includeThinking = options.from === 'anthropic-messages' && requestsThinking(body);
   if (options.from === options.to) {
     const repairedBody = options.from === 'openai-responses'
       ? repairLegacyResponsesItemIds(body)
@@ -99,6 +114,8 @@ export function transformRequest(
       streamRequested,
       requestedModel: normalized.model,
       includeReasoning: requestsReasoningState(options.from, body),
+      namespacedTools: {},
+      includeThinking,
     };
   }
 
@@ -124,11 +141,21 @@ export function transformRequest(
     streamRequested,
     requestedModel: normalized.model,
     includeReasoning: requestsReasoningState(options.from, body),
+    namespacedTools: namespacedToolNames(normalized),
+    includeThinking,
   };
 }
 
 function requestsReasoningState(from: ServiceApiProtocol, body: Record<string, unknown>): boolean {
   return from === 'openai-responses' && Array.isArray(body.include) && body.include.includes('reasoning.encrypted_content');
+}
+
+/** Whether a Messages request switches thinking on, with a budget (`enabled`) or without one (`adaptive`). */
+function requestsThinking(body: Record<string, unknown>): boolean {
+  const thinking = body.thinking;
+  if (!thinking || typeof thinking !== 'object' || Array.isArray(thinking)) return false;
+  const type = (thinking as Record<string, unknown>).type;
+  return type === 'enabled' || type === 'adaptive';
 }
 
 /**

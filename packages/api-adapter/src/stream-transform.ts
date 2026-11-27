@@ -1,3 +1,5 @@
+import { namespacedToolFor, type NamespacedToolNames } from './canonical.js';
+import { createLeadingThinkMarkupFilter, type LeadingThinkMarkupFilter, type ThinkMarkupPiece } from './think-markup.js';
 import type { SerializedHttpResponseChunk, ServiceApiProtocol } from './types.js';
 import {
   createChatStreamParser,
@@ -6,7 +8,9 @@ import {
   openAIResponsesReasoningItem,
   makeStreamingStartResponse,
   mapFinishReasonToAnthropicStopReason,
+  openAIResponsesEnding,
   openAIResponsesFunctionCallId,
+  openAIResponsesItemStatus,
   openAIResponsesMessageId,
   parseJsonSafe,
   parseSseBuffer,
@@ -22,6 +26,14 @@ export interface ServiceApiStreamTransformOptions {
   fallbackModel?: string | null;
   /** A Responses client that keeps reasoning state gets a chat model's reasoning (see `includeReasoning` on transformRequest). */
   includeReasoning?: boolean;
+  /** The request's flattened namespace functions (see `namespacedTools` on transformRequest). */
+  namespacedTools?: NamespacedToolNames;
+  /**
+   * A Messages client gets a `thinking` block only when it asked for thoughts (`includeThinking` of
+   * `transformRequest`'s result). Without it, thoughts a seller wrote on its own are left out, as they
+   * were before. Other client protocols are not affected.
+   */
+  includeThinking?: boolean;
 }
 
 interface CanonicalStreamToolCall {
@@ -29,13 +41,15 @@ interface CanonicalStreamToolCall {
   id: string;
   name: string;
   arguments: string;
+  /** The Responses namespace of the client's tool, whose own name `name` then is. */
+  namespace?: string;
 }
 
 type CanonicalStreamEvent =
   | { type: 'response_start'; id: string; model: string; usage: ReportedUsage }
-  | { type: 'text_delta'; delta: string }
   | { type: 'reasoning_delta'; delta: string }
-  | { type: 'tool_call_start'; index: number; id: string; name: string }
+  | { type: 'text_delta'; delta: string }
+  | { type: 'tool_call_start'; index: number; id: string; name: string; namespace?: string }
   | { type: 'tool_call_delta'; index: number; argumentsDelta: string }
   | {
     type: 'response_done';
@@ -61,6 +75,8 @@ interface ProtocolStreamNormalizer {
 
 interface ProtocolStreamRenderer {
   render(events: CanonicalStreamEvent[], chunk: SerializedHttpResponseChunk): SerializedHttpResponseChunk[];
+  /** See `StreamingResponseAdapter.keepAlive`. */
+  keepAlive?(): Uint8Array | null;
 }
 
 const ZERO_USAGE: ReportedUsage = { inputTokens: 0, outputTokens: 0, freshInputTokens: 0, cachedInputTokens: 0 };
@@ -92,14 +108,52 @@ export function createStreamingAdapter(
   };
   const normalizer = createNormalizer(internals);
   const renderer = createRenderer(internals);
+  const thinkMarkup = createLeadingThinkMarkupFilter();
+  const namespacedTools = options.to === 'openai-responses' ? options.namespacedTools ?? {} : {};
+  const dropsThoughts = options.to === 'anthropic-messages' && options.includeThinking !== true;
 
   return {
     adaptStart: makeStreamingStartResponse,
     adaptChunk(chunk) {
-      const events = normalizer.feed(chunk);
-      return renderer.render(events, chunk);
+      const events = withNamespacedCalls(withoutLeadingThinkMarkup(normalizer.feed(chunk), thinkMarkup), namespacedTools);
+      return renderer.render(dropsThoughts ? events.filter((event) => event.type !== 'reasoning_delta') : events, chunk);
     },
+    keepAlive: () => renderer.keepAlive?.() ?? null,
   };
+}
+
+/** A call to a flattened namespace function as the client defined it: the tool's own name and its namespace. */
+function withNamespacedCalls(events: CanonicalStreamEvent[], namespacedTools: NamespacedToolNames): CanonicalStreamEvent[] {
+  return events.map((event) => {
+    const origin = event.type === 'tool_call_start' ? namespacedToolFor(namespacedTools, event.name) : undefined;
+    return origin ? { ...event, name: origin.name, namespace: origin.namespace } : event;
+  });
+}
+
+/**
+ * The answer's text events with any think markup a seller leaked at its start taken out: a leading block's
+ * text becomes reasoning. Text held back while its start could still be a tag is released before a tool call
+ * or the end, whichever comes first, so it keeps its place in the answer.
+ */
+function withoutLeadingThinkMarkup(events: CanonicalStreamEvent[], filter: LeadingThinkMarkupFilter): CanonicalStreamEvent[] {
+  const out: CanonicalStreamEvent[] = [];
+  const pushPieces = (pieces: ThinkMarkupPiece[]): void => {
+    for (const piece of pieces) {
+      out.push(piece.kind === 'text' ? { type: 'text_delta', delta: piece.text } : { type: 'reasoning_delta', delta: piece.text });
+    }
+  };
+  for (const event of events) {
+    if (event.type === 'text_delta') {
+      pushPieces(filter.push(event.delta));
+      continue;
+    }
+    // Held text goes out before a tool call, where the seller sent it: after the call, a Messages client would
+    // get a second block at index 0 and a Responses client the items out of order.
+    if (event.type === 'tool_call_start') pushPieces(filter.release());
+    if (event.type === 'response_done') pushPieces(filter.end(responsesEndTurn(event.toolCalls.length, event.finishReason)));
+    out.push(event);
+  }
+  return out;
 }
 
 function createChatStreamNormalizer(options: StreamTransformInternals): ProtocolStreamNormalizer {
@@ -140,7 +194,7 @@ function createChatStreamNormalizer(options: StreamTransformInternals): Protocol
         id: info.id,
         model: info.model,
         finishReason: info.finishReason,
-        endTurn: responsesEndTurn(info.toolCalls.length),
+        endTurn: responsesEndTurn(info.toolCalls.length, info.finishReason),
         usage: info.usage,
         toolCalls: info.toolCalls,
       });
@@ -240,6 +294,11 @@ function createAnthropicStreamNormalizer(options: StreamTransformInternals): Pro
           const delta = data.delta && typeof data.delta === 'object'
             ? data.delta as Record<string, unknown>
             : {};
+          if (delta.type === 'thinking_delta' && typeof delta.thinking === 'string') {
+            emitStart(emitted);
+            if (delta.thinking.length > 0) emitted.push({ type: 'reasoning_delta', delta: delta.thinking });
+            continue;
+          }
           if (delta.type === 'text_delta' && typeof delta.text === 'string') {
             emitStart(emitted);
             emitted.push({ type: 'text_delta', delta: delta.text });
@@ -443,6 +502,11 @@ function createChatStreamRenderer(options: StreamTransformInternals): ProtocolSt
           continue;
         }
 
+        if (event.type === 'reasoning_delta') {
+          chunks.push(renderChunk({ reasoning_content: event.delta }));
+          continue;
+        }
+
         if (event.type === 'text_delta') {
           chunks.push(renderChunk({ content: event.delta }));
           continue;
@@ -486,8 +550,12 @@ function createChatStreamRenderer(options: StreamTransformInternals): ProtocolSt
 
 function createAnthropicStreamRenderer(options: StreamTransformInternals): ProtocolStreamRenderer {
   let messageStarted = false;
+  let messageStopped = false;
   let textBlockStarted = false;
   let hadTextBlock = false;
+  // Thoughts are the first block of a message, when there are any: a thinking block opens only before
+  // any text or tool call, and everything after it is numbered one higher.
+  let thinkingBlockState: 'none' | 'open' | 'closed' = 'none';
   let openToolIndex: number | null = null;
   // The open tool block's arguments so far, and the calls that started while
   // they were still incomplete. Some upstreams interleave parallel calls'
@@ -500,7 +568,15 @@ function createAnthropicStreamRenderer(options: StreamTransformInternals): Proto
   let responseId = '';
   let responseModel = options.fallbackModel ?? 'unknown';
 
-  const toolBlockIndex = (index: number): number => index + (hadTextBlock ? 1 : 0);
+  const thinkingBlocks = (): number => (thinkingBlockState === 'none' ? 0 : 1);
+  const textBlockIndex = (): number => thinkingBlocks();
+  const toolBlockIndex = (index: number): number => index + thinkingBlocks() + (hadTextBlock ? 1 : 0);
+
+  const closeThinking = (emitted: Array<{ event?: string; data: unknown | string }>): void => {
+    if (thinkingBlockState !== 'open') return;
+    thinkingBlockState = 'closed';
+    emitted.push({ event: 'content_block_stop', data: { type: 'content_block_stop', index: 0 } });
+  };
 
   const startMessage = (
     emitted: Array<{ event?: string; data: unknown | string }>,
@@ -600,8 +676,28 @@ function createAnthropicStreamRenderer(options: StreamTransformInternals): Proto
           continue;
         }
 
+        if (event.type === 'reasoning_delta') {
+          startMessage(emitted, null);
+          // Thoughts that come after the answer began have no place before it: dropped, never reordered.
+          if (thinkingBlockState === 'closed' || hadTextBlock || openToolIndex !== null || heldTools.size > 0) continue;
+          if (thinkingBlockState === 'none') {
+            if (event.delta.trim().length === 0) continue;
+            thinkingBlockState = 'open';
+            emitted.push({
+              event: 'content_block_start',
+              data: { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } },
+            });
+          }
+          emitted.push({
+            event: 'content_block_delta',
+            data: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: event.delta } },
+          });
+          continue;
+        }
+
         if (event.type === 'text_delta') {
           startMessage(emitted, null);
+          closeThinking(emitted);
           releaseHeldTools(emitted, true);
           closeOpenTool(emitted);
           if (!textBlockStarted) {
@@ -609,20 +705,21 @@ function createAnthropicStreamRenderer(options: StreamTransformInternals): Proto
             hadTextBlock = true;
             emitted.push({
               event: 'content_block_start',
-              data: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+              data: { type: 'content_block_start', index: textBlockIndex(), content_block: { type: 'text', text: '' } },
             });
           }
           emitted.push({
             event: 'content_block_delta',
-            data: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: event.delta } },
+            data: { type: 'content_block_delta', index: textBlockIndex(), delta: { type: 'text_delta', text: event.delta } },
           });
           continue;
         }
 
         if (event.type === 'tool_call_start') {
           startMessage(emitted, null);
+          closeThinking(emitted);
           if (textBlockStarted) {
-            emitted.push({ event: 'content_block_stop', data: { type: 'content_block_stop', index: 0 } });
+            emitted.push({ event: 'content_block_stop', data: { type: 'content_block_stop', index: textBlockIndex() } });
             textBlockStarted = false;
           }
           if (openToolIndex === event.index || heldTools.has(event.index)) continue;
@@ -652,10 +749,11 @@ function createAnthropicStreamRenderer(options: StreamTransformInternals): Proto
 
         if (event.type === 'response_done') {
           startMessage(emitted, null);
+          closeThinking(emitted);
           releaseHeldTools(emitted, true);
           closeOpenTool(emitted);
           if (textBlockStarted) {
-            emitted.push({ event: 'content_block_stop', data: { type: 'content_block_stop', index: 0 } });
+            emitted.push({ event: 'content_block_stop', data: { type: 'content_block_stop', index: textBlockIndex() } });
             textBlockStarted = false;
           }
           emitted.push({
@@ -674,6 +772,7 @@ function createAnthropicStreamRenderer(options: StreamTransformInternals): Proto
             },
           });
           emitted.push({ event: 'message_stop', data: { type: 'message_stop' } });
+          messageStopped = true;
         }
       }
 
@@ -684,6 +783,11 @@ function createAnthropicStreamRenderer(options: StreamTransformInternals): Proto
         return [{ requestId: chunk.requestId, data: new Uint8Array(0), done: true }];
       }
       return [];
+    },
+    // Anthropic's own keep-alive, which its API sends during a stream and its SDKs skip.
+    keepAlive() {
+      if (!messageStarted || messageStopped) return null;
+      return encodeSseEvents([{ event: 'ping', data: { type: 'ping' } }]);
     },
   };
 }
@@ -709,6 +813,8 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
   let nextOutputIndex = 0;
   let messageOutputIndex: number | null = null;
   const toolOutputIndexes = new Map<number, number>();
+  // The item the answer wrote last, the text or a tool call's index: an answer cut at a limit was cut there.
+  let lastWritten: 'text' | number | null = null;
 
   const pushEvent = (
     emitted: Array<{ event?: string; data: unknown | string }>,
@@ -741,22 +847,22 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
   };
   // The finished message and tool calls, in output_index order.
   type AnswerItem =
-    | { type: 'message'; id: string; role: 'assistant'; status: 'completed'; content: Array<{ type: 'output_text'; text: string; annotations: unknown[] }>; phase?: 'commentary' }
-    | { type: 'function_call'; outputIndex: number; id: string; call_id: string; name: string; arguments: string; status: 'completed' };
-  const answerItems = (): Array<{ index: number; item: AnswerItem }> => {
+    | { type: 'message'; id: string; role: 'assistant'; status: 'completed' | 'incomplete'; content: Array<{ type: 'output_text'; text: string; annotations: unknown[] }>; phase?: 'commentary' }
+    | { type: 'function_call'; outputIndex: number; id: string; call_id: string; name: string; namespace?: string; arguments: string; status: 'completed' | 'incomplete' };
+  const answerItems = (ending: ReturnType<typeof openAIResponsesEnding>): Array<{ index: number; item: AnswerItem }> => {
     const phase = toolCalls.size > 0 ? { phase: 'commentary' as const } : {};
     const items: Array<{ index: number; item: AnswerItem }> = [];
     if (outputStarted) {
       items.push({
         index: getMessageOutputIndex(),
-        item: { type: 'message', id: getMessageId(), role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: textBuffer, annotations: [] }], ...phase },
+        item: { type: 'message', id: getMessageId(), role: 'assistant', status: openAIResponsesItemStatus(ending, lastWritten === 'text'), content: [{ type: 'output_text', text: textBuffer, annotations: [] }], ...phase },
       });
     }
     for (const toolCall of sortedToolCalls(toolCalls)) {
       const outputIndex = getToolOutputIndex(toolCall.index);
       items.push({
         index: outputIndex,
-        item: { type: 'function_call', outputIndex, id: openAIResponsesFunctionCallId(toolCall.id), call_id: toolCall.id, name: toolCall.name, arguments: toolCall.arguments, status: 'completed' },
+        item: { type: 'function_call', outputIndex, id: openAIResponsesFunctionCallId(toolCall.id), call_id: toolCall.id, name: toolCall.name, ...namespaceOf(toolCall), arguments: toolCall.arguments, status: openAIResponsesItemStatus(ending, lastWritten === toolCall.index, toolCall.arguments) },
       });
     }
     return items.sort((a, b) => a.index - b.index);
@@ -823,6 +929,7 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
           closeReasoning(emitted);
           ensureTextOutputStarted(emitted);
           textBuffer += event.delta;
+          lastWritten = 'text';
           pushEvent(emitted, 'response.output_text.delta', {
             output_index: getMessageOutputIndex(),
             item_id: getMessageId(),
@@ -857,13 +964,15 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
         if (event.type === 'tool_call_start') {
           closeReasoning(emitted);
           ensureResponseCreated(emitted, null);
-          const toolCall = {
+          const toolCall: CanonicalStreamToolCall = {
             index: event.index,
             id: event.id || `call_${event.index + 1}`,
             name: event.name || 'tool',
             arguments: '',
+            ...namespaceOf(event),
           };
           toolCalls.set(event.index, toolCall);
+          lastWritten = event.index;
           const itemId = openAIResponsesFunctionCallId(toolCall.id);
           pushEvent(emitted, 'response.output_item.added', {
             output_index: getToolOutputIndex(event.index),
@@ -872,6 +981,7 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
               id: itemId,
               call_id: toolCall.id,
               name: toolCall.name,
+              ...namespaceOf(toolCall),
               arguments: '',
               status: 'in_progress',
             },
@@ -888,6 +998,7 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
           };
           const toolCall = { ...existing, arguments: existing.arguments + event.argumentsDelta };
           toolCalls.set(event.index, toolCall);
+          lastWritten = event.index;
           pushEvent(emitted, 'response.function_call_arguments.delta', {
             output_index: getToolOutputIndex(event.index),
             item_id: openAIResponsesFunctionCallId(toolCall.id),
@@ -899,11 +1010,14 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
 
         if (event.type === 'response_done') {
           ensureResponseCreated(emitted, null);
+          const ending = openAIResponsesEnding(event.finishReason);
+          // The finished message and tool calls, built once for their `.done` events and the final response.
+          const finished = answerItems(ending);
           if (!outputDone) {
             outputDone = true;
             const msgId = getMessageId();
             closeReasoning(emitted);
-            for (const { item } of answerItems()) {
+            for (const { item } of finished) {
               if (item.type === 'message') {
                 pushEvent(emitted, 'response.output_text.done', {
                   output_index: getMessageOutputIndex(),
@@ -933,16 +1047,16 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
             }
           }
 
-          pushEvent(emitted, 'response.completed', {
+          pushEvent(emitted, `response.${ending.status}`, {
             response: {
               id: getResponseId(),
               object: 'response',
               model: responseModel,
-              status: 'completed',
+              ...ending,
               created_at: createdAt,
               output: [
                 ...(reasoning === 'none' ? [] : [getReasoningItem()]),
-                ...answerItems().map(({ item }) => {
+                ...finished.map(({ item }) => {
                   if (item.type === 'message') return item;
                   const { outputIndex: _outputIndex, ...functionCall } = item;
                   return functionCall;
@@ -964,6 +1078,25 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
         return [{ requestId: chunk.requestId, data: new Uint8Array(0), done: true }];
       }
       return [];
+    },
+    // `response.in_progress`: a Responses event that carries no output, which the openai SDK, Codex and pi-ai
+    // read without changing the answer. A comment line would not do: SSE parsers drop comments, so a client's
+    // idle timer never sees them.
+    keepAlive() {
+      if (!responseCreated || outputDone) return null;
+      const emitted: Array<{ event?: string; data: unknown | string }> = [];
+      pushEvent(emitted, 'response.in_progress', {
+        response: {
+          id: getResponseId(),
+          object: 'response',
+          model: responseModel,
+          status: 'in_progress',
+          created_at: createdAt,
+          output: [],
+          output_text: '',
+        },
+      });
+      return encodeSseEvents(emitted);
     },
   };
 }
@@ -1008,6 +1141,10 @@ function openAIResponsesStreamFinishReason(
     return null;
   }
   return toolCalls.size > 0 ? 'tool_calls' : 'stop';
+}
+
+function namespaceOf(call: { namespace?: string }): { namespace?: string } {
+  return call.namespace ? { namespace: call.namespace } : {};
 }
 
 function responseToolCallId(value: unknown, index: number): string {
