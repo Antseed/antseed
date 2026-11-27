@@ -116,14 +116,16 @@ export function errorEventStreamAsJson(
   if (!contentType?.toLowerCase().includes('text/event-stream')) return response;
 
   const text = new TextDecoder().decode(response.body);
+  const headers = Object.fromEntries(Object.entries(response.headers)
+    .filter(([name]) => !['content-type', 'content-length', 'cache-control'].includes(name.toLowerCase())));
+  // A JSON error body under an event-stream header: it already is the error, only the header is wrong.
+  if (parseJsonRecord(text.trim())) return { ...response, headers: jsonHeaders(headers) };
   const error = findEventStreamError(text);
   const fallbackMessage = text.trim().slice(0, 1_000) || 'Upstream error';
   const message = typeof error?.message === 'string' && error.message.length > 0 ? error.message : fallbackMessage;
   const body = protocol === 'anthropic-messages'
     ? { type: 'error', error: { type: typeof error?.type === 'string' ? error.type : 'api_error', message } }
     : { error: error ? { ...error, message } : { message, type: 'api_error' } };
-  const headers = Object.fromEntries(Object.entries(response.headers)
-    .filter(([name]) => !['content-type', 'content-length', 'cache-control'].includes(name.toLowerCase())));
   return { ...response, headers: jsonHeaders(headers), body: encodeJson(body) };
 }
 
@@ -137,6 +139,10 @@ function findEventStreamError(text: string): Record<string, unknown> | null {
     const parsed = parseJsonRecord(data);
     if (!parsed) continue;
     if (isRecord(parsed.error)) return parsed.error;
+    // A flat error: `{"error":"rate_limited","message":"slow down"}`.
+    if (typeof parsed.error === 'string' && typeof parsed.message === 'string') {
+      return { message: parsed.message, code: parsed.error };
+    }
     if (isRecord(parsed.response) && isRecord(parsed.response.error)) return parsed.response.error;
     if (parsed.type === 'error' && typeof parsed.message === 'string') {
       const { type: _type, sequence_number: _sequence, ...rest } = parsed;

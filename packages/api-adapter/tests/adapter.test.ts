@@ -2110,6 +2110,19 @@ describe('errorEventStreamAsJson', () => {
     });
   });
 
+  it('keeps a JSON error body sent under an event-stream header, with its code and type', () => {
+    const body = { error: { message: 'too long', type: 'invalid_request_error', code: 'context_length_exceeded' } };
+    const result = errorEventStreamAsJson(sse(400, JSON.stringify(body)), 'openai-responses');
+    expect(result.headers['content-type']).toBe('application/json');
+    expect(result.headers['cache-control']).toBeUndefined();
+    expect(decode(result)).toEqual(body);
+  });
+
+  it('reads a flat error frame with a string code', () => {
+    const result = errorEventStreamAsJson(sse(429, 'data: {"error":"rate_limited","message":"slow down"}\n\n'), 'openai-chat-completions');
+    expect(decode(result)).toEqual({ error: { message: 'slow down', code: 'rate_limited' } });
+  });
+
   it('still answers JSON when the stream holds no readable error', () => {
     const result = errorEventStreamAsJson(sse(502, 'data: not json\n\n'), 'anthropic-messages');
     expect(result.headers['content-type']).toBe('application/json');
