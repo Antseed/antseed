@@ -443,7 +443,7 @@ export function renderCanonicalRequestToAnthropicMessagesBody(request: Canonical
       if (lastTool) lastTool.cache_control = EPHEMERAL_CACHE_CONTROL;
     }
   }
-  const toolChoice = renderCanonicalToolChoiceToAnthropic(request.toolChoice);
+  const toolChoice = renderCanonicalToolChoiceToAnthropic(request.toolChoice, request.parallelToolCalls);
   assignToolsAndToolChoice(body, tools, toolChoice);
   if (request.metadata || request.user) {
     body.metadata = {
@@ -500,6 +500,8 @@ export function normalizeAnthropicMessagesRequestBody(body: Record<string, unkno
   if (tools) request.tools = tools;
   const toolChoice = normalizeAnthropicToolChoice(body.tool_choice);
   if (toolChoice !== undefined) request.toolChoice = toolChoice;
+  // Messages says "one tool call at a time" on its tool_choice; the other standards, with parallel_tool_calls.
+  if ((body.tool_choice as Record<string, unknown> | null | undefined)?.disable_parallel_tool_use === true) request.parallelToolCalls = false;
   if (body.metadata && typeof body.metadata === 'object' && !Array.isArray(body.metadata)) {
     const metadata = body.metadata as Record<string, unknown>;
     request.metadata = metadata;
@@ -1366,11 +1368,16 @@ function normalizeResponsesToolChoice(toolChoice: unknown, tools: CanonicalFunct
   return undefined;
 }
 
-function renderCanonicalToolChoiceToAnthropic(toolChoice: CanonicalToolChoice | undefined): unknown {
-  if (toolChoice === 'required') return { type: 'any' };
-  if (toolChoice === 'auto' || toolChoice === 'none') return { type: toolChoice };
-  if (toolChoice?.type === 'function') return { type: 'tool', name: toolChoice.name };
-  return undefined;
+function renderCanonicalToolChoiceToAnthropic(toolChoice: CanonicalToolChoice | undefined, parallelToolCalls?: boolean): unknown {
+  const choice: Record<string, unknown> | undefined = toolChoice === 'required'
+    ? { type: 'any' }
+    : toolChoice === 'auto' || toolChoice === 'none'
+      ? { type: toolChoice }
+      : toolChoice?.type === 'function' ? { type: 'tool', name: toolChoice.name } : undefined;
+  // `parallel_tool_calls: false` is Messages' `disable_parallel_tool_use`, which every tool_choice but `none` takes.
+  if (parallelToolCalls !== false) return choice;
+  if (choice?.type === 'none') return choice;
+  return { ...(choice ?? { type: 'auto' }), disable_parallel_tool_use: true };
 }
 
 function renderCanonicalToolChoiceToOpenAIChat(toolChoice: CanonicalToolChoice | undefined): unknown {

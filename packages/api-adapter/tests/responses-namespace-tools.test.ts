@@ -243,3 +243,39 @@ describe('parallel_tool_calls from a Chat Completions client to a Responses sell
     expect(JSON.parse(decoder.decode(result.request.body)).parallel_tool_calls).toBe(false);
   });
 });
+
+describe('parallel_tool_calls and a Messages seller or client', () => {
+  const toMessages = (extra: Json): Json => {
+    const result = transformRequest(
+      { requestId: 'r', method: 'POST', path: '/v1/responses', headers: { 'content-type': 'application/json' }, body: encoder.encode(JSON.stringify(request([fn('run')], extra))) },
+      { from: 'openai-responses', to: 'anthropic-messages' },
+    )!;
+    return JSON.parse(decoder.decode(result.request.body)) as Json;
+  };
+
+  it('false becomes disable_parallel_tool_use on the Messages tool_choice, which none cannot carry', () => {
+    expect(toMessages({ parallel_tool_calls: false }).tool_choice).toEqual({ type: 'auto', disable_parallel_tool_use: true });
+    expect(toMessages({ parallel_tool_calls: false, tool_choice: 'required' }).tool_choice).toEqual({ type: 'any', disable_parallel_tool_use: true });
+    expect(toMessages({ parallel_tool_calls: false, tool_choice: { type: 'function', name: 'run' } }).tool_choice).toEqual({ type: 'tool', name: 'run', disable_parallel_tool_use: true });
+    expect(toMessages({ parallel_tool_calls: false, tool_choice: 'none' }).tool_choice).toEqual({ type: 'none' });
+    expect(toMessages({ parallel_tool_calls: false, tool_choice: undefined }).tool_choice).toEqual({ type: 'auto', disable_parallel_tool_use: true });
+  });
+
+  it('true or unset leaves the Messages tool_choice as it was', () => {
+    expect(toMessages({ parallel_tool_calls: true }).tool_choice).toEqual({ type: 'auto' });
+    expect(toMessages({}).tool_choice).toEqual({ type: 'auto' });
+  });
+
+  it('a Messages client\'s disable_parallel_tool_use reaches a chat seller as parallel_tool_calls false', () => {
+    const result = transformRequest(
+      {
+        requestId: 'r', method: 'POST', path: '/v1/messages', headers: { 'content-type': 'application/json' },
+        body: encoder.encode(JSON.stringify({ model: 'm', max_tokens: 100, messages: [{ role: 'user', content: 'hi' }], tools: [{ name: 'run', input_schema: { type: 'object' } }], tool_choice: { type: 'auto', disable_parallel_tool_use: true } })),
+      },
+      { from: 'anthropic-messages', to: 'openai-chat-completions' },
+    )!;
+    const chat = JSON.parse(decoder.decode(result.request.body)) as Json;
+    expect(chat.parallel_tool_calls).toBe(false);
+    expect(chat.tool_choice).toBe('auto');
+  });
+});
