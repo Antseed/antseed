@@ -259,7 +259,7 @@ curl https://gateway.example.com/v1/key/savings -H "Authorization: Bearer $ANTSE
 
 `/v1/key/rewards` reports the $ANTS the paying wallet earned from usage, read on the gateway's own chain (`available` is false where rewards aren't live). Claiming needs the wallet's operator, so it happens in the console's Rewards page.
 
-`/v1/key/savings` compares this key's own requests with retail reference prices: what they would have cost at retail, and what they paid. It counts only models with a retail price, free requests at $0 paid. Its usage comes from the gateway's records per model (requests the gateway pruned from its log keep their spend but no longer their tokens if no spend was metered). `data` is `null` when retail prices can't be read (`ANTSEED_COMPARABLE_PRICES_URL`) or no request matched. Both answer `null` rather than an error when they can't be read.
+`/v1/key/savings` compares this key's own requests with retail reference prices: what they would have cost at retail, and what they paid. It counts only models with a retail price, free requests at $0 paid. Its usage comes from the gateway's records per model, which keep counting requests the gateway pruned from its log. `data` is `null` when retail prices can't be read (`ANTSEED_COMPARABLE_PRICES_URL`) or no request matched. Both answer `null` rather than an error when they can't be read.
 
 `GET /v1/models` lists the same retail prices per model. A text model the price list names has a `reference_price`, in USD per million tokens:
 
