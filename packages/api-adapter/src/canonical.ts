@@ -769,7 +769,8 @@ export function normalizeAnthropicMessagesResponseBody(
     const block = blockRaw as Record<string, unknown>;
     // A `redacted_thinking` block is opaque by design: there is nothing in it to translate.
     if (block.type === 'thinking') {
-      if (typeof block.thinking === 'string' && hasReasoningText(block.thinking)) thoughts.push(block.thinking);
+      // Thoughts after the answer began are dropped, as a stream drops them, never moved ahead of it.
+      if (output.length === 0 && typeof block.thinking === 'string' && hasReasoningText(block.thinking)) thoughts.push(block.thinking);
       continue;
     }
     if (block.type === 'text') {

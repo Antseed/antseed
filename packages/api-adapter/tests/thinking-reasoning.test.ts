@@ -957,6 +957,40 @@ describe('the same answer streamed and buffered', () => {
     expect(completed.response.end_turn).toBe(buffered.end_turn);
   });
 
+  it('for a Responses client of a Messages seller that thinks again after its text', () => {
+    const message: Json = {
+      id: 'msg_3',
+      type: 'message',
+      role: 'assistant',
+      model: 'example-model',
+      content: [
+        { type: 'thinking', thinking: 'First thought.', signature: 'sig' },
+        { type: 'text', text: 'Answer.' },
+        { type: 'thinking', thinking: 'Late thought.', signature: 'sig' },
+      ],
+      stop_reason: 'end_turn',
+      usage: { input_tokens: 10, output_tokens: 30 },
+    };
+    const frames = [
+      anthropicFrame({ type: 'message_start', message: { id: 'msg_3', model: 'example-model', usage: { input_tokens: 10, output_tokens: 1 } } }),
+      anthropicFrame({ type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '', signature: '' } }),
+      anthropicFrame({ type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'First thought.' } }),
+      anthropicFrame({ type: 'content_block_stop', index: 0 }),
+      anthropicFrame({ type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } }),
+      anthropicFrame({ type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'Answer.' } }),
+      anthropicFrame({ type: 'content_block_stop', index: 1 }),
+      anthropicFrame({ type: 'content_block_start', index: 2, content_block: { type: 'thinking', thinking: '', signature: '' } }),
+      anthropicFrame({ type: 'content_block_delta', index: 2, delta: { type: 'thinking_delta', thinking: 'Late thought.' } }),
+      anthropicFrame({ type: 'content_block_stop', index: 2 }),
+      anthropicFrame({ type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 30 } }),
+      anthropicFrame({ type: 'message_stop' }),
+    ];
+    const buffered = translateBody(MESSAGES, RESPONSES, message) as Json;
+    const completed = translateStream(MESSAGES, RESPONSES, frames).find((event) => event.type === 'response.completed')!;
+    expect(buffered.output[0].content).toEqual([{ type: 'reasoning_text', text: 'First thought.' }]);
+    expect(completed.response.output).toEqual(buffered.output);
+  });
+
   it('for a Messages client of a chat seller that thinks, writes and calls a tool', () => {
     const reply: Json = {
       id: 'chatcmpl-1',
