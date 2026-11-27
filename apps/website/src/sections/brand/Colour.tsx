@@ -14,7 +14,7 @@ const LIGHT = '#eceee9';
 const DAY: readonly (readonly Swatch[])[] = [
   [{name: 'Ink', hex: INK, ink: WHITE}, {name: 'Paper', hex: WHITE, ink: INK}],
   [{name: 'Green', hex: '#4f7a24', ink: WHITE}],
-  [{name: 'Night green', hex: '#98c463', ink: INK}, {name: 'Grey', hex: '#929292', ink: WHITE}, {name: 'Acid', hex: '#c8f53c', ink: INK}],
+  [{name: 'Night green', hex: '#98c463', ink: INK}, {name: 'Grey', hex: '#929292', ink: DARK}, {name: 'Acid', hex: '#c8f53c', ink: INK}],
 ];
 
 const NIGHT: readonly (readonly Swatch[])[] = [

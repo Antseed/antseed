@@ -168,6 +168,9 @@ if (!STILL && matchMedia('(hover: hover)').matches) {
   // off screen, a trail ends at once
   const view = new IntersectionObserver((es) => { for (const e of es) if (!e.isIntersecting) all.find((w) => w.el === e.target)?.stop(); });
   all.forEach((w) => view.observe(w.el));
-  // a new theme shows the other painting: read it on the next hover
-  new MutationObserver(() => all.forEach((w) => { w.stop(); w.key = ''; w.ready = false; })).observe(root, { attributes: true, attributeFilter: ['data-theme'] });
+  // a new theme shows the other painting, a new size another grid: the trail ends, and the painting is read again on the next move
+  const reset = (w) => { w.stop(); w.key = ''; w.ready = false; };
+  new MutationObserver(() => all.forEach(reset)).observe(root, { attributes: true, attributeFilter: ['data-theme'] });
+  const sized = new ResizeObserver((es) => { for (const e of es) { const w = all.find((p) => p.el === e.target); if (w?.key) reset(w); } });
+  all.forEach((w) => sized.observe(w.el));
 }

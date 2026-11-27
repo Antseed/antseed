@@ -70,6 +70,7 @@
           menu.style.setProperty('--sm-x', `${Math.max(16, nav.querySelector('a').getBoundingClientRect().left)}px`); }
         menu.hidden = !on; btn.setAttribute('aria-expanded', String(on)); btn.setAttribute('aria-label', on ? 'Close menu' : 'Menu');
         root.classList.toggle('menu-open', on);
+        if (on) menu.querySelector('a')?.focus();   // keyboard users land in the sheet, not behind it
       };
       btn.addEventListener('click', () => open(menu.hidden));
       menu.addEventListener('click', (e) => { if (e.target.closest('a')) open(false); });
@@ -95,7 +96,11 @@
     const card = document.querySelector('.cta-card');
     if (card) {
       const fit16 = () => { card.style.minHeight = ''; const h = card.getBoundingClientRect().height; card.style.minHeight = `${Math.ceil(h / 16 - 0.01) * 16}px`; };
-      fit16(); new ResizeObserver(() => { if (card.getBoundingClientRect().height % 16) fit16(); }).observe(card);
+      // measured from scratch each time (min-height cleared first), so the card shrinks as well as grows; its children are watched too,
+      // because a card held up by its min-height doesn't change size when its content gets shorter. Refit on the next frame, not inside the observer.
+      let queued = false;
+      const refit = () => { if (!queued) { queued = true; requestAnimationFrame(() => { queued = false; fit16(); }); } };
+      fit16(); const ro16 = new ResizeObserver(refit); ro16.observe(card); [...card.children].forEach((c) => ro16.observe(c));
     }
   });
 })();

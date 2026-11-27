@@ -71,8 +71,11 @@ def derp(im, scale=0.72, push=1.0, tilt=(-0.45, 0.35), white=205):
         spr = spr.resize((nw, nh), Image.LANCZOS)
         # fill the eye where the pupil was with the eye's white (its median)
         ws = sorted((im.getpixel(p) for p in e['white']), key=lum); fill = ws[len(ws) // 2]
-        for p in mask.crop(box).getbbox() and [(x, y) for x in range(box[0], box[2]) for y in range(box[1], box[3]) if mask.getpixel((x, y)) > 8 and (x, y) in body] or []:
-            op[p] = fill
+        if mask.crop(box).getbbox():
+            for x in range(box[0], box[2]):
+                for y in range(box[1], box[3]):
+                    if mask.getpixel((x, y)) > 8 and (x, y) in body:
+                        op[x, y] = fill
         # where it goes: away from the other eye, one a little up, the other a little down, as far as the white allows
         dx, dy = (cx - mid[0]), (cy - mid[1]) + tilt[i] * max(rx, ry)
         n = math.hypot(dx, dy) or 1; dx, dy = dx / n, dy / n

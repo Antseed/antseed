@@ -83,7 +83,9 @@ async function unveil(el, after) {
 
 // play a panel's arrival again, now: back to its plain colour, the windows gone, then the painting growing from the centre and the
 // windows popping in, as the first time. An arrival still running on it stops where it is
-let watch = null;
+let watch = null, refresh = () => {};
+// a page that shows a hidden panel some other way (a CSS transition, a script's own state): call refresh() once it shows
+export function recheck() { refresh(); }
 export function replay(el) {
   if (STILL || !el || !takes(el) || !getComputedStyle(el).getPropertyValue('--wash').trim()) return;
   watch?.forget(el);
@@ -107,13 +109,20 @@ if (panels.length) {
     let k = 0;
     for (const e of entries) { seen.set(e.target, e.isIntersecting); if (go(e.target, k)) k++; }
   }, { threshold: 0.3 });
+  // a panel in view but hidden (by itself or by an ancestor: a tab, a closed <details>, a parent's visibility:hidden) arrives once it
+  // shows: any class, style, hidden, inert or open change in the page rechecks the panels waiting in view; done once none is waiting
+  const recheck = () => {
+    let k = 0;
+    for (const [el, on] of seen) if (on && go(el, k)) k++;
+    if (!panels.some((el) => el.dataset.unveil === 'wait')) mo.disconnect();
+  };
+  refresh = recheck;
   watch = { forget: (el) => { io.unobserve(el); seen.delete(el); } };
-  // a panel in view but hidden arrives once it shows
-  const mo = new MutationObserver((ms) => ms.forEach((m) => go(m.target)));
+  const mo = new MutationObserver(recheck);
+  mo.observe(document.body, { attributes: true, subtree: true, attributeFilter: ['class', 'style', 'hidden', 'inert', 'open'] });
   for (const el of panels) {
     el.dataset.unveil = 'wait';
     io.observe(el);
-    mo.observe(el, { attributes: true, attributeFilter: ['class', 'style', 'hidden', 'inert'] });
   }
   // the theme flips mid-arrival (antseed.js's themechange): the cover takes the panel's other colour (the CSS swaps the painting under it)
   document.addEventListener('themechange', () => running.forEach((r) => { r.fill = getComputedStyle(r.el).backgroundColor; }));
