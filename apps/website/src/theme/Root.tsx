@@ -163,10 +163,14 @@ function useClickTracking() {
 /** How long after hydration a hash landing is kept on its target while the page settles. */
 const HASH_SETTLE_MS = 3000;
 
+/** Signs the visitor is moving the page themselves: a press, a key, a wheel or trackpad scroll, a touch drag. */
+const SCROLL_INTENT = ['pointerdown', 'keydown', 'wheel', 'touchmove'] as const;
+
 /**
  * Landing on a #hash: in-page scrolling turns smooth (`data-smooth`, custom.css) only at the first press or key, so the browser's
  * jump to the hash is instant. Sections that change height on hydration (the home Privacy stage) move the target after that jump,
- * so until the visitor acts, and for a few seconds at most, it is put back at the top of the screen whenever the page resizes.
+ * so for a few seconds at most it is put back at the top of the screen whenever the page resizes, until the visitor scrolls, presses
+ * or types: from then on the page is theirs.
  */
 function useHashLanding() {
   useEffect(() => {
@@ -187,16 +191,20 @@ function useHashLanding() {
       // a malformed hash: nothing to land on
     }
     if (!target) return removeSmooth;
-    const land = () => {
-      if (!root.hasAttribute('data-smooth')) target.scrollIntoView({block: 'start', behavior: 'instant'});
-    };
+    const land = () => target.scrollIntoView({block: 'start', behavior: 'instant'});
     const resized = new ResizeObserver(land);
-    resized.observe(document.getElementById('__docusaurus') ?? document.body);
-    const stop = window.setTimeout(() => resized.disconnect(), HASH_SETTLE_MS);
-    return () => {
-      removeSmooth();
+    let stop = 0;
+    const settle = () => {
       resized.disconnect();
       window.clearTimeout(stop);
+      for (const type of SCROLL_INTENT) window.removeEventListener(type, settle, {capture: true});
+    };
+    for (const type of SCROLL_INTENT) window.addEventListener(type, settle, {capture: true, passive: true});
+    resized.observe(document.getElementById('__docusaurus') ?? document.body);
+    stop = window.setTimeout(settle, HASH_SETTLE_MS);
+    return () => {
+      removeSmooth();
+      settle();
     };
   }, []);
 }
