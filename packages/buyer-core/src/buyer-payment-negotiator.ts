@@ -1490,8 +1490,8 @@ export class BuyerPaymentNegotiator {
         ),
       },
     });
-    // Rows another process retired, and restored creates whose outcome is unknown.
-    this._bpm.sweepOneOffChannels();
+    // Rows another process retired; with every row read, also what nothing else will report.
+    this._bpm.sweepOneOffChannels(chainReadable && result.readError === undefined && result.unchecked === 0);
     if (result.readError !== undefined) this._onChainReadFailure?.();
     return result;
   }
