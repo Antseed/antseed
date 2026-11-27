@@ -810,3 +810,76 @@ describe('block indexes of a translated Messages stream', () => {
     expect(starts).toEqual(['0 text', '1 tool_use', '2 text', '3 tool_use']);
   });
 });
+
+describe('the same answer streamed and buffered', () => {
+  it('for a Responses client of a Messages seller that thinks and calls a tool', () => {
+    const message: Json = {
+      id: 'msg_2',
+      type: 'message',
+      role: 'assistant',
+      model: 'example-model',
+      content: [
+        { type: 'thinking', thinking: 'Need the tool.', signature: 'sig' },
+        { type: 'tool_use', id: 'call_1', name: 'lookup', input: { q: 1 } },
+      ],
+      stop_reason: 'tool_use',
+      usage: { input_tokens: 10, output_tokens: 30 },
+    };
+    const frames = [
+      anthropicFrame({ type: 'message_start', message: { id: 'msg_2', model: 'example-model', usage: { input_tokens: 10, output_tokens: 1 } } }),
+      anthropicFrame({ type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '', signature: '' } }),
+      anthropicFrame({ type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'Need the tool.' } }),
+      anthropicFrame({ type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'sig' } }),
+      anthropicFrame({ type: 'content_block_stop', index: 0 }),
+      anthropicFrame({ type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 'call_1', name: 'lookup', input: {} } }),
+      anthropicFrame({ type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{"q":1}' } }),
+      anthropicFrame({ type: 'content_block_stop', index: 1 }),
+      anthropicFrame({ type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 30 } }),
+      anthropicFrame({ type: 'message_stop' }),
+    ];
+    const buffered = translateBody(MESSAGES, RESPONSES, message) as Json;
+    const completed = translateStream(MESSAGES, RESPONSES, frames).find((event) => event.type === 'response.completed')!;
+    expect(buffered.output.map((item: Json) => item.type)).toEqual(['reasoning', 'function_call']);
+    expect(completed.response.output).toEqual(buffered.output);
+    expect(completed.response.end_turn).toBe(buffered.end_turn);
+  });
+
+  it('for a Messages client of a chat seller that thinks, writes and calls a tool', () => {
+    const reply: Json = {
+      id: 'chatcmpl-1',
+      model: 'example-model',
+      choices: [{
+        index: 0,
+        message: {
+          role: 'assistant',
+          reasoning_content: 'Need the tool.',
+          content: 'Checking.',
+          tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'lookup', arguments: '{"q":1}' } }],
+        },
+        finish_reason: 'tool_calls',
+      }],
+    };
+    const live = translateStream(CHAT, MESSAGES, [
+      chatFrame({ reasoning_content: 'Need the tool.' }),
+      chatFrame({ content: 'Checking.' }),
+      chatFrame({ tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'lookup', arguments: '{"q":1}' } }] }),
+      chatFrame({}, 'tool_calls'),
+      CHAT_DONE,
+    ]);
+    const whole = sseEvents(translateBody(CHAT, MESSAGES, reply, true) as string);
+    const expected = [
+      'start 0 thinking',
+      'thinking_delta 0 Need the tool.',
+      'signature_delta 0 antseed.reasoning.v1:example-model#chatcmpl-1',
+      'stop 0',
+      'start 1 text',
+      'text_delta 1 Checking.',
+      'stop 1',
+      'start 2 tool_use',
+      'input_json_delta 2 {"q":1}',
+      'stop 2',
+    ];
+    expect(blockLog(live)).toEqual(expected);
+    expect(blockLog(whole)).toEqual(expected);
+  });
+});
