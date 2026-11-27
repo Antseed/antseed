@@ -60,9 +60,9 @@ const REQUEST_RENDERERS: Partial<Record<ServiceApiProtocol, RequestRenderer>> = 
     {
       toolCallContent: options.from === 'openai-responses' ? null : undefined,
       groupAssistantToolCallsWithPreviousMessage: groupsAssistantToolCalls(options.from),
-      // A model's own earlier reasoning, which a Responses client returns, goes back to it (see
-      // normalizeOpenAIResponsesRequestBody); a plain rendering of the request leaves it out.
-      reasoningContent: options.from === 'openai-responses',
+      // A model's own earlier reasoning, which a Responses or Messages client returns, goes back to it
+      // (see normalizeOpenAIResponsesRequestBody, adapterThinkingTextFor); a plain rendering leaves it out.
+      reasoningContent: true,
     },
   ),
   'openai-responses': (request, options) => renderCanonicalRequestToOpenAIResponsesBody(

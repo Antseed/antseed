@@ -58,6 +58,21 @@ export function adapterThinkingSignature(model: string, responseId: string): str
 }
 
 /**
+ * The thoughts of a Messages history `thinking` block, when this adapter made the block for a
+ * request for `model` (see `adapterThinkingSignature`). Any other block gives nothing: one with no
+ * signature or another provider's, thoughts for another model (by `sameCanonicalModel`, as for
+ * Responses items), sealed reasoning, and `redacted_thinking`.
+ */
+export function adapterThinkingTextFor(block: Record<string, unknown>, model: string | null): string {
+  if (block.type !== 'thinking' || typeof block.thinking !== 'string' || model === null) return '';
+  if (typeof block.signature !== 'string' || !block.signature.startsWith(ADAPTER_REASONING_TAG)) return '';
+  const tagged = block.signature.slice(ADAPTER_REASONING_TAG.length);
+  const idStart = tagged.lastIndexOf('#');
+  if (idStart <= 0 || !sameCanonicalModel(tagged.slice(0, idStart), model)) return '';
+  return isEncryptedReasoning(block, block.thinking) ? '' : block.thinking;
+}
+
+/**
  * A chat model's reasoning as a Responses `reasoning` item: the text as `reasoning_text` content,
  * which a Responses client keeps in its history and sends back, tagged with `model` (see the tag).
  */

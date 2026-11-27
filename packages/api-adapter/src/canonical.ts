@@ -1,5 +1,6 @@
 import {
   adapterThinkingSignature,
+  adapterThinkingTextFor,
   chatReasoningText,
   extractReportedUsage,
   mapFinishReasonToAnthropicStopReason,
@@ -440,7 +441,7 @@ export function normalizeAnthropicMessagesRequestBody(body: Record<string, unkno
     const role = message.role === 'assistant' ? 'assistant' : 'user';
 
     if (Array.isArray(message.content)) {
-      const cached = appendAnthropicContentBlocks(request.input, role, message.content);
+      const cached = appendAnthropicContentBlocks(request.input, role, message.content, request.model);
       // Blocks coalesce into items, so the marker lands on the item the
       // message ends with — the position a client's breakpoint means.
       if (cached && request.input.length > 0) breakpoints.inputIndices.push(request.input.length - 1);
@@ -1129,12 +1130,21 @@ function appendAnthropicContentBlocks(
   input: CanonicalInputItem[],
   role: 'user' | 'assistant',
   blocks: unknown[],
+  model: string | null,
 ): boolean {
   const startLength = input.length;
   let contentParts: CanonicalContentPart[] = [];
+  // Thoughts the adapter made for this model ride on the text or call they led to; thoughts nothing
+  // follows in the message are dropped (see normalizeOpenAIResponsesRequestBody).
+  let reasoning = '';
+  const takeReasoning = (): { reasoning?: string } => {
+    const taken = reasoning;
+    reasoning = '';
+    return taken.length > 0 ? { reasoning: taken } : {};
+  };
   const flushMessage = (): void => {
     if (contentParts.length === 0) return;
-    input.push({ type: 'message', role, content: contentParts });
+    input.push({ type: 'message', role, content: contentParts, ...takeReasoning() });
     contentParts = [];
   };
 
@@ -1142,10 +1152,17 @@ function appendAnthropicContentBlocks(
     if (!blockRaw || typeof blockRaw !== 'object') continue;
     const block = blockRaw as Record<string, unknown>;
 
+    if (block.type === 'thinking' || block.type === 'redacted_thinking') {
+      const text = role === 'assistant' ? adapterThinkingTextFor(block, model) : '';
+      if (text.length > 0) reasoning = reasoning.length > 0 ? `${reasoning}\n${text}` : text;
+      continue;
+    }
+
     if (role === 'assistant' && block.type === 'tool_use') {
       flushMessage();
       input.push({
         type: 'function_call',
+        ...takeReasoning(),
         id: typeof block.id === 'string' && block.id.length > 0 ? block.id : `call_${input.length + 1}`,
         name: typeof block.name === 'string' && block.name.length > 0 ? block.name : 'tool',
         arguments: block.input && typeof block.input === 'object' && !Array.isArray(block.input)

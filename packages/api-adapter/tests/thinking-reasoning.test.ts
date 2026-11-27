@@ -643,3 +643,77 @@ describe('the signature of a thinking block the adapter made', () => {
     expect(() => atob(buffered.content[0].signature)).toThrow();
   });
 });
+
+describe('a thinking block the adapter made, sent back in a Messages request for a chat seller', () => {
+  const TAG = 'antseed.reasoning.v1:';
+  const toolTurn = (thinking: Json): Json[] => [
+    { role: 'user', content: 'Q1' },
+    {
+      role: 'assistant',
+      content: [
+        thinking,
+        { type: 'text', text: 'Checking.' },
+        { type: 'tool_use', id: 'call_1', name: 'lookup', input: { q: 1 } },
+      ],
+    },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call_1', content: 'found' }] },
+  ];
+  const assistantOf = (model: string, thinking: Json): Json => sellerBody(CHAT, {
+    model,
+    messages: toolTurn(thinking),
+    thinking: { type: 'adaptive' },
+  }).messages[1];
+  const tagged = (model: string, text = 'Need the tool.'): Json => ({ type: 'thinking', thinking: text, signature: `${TAG}${model}#chatcmpl-1` });
+
+  it('goes back as reasoning_content on the assistant message it led to, for the same model', () => {
+    expect(assistantOf('kimi-k3-1-pro', tagged('kimi-k3-1-pro'))).toEqual({
+      role: 'assistant',
+      content: 'Checking.',
+      reasoning_content: 'Need the tool.',
+      tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'lookup', arguments: '{"q":1}' } }],
+    });
+  });
+
+  it('counts another spelling of the same model as the same model', () => {
+    expect(assistantOf('moonshotai/Kimi-K3.1-Pro', tagged('kimi-k3.1-pro')).reasoning_content).toBe('Need the tool.');
+  });
+
+  it.each([
+    ['another model', tagged('kimi-k3-fast')],
+    ['no signature', { type: 'thinking', thinking: 'Need the tool.' }],
+    ['an empty signature', { type: 'thinking', thinking: 'Need the tool.', signature: '' }],
+    ['a signature from another provider', { type: 'thinking', thinking: 'Need the tool.', signature: 'EqQBCkYIBxgCKkA2b3Vy' }],
+    ['the tag with no answer id', { type: 'thinking', thinking: 'Need the tool.', signature: `${TAG}kimi-k3-1-pro` }],
+    ['sealed text', tagged('kimi-k3-1-pro', '__ENCRYPTED_REASONING__opaque')],
+    ['a redacted_thinking block', { type: 'redacted_thinking', data: `${TAG}kimi-k3-1-pro#chatcmpl-1` }],
+  ])('never goes back from %s', (_name, thinking) => {
+    const assistant = assistantOf('kimi-k3-1-pro', thinking);
+    expect(assistant).not.toHaveProperty('reasoning_content');
+    expect(JSON.stringify(assistant)).not.toContain('opaque');
+    expect(assistant.content).toBe('Checking.');
+  });
+
+  it('is dropped when nothing follows it in its message', () => {
+    const body = sellerBody(CHAT, {
+      model: 'kimi-k3-1-pro',
+      messages: [
+        { role: 'user', content: 'Q1' },
+        { role: 'assistant', content: [tagged('kimi-k3-1-pro')] },
+        { role: 'user', content: 'Q2' },
+      ],
+    });
+    expect(JSON.stringify(body)).not.toContain('Need the tool.');
+  });
+
+  it('round-trips: the signature of a translated answer brings its thoughts back next turn', () => {
+    const answer = translateBody(CHAT, MESSAGES, {
+      id: 'chatcmpl-9',
+      model: 'seller-label',
+      choices: [{ index: 0, message: { role: 'assistant', content: 'Checking.', reasoning_content: 'Need the tool.' }, finish_reason: 'stop' }],
+    }) as Json;
+    const body = sellerBody(CHAT, {
+      messages: [{ role: 'user', content: 'Q1' }, { role: 'assistant', content: answer.content }, { role: 'user', content: 'Q2' }],
+    });
+    expect(body.messages[1]).toEqual({ role: 'assistant', content: 'Checking.', reasoning_content: 'Need the tool.' });
+  });
+});
