@@ -80,10 +80,13 @@ type Props = {
   gaps?: {side?: OfferGaps; stacked?: OfferGaps; phone?: OfferGaps};
   /** The painting's aspect when stacked across the whole width on a tablet (761–899px; default square). */
   tabletRatio?: string;
-  /** Page-specific type: hooks on the section, the title and the sub line. */
+  /** Page-specific hooks: on the section, the title and the sub line; on the screen's grid, its offer column and its painting. */
   className?: string;
   titleClassName?: string;
   subClassName?: string;
+  gridClassName?: string;
+  textClassName?: string;
+  panelClassName?: string;
   /** Drawn over the painting (glass, a film). */
   children?: ReactNode;
 };
@@ -161,6 +164,9 @@ export function FirstScreen({
   className,
   titleClassName,
   subClassName,
+  gridClassName,
+  textClassName,
+  panelClassName,
   children,
 }: Props): JSX.Element {
   return (
@@ -176,8 +182,8 @@ export function FirstScreen({
       <Head>
         {paintingPreloads(painting).map(({href, media}) => <link key={href} rel="preload" as="image" href={href} fetchPriority="high" media={media} />)}
       </Head>
-      <div className={clsx(styles.grid, !onRail && styles.onPage, fit && styles.fit)}>
-        <div className={styles.text}>
+      <div className={clsx(styles.grid, !onRail && styles.onPage, fit && styles.fit, gridClassName)}>
+        <div className={clsx(styles.text, textClassName)}>
           <SectionHead
             size="page"
             lead
@@ -197,7 +203,7 @@ export function FirstScreen({
             {note && <p className={styles.note} data-rv="lead">{note}</p>}
           </SectionHead>
         </div>
-        <div className={styles.panel}>
+        <div className={clsx(styles.panel, panelClassName)}>
           <Wash
             eager
             unveil
