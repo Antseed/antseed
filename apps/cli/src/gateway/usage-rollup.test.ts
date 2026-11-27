@@ -6,6 +6,7 @@ import { test } from 'node:test'
 import { GatewayAccounting } from './accounting.js'
 import { OBSERVABILITY_SETTING } from './observability.js'
 import { GatewayServer } from './server.js'
+import { MIGRATIONS } from './store-migrations.js'
 import { GatewayStore, type UsageFilter, type UsageGroupBy } from './store.js'
 
 const NO_LIMITS = { daily: null, weekly: null, monthly: null, total: null }
@@ -214,6 +215,16 @@ test('usage reports read the rollup: they keep their totals without the rows the
   }
 })
 
+/** Takes the rollup out of a database (its triggers, tables and version), as a gateway from before it left one. */
+function beforeTheRollup(store: GatewayStore): void {
+  store.database.exec(`
+    DROP TRIGGER usage_hourly_request_insert; DROP TRIGGER usage_hourly_request_update;
+    DROP TRIGGER usage_hourly_ledger_insert; DROP TRIGGER usage_hourly_ledger_update;
+    DROP TABLE usage_hourly; DROP TABLE usage_rollup_state;
+  `)
+  store.database.pragma(`user_version = ${MIGRATIONS.length - 1}`)
+}
+
 /** Puts a rolled-up database back to how migration 18 finds an older one: every row so far waits for the backfill. */
 function forgetRollup(dir: string): void {
   const store = new GatewayStore(dir)
@@ -320,14 +331,9 @@ test('migration 18 on a database with history keeps pruned counts and rolls the 
     const w = setUp(store, 31)
     run(store, w, 600, BASE)
     // As an older gateway left it: no rollup, and request counts of rows it pruned in request_rollups.
-    store.database.exec(`
-      DROP TRIGGER usage_hourly_request_insert; DROP TRIGGER usage_hourly_request_update;
-      DROP TRIGGER usage_hourly_ledger_insert; DROP TRIGGER usage_hourly_ledger_update;
-      DROP TABLE usage_hourly; DROP TABLE usage_rollup_state;
-    `)
+    beforeTheRollup(store)
     store.database.prepare(`INSERT INTO request_rollups (hour_start, key_id, workspace_id, member_id, model, seller_peer_id, end_user, router_peer_id, requests, failed_requests)
       VALUES (?, ?, ?, NULL, 'm1', NULL, NULL, NULL, 40, 3)`).run(BASE - 30 * 24 * HOUR, w.keys[0], 'ws_default')
-    store.database.pragma('user_version = 17')
     store.close()
 
     store = new GatewayStore(dir, () => BASE + 6 * HOUR)
@@ -372,13 +378,8 @@ test('reports over hours pruned before the rollup count them as they always did,
     const w = setUp(store, 51)
     run(store, w, 800, BASE)
     // An older gateway: no rollup yet, and its retention pruned the log up to 10:40 (mid-hour).
-    store.database.exec(`
-      DROP TRIGGER usage_hourly_request_insert; DROP TRIGGER usage_hourly_request_update;
-      DROP TRIGGER usage_hourly_ledger_insert; DROP TRIGGER usage_hourly_ledger_update;
-      DROP TABLE usage_hourly; DROP TABLE usage_rollup_state;
-    `)
+    beforeTheRollup(store)
     pruneLikeBefore(store, BASE + HOUR + 40 * 60_000)
-    store.database.pragma('user_version = 17')
     store.close()
 
     store = new GatewayStore(dir, () => BASE + 6 * HOUR)
