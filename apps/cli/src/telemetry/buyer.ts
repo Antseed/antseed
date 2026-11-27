@@ -17,6 +17,7 @@ import type { ServerResponse } from 'node:http'
 import { registeredModelIdFor } from '@antseed/node/model-metadata'
 import {
   PUBLIC_MODEL_ID_PATTERN,
+  RANDOM_REQUEST_ID_PATTERN,
   TELEMETRY_HOST_ENV,
   TELEMETRY_HOST_SESSION_ID_ENV,
   attemptCountBucket,
@@ -32,7 +33,8 @@ import {
   type PostHogSender,
   type TelemetryClient,
 } from '@antseed/telemetry'
-import { CLI_EVENT_CATALOG, CLIENT_TOOLS, CONNECTED_APP_TOOLS, REQUEST_PROTOCOLS, ROUTING_VERSION, SELLER_ID_PATTERN } from './catalog.js'
+import { CLI_EVENT_CATALOG, CLIENT_TOOLS, CONNECTED_APP_TOOLS, REQUEST_PROTOCOLS, ROUTING_VERSION, SELLER_ID_PATTERN, TRAFFIC_TAGS } from './catalog.js'
+import type { ReplyFacts } from './reply-facts.js'
 import { posthogConfig, resolveCliConsent } from './settings.js'
 import { detectInstallMethod } from '../update/install-method.js'
 import pkg from '../../package.json' with { type: 'json' }
@@ -60,6 +62,26 @@ export type SwitchReason =
   | 'pinned_elsewhere'
   | 'router_choice'
   | 'other'
+/** Request header that tags test traffic (see `TRAFFIC_TAGS`); the proxy strips it before any seller sees it. */
+export const TELEMETRY_TRAFFIC_HEADER = 'x-antseed-telemetry-traffic'
+/** Buyer environment variable that tags every request of this buyer as test traffic. */
+export const TELEMETRY_TRAFFIC_ENV = 'ANTSEED_TELEMETRY_TRAFFIC'
+
+/** An allowlisted traffic tag, or null for anything else (never sent as typed). */
+export function trafficTag(value: string | null | undefined): string | null {
+  const tag = value?.trim().toLowerCase()
+  return tag && TRAFFIC_TAGS.has(tag) ? tag : null
+}
+
+/** How one attempt reached its seller, set by the proxy when it builds the seller's request. */
+export type AttemptRoute = {
+  translated: boolean
+  /** The seller's API for this request. */
+  sellerProtocol: string | null
+  /** For a Responses client: reasoning items in its request, and how many went on to the seller. */
+  reasoningItems: { received: number; replayed: number } | null
+}
+
 /** Why the answer ended, from the response's own finish or stop reason. */
 export type FinishReason = 'stop' | 'length' | 'tool_call' | 'content_filter' | 'refusal' | 'other' | 'unknown'
 
@@ -141,8 +163,13 @@ export class RequestTrace {
   clientTool = 'none'
   attempts = 0
   readonly sellers = new Set<string>()
-  /** Random, per request: joins its `buyer_seller_attempt` events to its `buyer_request_finished`. */
-  readonly requestId: string = randomUUID()
+  /**
+   * Joins the request's `buyer_seller_attempt` events to its `buyer_request_finished`: the
+   * `x-antseed-request-id` the client received (see `useRequestId`), else a random id.
+   */
+  requestId: string = randomUUID()
+  /** An allowlisted test-traffic tag, or null. */
+  traffic: string | null = null
   /** Every seller attempt, in order, with its own result. */
   private readonly attemptLog: AttemptRecord[] = []
   sellerTier: SellerTier = 'unknown'
@@ -184,6 +211,13 @@ export class RequestTrace {
   private failedAttemptsMs = 0
   /** A seller answered 429 (rate limited) on some attempt of this request. */
   rateLimited = false
+  /** How the final attempt reached its seller. */
+  route: AttemptRoute | null = null
+  /** What the final attempt's successful answer held. */
+  reply: ReplyFacts | null = null
+  /** The final attempt's last write of a streamed answer, and its longest silence between two writes. */
+  private lastStreamWriteAtMs: number | null = null
+  private maxStreamGapMs: number | null = null
 
   constructor(readonly startedAtMs: number, readonly peersKnownAtSend: boolean) {
     this.attemptStartedAtMs = startedAtMs
@@ -215,6 +249,30 @@ export class RequestTrace {
     this.usage = null
     this.finishReason = null
     this.estimatedCostMicroUsd = null
+    this.route = null
+    this.reply = null
+    this.lastStreamWriteAtMs = null
+    this.maxStreamGapMs = null
+  }
+
+  /**
+   * Report under the id the client sees in `x-antseed-request-id`, so a
+   * captured response joins its event. Only a random (v4) UUID is taken, the
+   * kind the proxy makes; anything else keeps the random id.
+   */
+  useRequestId(id: string): void {
+    if (RANDOM_REQUEST_ID_PATTERN.test(id)) this.requestId = id.toLowerCase()
+  }
+
+  /** A streamed answer's write to the client after its first byte. */
+  noteStreamWrite(atMs: number): void {
+    if (this.lastStreamWriteAtMs === null) {
+      this.lastStreamWriteAtMs = atMs
+      return
+    }
+    const gap = Math.max(0, atMs - this.lastStreamWriteAtMs)
+    this.maxStreamGapMs = Math.max(this.maxStreamGapMs ?? 0, gap)
+    this.lastStreamWriteAtMs = atMs
   }
 
   /**
@@ -304,6 +362,7 @@ export class RequestTrace {
 
   noteFirstByte(atMs: number): void {
     if (this.firstByteAtMs === null) this.firstByteAtMs = atMs
+    if (this.lastStreamWriteAtMs === null) this.lastStreamWriteAtMs = atMs
     this.streamed = true
   }
 
@@ -410,8 +469,54 @@ export class RequestTrace {
           }
         : {}),
       ...(outcome === 'success' && this.finishReason ? { finish_reason: this.finishReason } : {}),
+      ...routeProperties(this.route),
+      ...(outcome === 'success' && this.reply ? replyProperties(this.reply) : {}),
+      ...(outcome === 'success' && this.streamed
+        ? { max_stream_gap_bucket: streamGapBucket(this.maxStreamGapMs ?? 0) }
+        : {}),
+      ...(this.traffic ? { traffic: this.traffic } : {}),
     }
   }
+}
+
+function routeProperties(route: AttemptRoute | null): Record<string, unknown> {
+  if (!route) return {}
+  const items = route.reasoningItems
+  return {
+    translation: route.translated ? 'translated' : 'passthrough',
+    seller_protocol: telemetryProtocol(route.sellerProtocol, false),
+    ...(items
+      ? {
+          reasoning_items_received: smallCountBucket(items.received),
+          reasoning_items_replayed: smallCountBucket(items.replayed),
+          reasoning_items_dropped: smallCountBucket(Math.max(0, items.received - items.replayed)),
+        }
+      : {}),
+  }
+}
+
+function replyProperties(reply: ReplyFacts): Record<string, unknown> {
+  return {
+    tool_calls_bucket: smallCountBucket(reply.toolCalls),
+    text_only_reply: reply.hasText && reply.toolCalls === 0,
+    ...(reply.reasoningTokens !== null ? { reasoning_tokens_bucket: reasoningTokensBucket(reply.reasoningTokens) } : {}),
+  }
+}
+
+export function reasoningTokensBucket(tokens: number): string {
+  if (tokens <= 0) return '0'
+  if (tokens < 100) return '1_99'
+  if (tokens < 1_000) return '100_999'
+  if (tokens < 10_000) return '1000_9999'
+  return '10000_plus'
+}
+
+export function streamGapBucket(gapMs: number): string {
+  if (gapMs < 1_000) return '0_1s'
+  if (gapMs < 5_000) return '1_5s'
+  if (gapMs < 30_000) return '5_30s'
+  if (gapMs < 120_000) return '30_120s'
+  return '120s_plus'
 }
 
 /**
@@ -641,6 +746,7 @@ export class BuyerTelemetry {
   beginRequest(res: ServerResponse, peersKnown: boolean): RequestTrace | null {
     if (!this._enabled) return null
     const trace = new RequestTrace(this._now(), peersKnown)
+    trace.traffic = trafficTag(this._env[TELEMETRY_TRAFFIC_ENV])
     traces.set(res, trace)
     let clientAborted = false
     res.once('close', () => {

@@ -7,8 +7,9 @@ import { BUYER_SHUTDOWN_DRAIN_MS } from '../shutdown-timeouts.js'
 import { randomUUID } from 'node:crypto'
 import { buildRoutingServices, findPinnedRoutingService } from './routing-services.js'
 import { readFileSync, watchFile, unwatchFile } from 'node:fs'
-import { telemetryClientTool, telemetryProtocol, traceFor, type BuyerTelemetry, type ConversationKeySource, type SwitchReason } from '../telemetry/buyer.js'
+import { TELEMETRY_TRAFFIC_HEADER, telemetryClientTool, telemetryProtocol, traceFor, trafficTag, type BuyerTelemetry, type ConversationKeySource, type SwitchReason } from '../telemetry/buyer.js'
 import { finishReasonFromBody } from '../telemetry/finish-reason.js'
+import { reasoningItemsInRequest, reasoningSentToSeller, replyFacts } from '../telemetry/reply-facts.js'
 import { readFile, writeFile, rename, mkdir, readdir, stat, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
@@ -4355,6 +4356,9 @@ export class BuyerProxy {
     delete headers[SYSTEM_ROUTED_MODEL_HEADER]
     const requestedRequestId = headers['x-antseed-request-id']?.trim()
     delete headers['x-antseed-request-id']
+    // Telemetry tag for test traffic: read here, never forwarded.
+    const requestTrafficTag = trafficTag(headers[TELEMETRY_TRAFFIC_HEADER])
+    delete headers[TELEMETRY_TRAFFIC_HEADER]
     // Internal marker from the API-key gateway: report this request's signed
     // spend under the gateway's tag. Stripped so it never reaches a seller.
     const spendAttributionTag = parseSpendAttributionTag(headers[SPEND_ATTRIBUTION_HEADER])
@@ -4463,6 +4467,8 @@ export class BuyerProxy {
     if (isConversationRequest || nativeVideo || isImageOrDecisionRequest(method, serializedReq)) {
       const trace = this._telemetry?.beginRequest(res, this._cachedPeers.length > 0)
       if (trace) {
+        trace.useRequestId(serializedReq.requestId)
+        if (requestTrafficTag) trace.traffic = requestTrafficTag
         trace.clientTool = telemetryClientTool(conversationIdentity?.tool ?? requestClientTool(serializedReq.headers))
         this._telemetry?.noteRequestBody(trace, method, path, serializedReq.body, conversationBody, `${buyerIdentity ?? ''}\0${routingConversationKey ?? ''}`)
       }
@@ -5809,6 +5815,19 @@ export class BuyerProxy {
       requestForPeer = withoutAdapterReasoningItems(requestForPeer)
     }
 
+    const attemptTrace = traceFor(res)
+    if (attemptTrace) {
+      // The id this attempt's answer carries in `x-antseed-request-id` (a router attempt has its own).
+      attemptTrace.useRequestId(requestForPeer.requestId)
+      attemptTrace.route = {
+        translated: selectedRoutePlan.selection?.requiresTransform === true,
+        sellerProtocol: selectedRoutePlan.selection?.targetProtocol ?? requestProtocol,
+        reasoningItems: requestProtocol === 'openai-responses'
+          ? { received: reasoningItemsInRequest(serializedReq.body), replayed: reasoningSentToSeller(requestForPeer.body) }
+          : null,
+      }
+    }
+
     if (DEBUG()) {
       log(`Outbound request shape: ${summarizeRequestShape(requestForPeer)}`)
     }
@@ -5832,7 +5851,10 @@ export class BuyerProxy {
         await downloadVideo(requestForPeer, res, (request, callbacks, signal) => this._node.sendRequestStream(selectedPeer, request, {
           ...callbacks,
           onResponseChunk: (chunk) => {
-            if (chunk.data.length) traceFor(res)?.noteFirstByte(Date.now())
+            if (chunk.data.length) {
+              traceFor(res)?.noteFirstByte(Date.now())
+              traceFor(res)?.noteStreamWrite(Date.now())
+            }
             return callbacks.onResponseChunk?.(chunk)
           },
         }, {
@@ -5906,6 +5928,7 @@ export class BuyerProxy {
             for (const adaptedChunk of adaptedChunks) {
               if (adaptedChunk.data.length > 0) {
                 res.write(Buffer.from(adaptedChunk.data))
+                traceFor(res)?.noteStreamWrite(Date.now())
               }
             }
           },
@@ -5967,6 +5990,7 @@ export class BuyerProxy {
             ? telemetry
             : computeResponseTelemetry(requestForPeer, { ...response, body: fullBody }, selectedPeer)
           usageTrace.noteUsage(fullTelemetry.usage)
+          usageTrace.reply = replyFacts(response.headers['content-type'], fullBody, peerResponseProtocol)
           usageTrace.noteAnswerDetails({
             finishReason: finishReasonFromBody(response.headers['content-type'], fullBody),
             estimatedCostUsd: fullTelemetry.estimatedCostUsd,
@@ -6119,6 +6143,7 @@ export class BuyerProxy {
         const answerTrace = response.statusCode < 400 ? traceFor(res) : undefined
         if (answerTrace) {
           answerTrace.noteUsage(telemetry.usage)
+          answerTrace.reply = replyFacts(upstreamResponse.headers['content-type'], upstreamResponse.body, peerResponseProtocol)
           answerTrace.noteAnswerDetails({
             finishReason: finishReasonFromBody(response.headers['content-type'], response.body),
             estimatedCostUsd: telemetry.estimatedCostUsd,
