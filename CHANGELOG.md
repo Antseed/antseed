@@ -9,6 +9,7 @@ This project uses selective package publishing. Each release entry lists the pub
 ### Fixed
 
 - Buyer (`@antseed/node`, and the CLI, desktop and gateway through it): the buyer's verification data no longer grows without limit. Every seller-signed response receipt in `verification.db` and every evidence sample in `verification_samples` was kept forever, so a busy buyer slowly filled its disk. The buyer now prunes both in the background, shortly after it starts and then every hour: receipts after 24 hours, and evidence samples after 7 days or, oldest first, once they pass 1 GiB or 10,000 samples in total. Samples whose write never finished are removed after an hour. An `AntseedNode` embedder can change the limits with `responseAuthRetentionMs`, `sampleRetentionMs`, `maxTotalSampleBytes` and `maxSampleCount` in its `verification` config, where `0` turns a limit off. An existing `verification.db` stops growing but keeps its file size, because SQLite reuses the freed space instead of returning it to the disk.
+- TEE attestation (`@antseed/antseed-verifier`): buyers accept TEE sellers on the dstack 0.6.5 production OS. Its OS image hash joins the approved list (`dstack 0.6.1`–`0.6.5`); before, a seller on 0.6.5 failed `seller-node-tee-genuine` with "the CVM OS image hash is not an approved dstack release". Buyers get it with the CLI release that pins the new verifier.
 
 ## 2026-11-27 — CLI 0.1.264, Node 0.2.194, Desktop 0.2.98
 
