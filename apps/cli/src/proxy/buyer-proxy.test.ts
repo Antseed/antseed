@@ -24,6 +24,7 @@ import {
   type SerializedHttpRequest,
   type PeerInfo,
   type SerializedHttpResponse,
+  type ServiceApiProtocol,
 } from '@antseed/node'
 import { parseRetailPrices } from '@antseed/node/retail-prices'
 
@@ -4796,11 +4797,11 @@ const CONTEXT_ERROR = { message: 'This model\'s maximum context length is 1000 t
  */
 async function streamedRequestFailingBeforeOutput(
   client: { path: string; body: Record<string, unknown> },
-  sellerProtocol: string,
+  sellerProtocol: ServiceApiProtocol,
   seller: { headers: Record<string, string>; body: string; statusCode?: number },
 ): Promise<ReturnType<typeof makeProxyResponse>> {
   const peer = makePeer('a', ['openai'])
-  peer.providerServiceApiProtocols = { openai: { services: { 'model-a': [sellerProtocol] as any } } }
+  peer.providerServiceApiProtocols = { openai: { services: { 'model-a': [sellerProtocol] } } }
   const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
   ;(proxy as any)._node.sendRequest = async () => { throw new Error('a streamed request goes through sendRequestStream') }
   ;(proxy as any)._node.sendRequestStream = async (
@@ -4845,7 +4846,7 @@ test('a streamed Chat request translated to Messages that fails before output ge
 
 test('a seller that answers an error as an event stream before any output reaches the client as JSON, in every protocol', async () => {
   const sse = { 'content-type': 'text/event-stream' }
-  const cases = [
+  const cases: Array<{ client: { path: string; body: Record<string, unknown> }; seller: ServiceApiProtocol; body: string; envelope: 'openai' | 'anthropic' }> = [
     { client: { path: '/v1/chat/completions', body: { messages: [{ role: 'user', content: 'hi' }] } }, seller: 'openai-chat-completions',
       body: `data: ${JSON.stringify({ error: CONTEXT_ERROR })}\n\ndata: [DONE]\n\n`, envelope: 'openai' },
     { client: { path: '/v1/responses', body: { input: 'hi' } }, seller: 'openai-responses',

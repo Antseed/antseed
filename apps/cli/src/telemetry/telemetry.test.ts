@@ -294,7 +294,7 @@ test('buyer_request_finished: one per request, enums only, nothing added to what
 async function finishedProps(
   t: TestContext,
   req: Readable,
-  options: { okBody?: object; env?: NodeJS.ProcessEnv; sellerProtocol?: string } = {},
+  options: { okBody?: object; env?: NodeJS.ProcessEnv } = {},
 ): Promise<{ props: Record<string, unknown>; res: FakeResponse; forwarded: Record<string, string>[]; sentBodies: unknown[]; events: PostHogEvent[] }> {
   const { proxy, telemetry, events, forwarded } = await proxyWithTelemetry(t, options.env ?? {}, 200, options.okBody)
   const sentBodies: unknown[] = []
@@ -302,10 +302,6 @@ async function finishedProps(
   ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, outbound: { requestId: string; headers: Record<string, string>; body: Uint8Array }) => {
     sentBodies.push(JSON.parse(Buffer.from(outbound.body).toString('utf8')))
     return sendRequest(peer, outbound)
-  }
-  if (options.sellerProtocol) {
-    const peer = (proxy as any)._cachedPeers[0] as PeerInfo
-    peer.providerServiceApiProtocols = { openai: { services: { 'gpt-5': [options.sellerProtocol] } } } as never
   }
   const res = await send(proxy, req)
   await telemetry.close()

@@ -4,10 +4,10 @@
  * Unrecognized shapes are `unknown`; an unfamiliar reason is `other`.
  */
 import type { FinishReason } from './buyer.js'
+import { visitBodyEvents } from './body-events.js'
 
 type Json = Record<string, unknown>
 
-const MAX_BODY_BYTES = 4 * 1024 * 1024
 
 function asObject(value: unknown): Json | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Json : null
@@ -72,30 +72,10 @@ function reasonOf(event: Json): FinishReason | null {
 
 /** Why the answer ended; `unknown` when the body says nothing this recognizes. */
 export function finishReasonFromBody(contentType: string | undefined, body: Uint8Array): FinishReason {
-  if (body.length === 0 || body.length > MAX_BODY_BYTES) return 'unknown'
-  const text = Buffer.from(body).toString('utf8')
   let found: FinishReason | null = null
-  if ((contentType ?? '').toLowerCase().includes('text/event-stream')) {
-    for (const line of text.split('\n')) {
-      const trimmed = line.trim()
-      if (!trimmed.startsWith('data:')) continue
-      const payload = trimmed.slice(5).trim()
-      if (!payload || payload === '[DONE]') continue
-      try {
-        const event = asObject(JSON.parse(payload))
-        const reason = event ? reasonOf(event) : null
-        if (reason) found = reason
-      } catch {
-        // A partial or non-JSON event: read the rest.
-      }
-    }
-  } else {
-    try {
-      const parsed = asObject(JSON.parse(text))
-      found = parsed ? reasonOf(parsed) : null
-    } catch {
-      return 'unknown'
-    }
-  }
+  visitBodyEvents(contentType, body, (event) => {
+    const reason = reasonOf(event)
+    if (reason) found = reason
+  })
   return found ?? 'unknown'
 }

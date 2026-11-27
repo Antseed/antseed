@@ -6,9 +6,9 @@
  * counts leave this module; the text is never kept.
  */
 
-type Json = Record<string, unknown>
+import { MAX_BODY_BYTES, visitBodyEvents } from './body-events.js'
 
-const MAX_BODY_BYTES = 4 * 1024 * 1024
+type Json = Record<string, unknown>
 
 export type ReplyFacts = {
   toolCalls: number
@@ -142,30 +142,13 @@ class ReplyReader {
 export function replyFacts(contentType: string | undefined, body: Uint8Array, protocol: string | null): ReplyFacts | null {
   // Only a chat answer is a reply: an image, speech or decision answer has no text or tool calls to count.
   const reasoningField = protocol ? REASONING_TOKEN_FIELDS[protocol] : undefined
-  if (!reasoningField || body.length === 0 || body.length > MAX_BODY_BYTES) return null
+  if (!reasoningField) return null
   const reader = new ReplyReader(reasoningField)
-  const text = Buffer.from(body).toString('utf8')
   let recognised = false
-  const feed = (payload: string): void => {
-    try {
-      const event = asObject(JSON.parse(payload))
-      if (!event) return
-      recognised = true
-      reader.feed(event)
-    } catch {
-      // A partial or non-JSON event: read the rest.
-    }
-  }
-  if ((contentType ?? '').toLowerCase().includes('text/event-stream')) {
-    for (const line of text.split('\n')) {
-      const trimmed = line.trim()
-      if (!trimmed.startsWith('data:')) continue
-      const payload = trimmed.slice(5).trim()
-      if (payload && payload !== '[DONE]') feed(payload)
-    }
-  } else {
-    feed(text)
-  }
+  visitBodyEvents(contentType, body, (event) => {
+    recognised = true
+    reader.feed(event)
+  })
   return recognised ? { toolCalls: reader.toolCalls, hasText: reader.text, reasoningTokens: reader.reasoningTokens } : null
 }
 
