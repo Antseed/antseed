@@ -34,7 +34,7 @@ import {
   type TelemetryClient,
 } from '@antseed/telemetry'
 import { CLI_EVENT_CATALOG, CLIENT_TOOLS, CONNECTED_APP_TOOLS, REQUEST_PROTOCOLS, ROUTING_VERSION, SELLER_ID_PATTERN, TRAFFIC_TAGS } from './catalog.js'
-import { replyFacts } from './reply-facts.js'
+import { replyFacts, type ReplyFacts } from './reply-facts.js'
 import { posthogConfig, resolveCliConsent } from './settings.js'
 import { detectInstallMethod } from '../update/install-method.js'
 import pkg from '../../package.json' with { type: 'json' }
@@ -515,7 +515,7 @@ function routeProperties(route: AttemptRoute | null): Record<string, unknown> {
   }
 }
 
-function replyProperties(reply: NonNullable<ReturnType<typeof replyFacts>>): Record<string, unknown> {
+function replyProperties(reply: ReplyFacts): Record<string, unknown> {
   return {
     tool_calls_bucket: smallCountBucket(reply.toolCalls),
     text_only_reply: reply.hasText && reply.toolCalls === 0,

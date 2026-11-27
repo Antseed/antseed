@@ -5,12 +5,20 @@
  * over 4 MiB is not read.
  */
 
-type Json = Record<string, unknown>
+import { parseJsonObject } from '@antseed/api-adapter'
+
+export type Json = Record<string, unknown>
 
 export const MAX_BODY_BYTES = 4 * 1024 * 1024
 
-function asObject(value: unknown): Json | null {
+/** `value` as a JSON object, or null for anything else (an array included). */
+export function asObject(value: unknown): Json | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Json : null
+}
+
+/** A whole JSON-object body, or null when it is empty, over the cap or not a JSON object. */
+export function parseBodyObject(body: Uint8Array): Json | null {
+  return body.length === 0 || body.length > MAX_BODY_BYTES ? null : parseJsonObject(body)
 }
 
 /** Calls `visit` with each JSON object of the body, in order. */

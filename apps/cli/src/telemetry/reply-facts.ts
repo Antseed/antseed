@@ -7,19 +7,13 @@
  */
 
 import { isReasoningUsageProtocol, reportedReasoningTokens, type ReasoningUsageProtocol } from '../proxy/service-api-adapter.js'
-import { MAX_BODY_BYTES, visitBodyEvents } from './body-events.js'
-
-type Json = Record<string, unknown>
+import { asObject, parseBodyObject, visitBodyEvents, type Json } from './body-events.js'
 
 export type ReplyFacts = {
   toolCalls: number
   hasText: boolean
   /** Null when the answer's usage itemises no reasoning; a reported 0 is kept. */
   reasoningTokens: number | null
-}
-
-function asObject(value: unknown): Json | null {
-  return value && typeof value === 'object' && !Array.isArray(value) ? value as Json : null
 }
 
 function hasText(value: unknown): boolean {
@@ -143,15 +137,6 @@ export function replyFacts(contentType: string | undefined, body: Uint8Array, pr
   return recognised ? { toolCalls: reader.toolCalls, hasText: reader.text, reasoningTokens: reader.reasoningTokens } : null
 }
 
-function parseBody(body: Uint8Array): Json | null {
-  if (body.length === 0 || body.length > MAX_BODY_BYTES) return null
-  try {
-    return asObject(JSON.parse(Buffer.from(body).toString('utf8')))
-  } catch {
-    return null
-  }
-}
-
 /**
  * The `reasoning` items a Responses client sent back in its request's `input`,
  * each as its reasoning text ('' when it has none the buyer can read, such as
@@ -159,7 +144,7 @@ function parseBody(body: Uint8Array): Json | null {
  * large, or not JSON. Only counts derived from it leave the process.
  */
 export function requestReasoningTexts(body: Uint8Array): string[] | null {
-  const parsed = parseBody(body)
+  const parsed = parseBodyObject(body)
   if (!parsed) return null
   const input = parsed['input']
   if (!Array.isArray(input)) return []
@@ -184,7 +169,7 @@ export function requestReasoningTexts(body: Uint8Array): string[] | null {
  * the body is not read.
  */
 export function reasoningReplayed(texts: readonly string[], body: Uint8Array): number | null {
-  const parsed = parseBody(body)
+  const parsed = parseBodyObject(body)
   if (!parsed) return null
   if (Array.isArray(parsed['input'])) {
     return parsed['input'].filter((item) => asObject(item)?.['type'] === 'reasoning').length

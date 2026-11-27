@@ -4,14 +4,7 @@
  * Unrecognized shapes are `unknown`; an unfamiliar reason is `other`.
  */
 import type { FinishReason } from './buyer.js'
-import { visitBodyEvents } from './body-events.js'
-
-type Json = Record<string, unknown>
-
-
-function asObject(value: unknown): Json | null {
-  return value && typeof value === 'object' && !Array.isArray(value) ? value as Json : null
-}
+import { asObject, visitBodyEvents, type Json } from './body-events.js'
 
 /** Maps one provider reason onto the fixed set. */
 export function normalizeFinishReason(reason: unknown): FinishReason | null {
