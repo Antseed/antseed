@@ -81,6 +81,7 @@ import {
   type StreamingResponseAdapter,
   transformRequest,
   transformResponse,
+  withoutAdapterReasoningItems,
 } from './service-api-adapter.js'
 import {
   DEBUG,
@@ -5757,12 +5758,14 @@ export class BuyerProxy {
           to: strategy.from,
           streamRequested: transformed.streamRequested,
           fallbackModel: transformed.requestedModel,
+          includeReasoning: transformed.includeReasoning,
         }) ?? response
       if (transformed.streamRequested) {
         streamResponseAdapter = createStreamingAdapter({
           from: strategy.to,
           to: strategy.from,
           fallbackModel: transformed.requestedModel,
+          includeReasoning: transformed.includeReasoning,
         })
         if (!streamResponseAdapter) {
           res.writeHead(502, { 'content-type': 'text/plain' })
@@ -5770,6 +5773,10 @@ export class BuyerProxy {
           return { done: true }
         }
       }
+    } else if (requestProtocol === 'openai-responses') {
+      // Earlier turns of the thread may have been translated from a chat seller. A Responses seller cannot
+      // resolve the reasoning items the adapter made there, so they are dropped; nothing else changes.
+      requestForPeer = withoutAdapterReasoningItems(requestForPeer)
     }
 
     if (DEBUG()) {

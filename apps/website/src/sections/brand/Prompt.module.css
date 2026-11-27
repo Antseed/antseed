@@ -1,0 +1,25 @@
+.rail { padding-bottom: 124px; }
+.last { --dots-bottom: 2px; }
+.picture { aspect-ratio: 1376 / 768; overflow: hidden; }
+.picture img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.rail .cap { padding-left: var(--site-pad); }
+.rail .text {
+  margin: 0;
+  padding: 48px 64px 48px var(--site-pad);
+  border: 0;
+  border-radius: 0;
+  background: none;
+  white-space: pre-wrap;
+  font: 400 14px/24px var(--site-font-mono);
+  color: var(--site-text);
+}
+.text mark { background: none; color: var(--site-accent); }
+.copy { flex: none; cursor: pointer; }
+
+@media (max-width: 899px) {
+  .rail .cap { padding-left: 16px; }
+  .rail .text { padding: 24px 16px; }
+}
+@media (max-width: 760px) {
+  .rail { padding-bottom: 72px; }
+}

@@ -1,4 +1,5 @@
 import { estimateTokenCount } from 'tokenx';
+import { sameCanonicalModel } from '@antseed/protocol';
 import type { SerializedHttpResponse, SerializedHttpResponseChunk } from './types.js';
 import { isSpeechAudio } from './speech-audio.js';
 
@@ -37,6 +38,54 @@ export function encodeText(text: string): Uint8Array {
 
 export function openAIResponsesMessageId(responseId: string): string {
   return `msg_${responseId}_1`;
+}
+
+/**
+ * Marks a `reasoning` item this adapter made from a chat model's reasoning. The item's
+ * `encrypted_content`, which a Responses client keeps and sends back unchanged, holds the marker and
+ * the model the request asked for (the seller's label only when the request named none): the
+ * reasoning goes back only to a request for that model.
+ */
+export const RESPONSES_REASONING_TAG = 'antseed.reasoning.v1:';
+
+/**
+ * A chat model's reasoning as a Responses `reasoning` item: the text as `reasoning_text` content,
+ * which a Responses client keeps in its history and sends back, tagged with `model` (see the tag).
+ */
+export function openAIResponsesReasoningItem(responseId: string, text: string, model: string): Record<string, unknown> {
+  return {
+    type: 'reasoning',
+    id: `rs_${responseId}_0`,
+    summary: [],
+    content: [{ type: 'reasoning_text', text }],
+    encrypted_content: `${RESPONSES_REASONING_TAG}${model}`,
+  };
+}
+
+/** Whether a Responses input item is a reasoning item this adapter made (see `openAIResponsesReasoningItem`). */
+export function isAdapterReasoningItem(item: Record<string, unknown>): boolean {
+  return item.type === 'reasoning'
+    && typeof item.encrypted_content === 'string'
+    && item.encrypted_content.startsWith(RESPONSES_REASONING_TAG);
+}
+
+/**
+ * The reasoning text of a Responses input `reasoning` item, when this adapter made the item for a
+ * request for `model`. Reasoning for another model, and any item the adapter did not make (a
+ * summary, another provider's encrypted state), gives nothing: a model gets back only its own.
+ *
+ * "The same model" is the rule routing uses (`sameCanonicalModel`): sellers spell one model
+ * `kimi-k3.1-pro`, `kimi-k3-1-pro` or `moonshotai/Kimi-K3.1-Pro`, and a thread can move between them.
+ */
+export function responsesReasoningTextFor(item: Record<string, unknown>, model: string | null): string {
+  if (!isAdapterReasoningItem(item) || !Array.isArray(item.content) || model === null) return '';
+  const author = (item.encrypted_content as string).slice(RESPONSES_REASONING_TAG.length);
+  if (!sameCanonicalModel(author, model)) return '';
+  return item.content
+    .filter((part): part is Record<string, unknown> => Boolean(part) && typeof part === 'object')
+    .filter((part) => part.type === 'reasoning_text' && typeof part.text === 'string')
+    .map((part) => part.text as string)
+    .join('');
 }
 
 export function openAIResponsesFunctionCallId(callId: string): string {
@@ -122,7 +171,13 @@ export function reasoningUsageFields(
   return { [detailsField]: { [countField]: usage.reasoningTokens } };
 }
 
-export const RESPONSES_FINAL_ANSWER_TOOL = 'final_answer';
+/**
+ * `end_turn` for a chat answer translated to Responses: the turn ends exactly when the answer
+ * makes no tool call. Whether text is a finished answer is the model's to say, not the adapter's.
+ */
+export function responsesEndTurn(toolCallCount: number): boolean {
+  return toolCallCount === 0;
+}
 
 /** Plain API-shape facts parsed from image generation requests. */
 export interface ImageRequestFacts {
@@ -515,6 +570,40 @@ function toStringContentBlock(block: Record<string, unknown>): string {
   return '';
 }
 
+/**
+ * The reasoning a Chat Completions message or stream delta carries. Kimi, DeepSeek and most
+ * OpenAI-compatible servers name it `reasoning_content`; some relays name it `reasoning`. A server
+ * that sends both sends the same text twice, so only one is read.
+ */
+export function chatReasoningText(message: Record<string, unknown>): string {
+  const field = chatReasoningField(message);
+  return isEncryptedReasoning(message, field) ? '' : field;
+}
+
+function chatReasoningField(message: Record<string, unknown>): string {
+  if (typeof message.reasoning_content === 'string' && message.reasoning_content.length > 0) return message.reasoning_content;
+  return typeof message.reasoning === 'string' ? message.reasoning : '';
+}
+
+/** How a relay marks an encrypted reasoning item it passes in a chat reasoning field. */
+const ENCRYPTED_REASONING_PREFIX = '__ENCRYPTED_REASONING__';
+
+/**
+ * Whether a chat message or delta's reasoning `field` holds an encrypted reasoning item instead of
+ * text: the relay marks it `reasoning_encrypted: true` or prefixes it `__ENCRYPTED_REASONING__`.
+ */
+export function isEncryptedReasoning(message: Record<string, unknown>, field: unknown): boolean {
+  return message.reasoning_encrypted === true || (typeof field === 'string' && field.includes(ENCRYPTED_REASONING_PREFIX));
+}
+
+/** How many characters at the end of `text` could be the start of the encrypted-reasoning marker. */
+function possibleMarkerStartLength(text: string): number {
+  for (let length = Math.min(text.length, ENCRYPTED_REASONING_PREFIX.length - 1); length > 0; length--) {
+    if (ENCRYPTED_REASONING_PREFIX.startsWith(text.slice(text.length - length))) return length;
+  }
+  return 0;
+}
+
 export function toStringContent(value: unknown): string {
   if (typeof value === 'string') return value;
   if (value === null || value === undefined) return '';
@@ -647,6 +736,7 @@ export interface ChatStreamFinishInfo {
 
 export interface ChatStreamCallbacks {
   onText(delta: string): void;
+  onReasoning?(delta: string): void;
   onToolCallStart(index: number, id: string, name: string): void;
   onToolCallDelta(index: number, id: string, argumentsDelta: string): void;
   onFinish(info: ChatStreamFinishInfo): void;
@@ -676,6 +766,34 @@ export function createChatStreamParser(
   const slotByIndex = new Map<number, number>();
   const slotById = new Map<string, number>();
   let lastSlot: number | null = null;
+  // Once any reasoning is encrypted, the rest of this answer's reasoning is dropped: an encrypted
+  // item continues in later deltas without its marker. Text that may be the start of the marker
+  // (`__ENCRYPTED_` with `REASONING__…` in the next delta) is held back until the next delta decides.
+  let reasoningEncrypted = false;
+  let heldReasoning = '';
+  const flushHeldReasoning = () => {
+    if (heldReasoning.length > 0 && !reasoningEncrypted) callbacks.onReasoning?.(heldReasoning);
+    heldReasoning = '';
+  };
+  const onReasoningDelta = (deltaFields: Record<string, unknown>, reasoningDelta: string) => {
+    if (reasoningEncrypted) return;
+    if (deltaFields.reasoning_encrypted === true) {
+      reasoningEncrypted = true;
+      heldReasoning = '';
+      return;
+    }
+    const text = heldReasoning + reasoningDelta;
+    const marker = text.indexOf(ENCRYPTED_REASONING_PREFIX);
+    if (marker >= 0) {
+      reasoningEncrypted = true;
+      heldReasoning = '';
+      if (marker > 0) callbacks.onReasoning?.(text.slice(0, marker));
+      return;
+    }
+    const held = possibleMarkerStartLength(text);
+    heldReasoning = text.slice(text.length - held);
+    if (text.length > held) callbacks.onReasoning?.(text.slice(0, text.length - held));
+  };
 
   return {
     getId: () => id,
@@ -710,12 +828,18 @@ export function createChatStreamParser(
           finishReason = firstChoice.finish_reason;
         }
 
+        if (delta) {
+          const reasoningDelta = chatReasoningField(delta);
+          if (reasoningDelta.length > 0 || delta.reasoning_encrypted === true) onReasoningDelta(delta, reasoningDelta);
+        }
+
         const textDelta = typeof delta?.content === 'string' ? delta.content : '';
+        const deltaToolCalls = Array.isArray(delta?.tool_calls) ? delta.tool_calls : [];
+        if (textDelta.length > 0 || deltaToolCalls.length > 0) flushHeldReasoning();
         if (textDelta.length > 0) {
           callbacks.onText(textDelta);
         }
 
-        const deltaToolCalls = Array.isArray(delta?.tool_calls) ? delta.tool_calls : [];
         for (const tcRaw of deltaToolCalls) {
           if (!tcRaw || typeof tcRaw !== 'object') continue;
           const tc = tcRaw as Record<string, unknown>;
@@ -758,6 +882,7 @@ export function createChatStreamParser(
       }
 
       if (done) {
+        flushHeldReasoning();
         const sorted = [...toolCalls.entries()]
           .sort((a, b) => a[0] - b[0])
           .map(([index, tc]) => ({ index, ...tc }));

@@ -1,6 +1,0 @@
-@media (max-width: 899px) {
-  .section .panel { height: 480px; }
-}
-@media (max-width: 560px) {
-  .section .panel { height: 320px; }
-}

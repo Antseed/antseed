@@ -10,7 +10,9 @@ import {
 } from './canonical.js';
 import {
   encodeJson,
+  isAdapterReasoningItem,
   openAIResponsesFunctionCallId,
+  RESPONSES_REASONING_TAG,
   openAIResponsesMessageId,
   parseJsonObject,
 } from './utils.js';
@@ -19,6 +21,12 @@ export interface ServiceApiRequestTransformResult {
   request: SerializedHttpRequest;
   streamRequested: boolean;
   requestedModel: string | null;
+  /**
+   * The client keeps reasoning state: a Responses request whose `include` lists
+   * `reasoning.encrypted_content`. Pass it to `createStreamingAdapter` and `transformResponse`, which
+   * then return a chat model's reasoning to it as a `reasoning` item.
+   */
+  includeReasoning: boolean;
 }
 
 export interface ServiceApiRequestTransformOptions {
@@ -48,8 +56,10 @@ const REQUEST_RENDERERS: Partial<Record<ServiceApiProtocol, RequestRenderer>> = 
     request,
     {
       toolCallContent: options.from === 'openai-responses' ? null : undefined,
-      groupAssistantToolCallsWithPreviousMessage: options.from === 'anthropic-messages',
-      preserveResponsesAgentSemantics: options.from === 'openai-responses',
+      groupAssistantToolCallsWithPreviousMessage: groupsAssistantToolCalls(options.from),
+      // A model's own earlier reasoning, which a Responses client returns, goes back to it (see
+      // normalizeOpenAIResponsesRequestBody); a plain rendering of the request leaves it out.
+      reasoningContent: options.from === 'openai-responses',
     },
   ),
   'openai-responses': (request, options) => renderCanonicalRequestToOpenAIResponsesBody(
@@ -88,6 +98,7 @@ export function transformRequest(
       request: repairedBody ? { ...request, body: encodeJson(repairedBody) } : request,
       streamRequested,
       requestedModel: normalized.model,
+      includeReasoning: requestsReasoningState(options.from, body),
     };
   }
 
@@ -112,15 +123,18 @@ export function transformRequest(
     },
     streamRequested,
     requestedModel: normalized.model,
+    includeReasoning: requestsReasoningState(options.from, body),
   };
+}
+
+function requestsReasoningState(from: ServiceApiProtocol, body: Record<string, unknown>): boolean {
+  return from === 'openai-responses' && Array.isArray(body.include) && body.include.includes('reasoning.encrypted_content');
 }
 
 /**
  * Render a Chat Completions, Anthropic Messages or Responses request body as a plain
- * OpenAI Chat Completions body, using the same normalizers as `transformRequest`.
- * Unlike a transform for dispatch, no downstream-execution additions are made (no
- * Responses agent instructions or synthetic tools), so the result describes exactly
- * what the client asked for. Returns null for unsupported protocols.
+ * OpenAI Chat Completions body, using the same normalizers and message grouping as
+ * `transformRequest`. Returns null for unsupported protocols.
  */
 export function renderRequestBodyAsOpenAIChat(
   from: ServiceApiProtocol,
@@ -130,15 +144,27 @@ export function renderRequestBodyAsOpenAIChat(
   const normalize = REQUEST_NORMALIZERS[from];
   if (!normalize) return null;
   return renderCanonicalRequestToOpenAIChatBody(normalize(body), {
-    groupAssistantToolCallsWithPreviousMessage: from === 'anthropic-messages',
+    groupAssistantToolCallsWithPreviousMessage: groupsAssistantToolCalls(from),
   });
+}
+
+/**
+ * Anthropic and Responses send an assistant's text and the tool calls it introduces as
+ * separate blocks or items. Chat Completions holds them in one assistant message; sent as
+ * two, the text reads as a reply that ended without acting.
+ */
+function groupsAssistantToolCalls(from: ServiceApiProtocol): boolean {
+  return from === 'anthropic-messages' || from === 'openai-responses';
 }
 
 function repairLegacyResponsesItemIds(body: Record<string, unknown>): Record<string, unknown> | null {
   if (!Array.isArray(body.input)) return null;
 
   let changed = false;
-  const input = body.input.map((item) => {
+  // See withoutAdapterReasoningItems.
+  const kept = body.input.filter((item) => !isAdapterReasoningInput(item));
+  if (kept.length !== body.input.length) changed = true;
+  const input = kept.map((item) => {
     if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
     const record = item as Record<string, unknown>;
     if (typeof record.id !== 'string') return item;
@@ -166,6 +192,30 @@ function repairLegacyResponsesItemIds(body: Record<string, unknown>): Record<str
   });
 
   return changed ? { ...body, input } : null;
+}
+
+/**
+ * A Responses request for a Responses seller, without the reasoning items this adapter made from a
+ * chat model's reasoning in earlier turns: no provider can resolve their `encrypted_content`. Every
+ * other item stays as it is (a `content-length` follows the new body), and a request with none of
+ * them is returned unchanged.
+ */
+export function withoutAdapterReasoningItems(request: SerializedHttpRequest): SerializedHttpRequest {
+  if (!new TextDecoder().decode(request.body).includes(RESPONSES_REASONING_TAG)) return request;
+  const body = parseJsonObject(request.body);
+  if (!body || !Array.isArray(body.input)) return request;
+  const input = body.input.filter((item) => !isAdapterReasoningInput(item));
+  if (input.length === body.input.length) return request;
+  const rewritten = encodeJson({ ...body, input });
+  const headers = { ...request.headers };
+  for (const name of Object.keys(headers)) {
+    if (name.toLowerCase() === 'content-length') headers[name] = String(rewritten.length);
+  }
+  return { ...request, headers, body: rewritten };
+}
+
+function isAdapterReasoningInput(item: unknown): boolean {
+  return Boolean(item) && typeof item === 'object' && !Array.isArray(item) && isAdapterReasoningItem(item as Record<string, unknown>);
 }
 
 function headersForTargetProtocol(

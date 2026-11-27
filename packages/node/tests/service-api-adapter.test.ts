@@ -531,9 +531,6 @@ describe('transformRequest responses to chat', () => {
     expect(body.tools).toEqual([{
       type: 'function',
       function: { name: 'search', description: 'Search the web', parameters: { type: 'object' } },
-    }, {
-      type: 'function',
-      function: { name: 'final_answer', parameters: { properties: {}, type: 'object' } },
     }]);
     expect(body.tool_choice).toBe('auto');
   });

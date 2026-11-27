@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Starter · Antseed</title>
+<script src="antseed.js"></script>
+<link rel="icon" type="image/svg+xml" href="logo/favicon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500&family=Geist:wght@400;500&family=Geist+Mono:wght@400;500&display=block" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500&text=%E2%86%92%E2%86%97&display=block" rel="stylesheet">
+<link rel="preload" as="font" type="font/woff2" crossorigin href="fonts/GeistPixel-VariableFont_ELSH.woff2">
+<link rel="stylesheet" href="antseed.css">
+</head>
+<body>
+
+<!-- COMPONENT: nav -->
+<nav class="s-nav">
+  <a href="/" aria-label="Antseed"><img src="logo/antseed-logo-nav.svg" width="95.3464" height="33" alt="Antseed"></a>
+  <div class="links">
+    <a href="/network/">Network</a>
+    <div class="dd"><button type="button" class="dd-t" aria-expanded="false" aria-controls="dd-prov">Providers<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5l3 3 3-3"/></svg></button>
+      <div class="dd-m" id="dd-prov" hidden>
+        <a href="/providers/"><b>Own provider</b><span>Sell your models or AI service at your price</span></a>
+        <a href="/colony/"><b>Join a Colony</b><span>Share your computer with a pool while you’re away</span></a>
+      </div>
+    </div>
+    <a href="/ecosystem/">Ecosystem</a>
+    <a href="https://antseedstats.com/network" target="_blank" rel="noopener noreferrer">Live prices&nbsp;↗</a>
+  </div>
+  <div class="acts">
+    <div class="nav-txt"><a href="https://antseed.com/docs/">Docs</a><a href="https://antseed.com/blog/">Blog</a></div>
+    <button type="button" class="theme-btn" role="switch" aria-checked="false" aria-label="Dark theme">
+      <span class="i-sun"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2.75"/><path d="M8 1.5v1.5M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1.06 1.06M11.54 11.54l1.06 1.06M3.4 12.6l1.06-1.06M11.54 4.46l1.06-1.06"/></svg></span>
+      <span class="i-moon"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 9.6A5.75 5.75 0 0 1 6.4 2.5a5.75 5.75 0 1 0 7.1 7.1z"/></svg></span>
+      <i class="knob" aria-hidden="true"></i>
+    </button>
+    <a class="cta ghost" href="https://antseed.com/docs/quickstart/">Set Up Gateway</a>
+    <a class="cta" href="https://github.com/Antseed/antseed/releases/latest" target="_blank" rel="noopener noreferrer"><span class="long">Download Desktop</span><span class="short">Download</span></a>
+    <button type="button" class="menu-btn" aria-expanded="false" aria-controls="site-menu" aria-label="Menu"><svg viewBox="0 0 16 16" aria-hidden="true"><path class="b" d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11"/><path class="x" d="M3.75 3.75l8.5 8.5M12.25 3.75l-8.5 8.5"/></svg></button>
+  </div>
+</nav>
+
+<!-- COMPONENT: page -->
+<div id="sections"><div class="s-page">
+
+<!-- COMPONENT: page-hero -->
+<section class="s-sec s-hero" aria-labelledby="page-h">
+  <div class="s-rail s-hero-grid">
+    <header class="s-hero-head">
+      <p class="s-eyebrow">Colony · Early access</p>
+      <h1 class="s-h1" id="page-h">Join the first<br> <span>Mac Colony.</span></h1>
+      <p class="s-sub">Antseed Colony joins Macs into one AI provider. The first Colony is forming now, starting with Mac Studios.</p>
+      <div class="s-actions"><a class="s-btn" href="#join">Sign up for early access</a><a class="s-btn ghost" href="#how">How it works</a></div>
+    </header>
+    <div class="wash s-hero-panel" style="--wash: url(assets/paintings/hero-day.webp); --wash-d: url(assets/paintings/hero-night.webp); --wash-pos: 86% 50%" role="img" aria-label="A long line of ants carries Macs across a meadow."></div>
+  </div>
+</section>
+
+<!-- COMPONENT: intro -->
+<section class="s-sec s-intro" aria-label="Where this goes">
+  <div class="s-rail">
+    <div class="s-split">
+      <p class="s-pixel">Where this goes</p>
+      <div class="s-lede">
+        <p>AI on the machines people own.</p>
+        <p class="dim">Powerful Macs sit idle on desks for most of the day. A Colony lets them work together and serve AI to anyone on Antseed, with every Mac paid for the answers it gives.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- COMPONENT: two-option -->
+<section class="s-sec" id="colonies" aria-labelledby="paths-h">
+  <div class="s-rail">
+    <header class="s-head s-padx">
+      <p class="s-eyebrow">Colonies</p>
+      <h2 class="s-h2" id="paths-h">Find your place<br> <span>in a Colony.</span></h2>
+      <p class="s-sub">Join the Mac Colony, or build a new one.</p>
+    </header>
+    <div class="s-paths">
+      <article class="s-path">
+        <div class="wash s-path-panel" style="--wash: url(assets/paintings/join-day.webp); --wash-d: url(assets/paintings/join-night.webp)" role="img" aria-label="Three ants stand behind three Mac Studios joined by cables."></div>
+        <div class="s-path-text">
+          <h3 class="s-h3">Join the Mac Colony. <span>Early access</span></h3>
+          <div class="s-path-copy"><p>Put your Mac to work alongside others. The Mac Colony brings Apple silicon Macs together to serve AI on Antseed, and each Mac is paid for the answers it gives.</p></div>
+          <div class="s-actions"><a class="s-btn" href="#join">Sign up for early access</a></div>
+        </div>
+      </article>
+      <article class="s-path">
+        <div class="wash s-path-panel" style="--wash: url(assets/paintings/build-day.webp); --wash-d: url(assets/paintings/build-night.webp)" role="img" aria-label="One ant drives a stake into a roped-off circle of bare ground."></div>
+        <div class="s-path-text">
+          <h3 class="s-h3">Build a Colony. <span>Coming soon</span></h3>
+          <div class="s-path-copy"><p>Bring a community of machines together and run the Colony others join. You choose the models it serves and coordinate the work.</p></div>
+          <div class="s-actions"><span class="s-btn" aria-disabled="true">Coming soon</span></div>
+        </div>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- COMPONENT: card-row -->
+<section class="s-sec" aria-labelledby="where-h">
+  <div class="s-rail">
+    <header class="s-head s-padx">
+      <p class="s-eyebrow">Privacy</p>
+      <h2 class="s-h2" id="where-h">What lives where.<br> <span>Three places, nothing else.</span></h2>
+      <p class="s-sub">Each part of a request stays where it belongs.</p>
+    </header>
+    <div class="s-cardrow">
+      <article class="s-card">
+        <div class="wash s-card-img" style="--wash: url(assets/paintings/v02-day.webp); --wash-d: url(assets/paintings/v02-night.webp)" aria-hidden="true"></div>
+        <p class="s-cap"><b>On your machine</b> Routing preferences, local history and your allow and block rules.</p>
+      </article>
+      <article class="s-card">
+        <div class="wash s-card-img" style="--wash: url(assets/paintings/v06-day.webp); --wash-d: url(assets/paintings/v06-night.webp)" aria-hidden="true">
+          <p class="s-glass chip" style="left: 7%; top: 11%">You</p>
+        </div>
+        <p class="s-cap"><b>Between the peers</b> Requests and responses. The provider you chose can read the request it serves, unless it runs inside a verified TEE.</p>
+      </article>
+      <article class="s-card">
+        <div class="wash s-card-img" style="--wash: url(assets/paintings/v05-day.webp); --wash-d: url(assets/paintings/v05-night.webp)" aria-hidden="true"></div>
+        <p class="s-cap"><b>On Base</b> Deposits, payment authorizations, usage totals, stake and rewards. Prompts and outputs never go onchain.</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- COMPONENT: duo -->
+<section class="s-sec s-duo" id="first" aria-labelledby="duo-h">
+  <div class="s-rail">
+    <div class="wash s-duo-panel" style="--wash: url(assets/paintings/first-day.webp); --wash-d: url(assets/paintings/first-night.webp)" role="img" aria-label="Four ants on an anthill; one plants a lime flag on a Mac Studio."></div>
+    <div class="s-duo-text">
+      <p class="s-eyebrow">The first Mac Colony</p>
+      <div class="s-duo-head">
+        <h2 class="s-h2" id="duo-h">Mac Studios<br> <span>go first.</span></h2>
+        <p class="s-sub">Early access is invite-only while we test.</p>
+      </div>
+      <dl class="s-facts">
+        <div><dt>Who goes first</dt><dd>Mac Studios with 256&nbsp;GB of memory or more, and 512&nbsp;GB is ideal.</dd></div>
+        <div><dt>How it starts</dt><dd>Early members join a small private group with the Antseed team.</dd></div>
+        <div><dt>What it runs</dt><dd>One strong open model, served by every Mac in the Colony.</dd></div>
+      </dl>
+      <div class="s-actions"><a class="s-btn" href="#join">Sign up for early access</a><a class="s-btn ghost" href="#faq">Learn more</a></div>
+    </div>
+  </div>
+</section>
+
+<!-- COMPONENT: steps -->
+<section class="s-sec" id="how" aria-labelledby="how-h">
+  <div class="s-rail">
+    <header class="s-head s-padx">
+      <p class="s-eyebrow">How it works</p>
+      <h2 class="s-h2" id="how-h">Many machines.<br> <span>One Colony.</span></h2>
+      <p class="s-sub">A Colony brings people’s computers together to serve AI on Antseed. To everyone using Antseed, it is one provider.</p>
+    </header>
+    <div class="wash s-wide" style="--wash: url(assets/paintings/many-day.webp); --wash-d: url(assets/paintings/many-night.webp)" role="img" aria-label="A dozen Mac Studios stand together on a grassy hill."></div>
+    <div class="s-points">
+      <div><p class="s-cap"><b>Your Mac joins.</b> Antseed Colony is a menu bar app. Your Mac joins a Colony and downloads the model it runs.</p></div>
+      <div><p class="s-cap"><b>The Colony works as one provider.</b> Each request goes to a Mac in the Colony that can answer it.</p></div>
+      <div><p class="s-cap"><b>Payments settle onchain.</b> The Colony’s contract splits each settlement between its Macs.</p></div>
+      <div><p class="s-cap"><b>You claim.</b> The app shows what your Mac has earned. Claim it to your own wallet when you like.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- COMPONENT: post-card -->
+<section class="s-sec" aria-labelledby="posts-h">
+  <div class="s-rail">
+    <header class="s-head s-padx">
+      <p class="s-eyebrow">Blog</p>
+      <h2 class="s-h2" id="posts-h">Notes from<br> <span>the network.</span></h2>
+    </header>
+    <div class="s-cardrow">
+      <a class="s-card s-post" href="#article">
+        <div class="wash s-card-img" style="--wash: url(assets/paintings/join-day.webp); --wash-d: url(assets/paintings/join-night.webp)" aria-hidden="true"></div>
+        <div class="s-post-text">
+          <p class="s-meta">Colony · 18 Nov 2026</p>
+          <h3 class="s-h3">Join the first Mac Colony</h3>
+          <p class="s-cap">Antseed Colony joins Macs into one AI provider.</p>
+        </div>
+      </a>
+      <a class="s-card s-post" href="#article">
+        <div class="wash s-card-img" style="--wash: url(assets/paintings/v02-day.webp); --wash-d: url(assets/paintings/v02-night.webp)" aria-hidden="true"></div>
+        <div class="s-post-text">
+          <p class="s-meta">Network · 12 Nov 2026</p>
+          <h3 class="s-h3">Nobody sits in the middle</h3>
+          <p class="s-cap">Your device finds providers over Mainline DHT and pays per request.</p>
+        </div>
+      </a>
+      <a class="s-card s-post" href="#article">
+        <div class="wash s-card-img" style="--wash: url(assets/paintings/v05-day.webp); --wash-d: url(assets/paintings/v05-night.webp)" aria-hidden="true"></div>
+        <div class="s-post-text">
+          <p class="s-meta"><b>Early access</b> · Colony</p>
+          <h3 class="s-h3">Mac Studios go first</h3>
+          <p class="s-cap">Early access is invite-only while we test.</p>
+        </div>
+      </a>
+    </div>
+    <div class="s-more"><a class="s-btn ghost" href="#">More posts</a></div>
+  </div>
+</section>
+
+<!-- COMPONENT: article -->
+<section class="s-sec" id="article" aria-labelledby="article-h">
+  <div class="s-rail">
+    <header class="s-head s-padx">
+      <p class="s-eyebrow">Colony</p>
+      <h2 class="s-h2" id="article-h">What is<br> <span>a Colony?</span></h2>
+      <p class="s-meta">18 Nov 2026 · 4 min read</p>
+    </header>
+    <div class="s-padx"><div class="s-article">
+      <p class="s-lede-p">A Colony is a group of machines working together to serve AI on Antseed.</p>
+      <p>An operator coordinates the Colony, and each machine is paid for the answers it gives. To everyone using Antseed, it is one provider. Read the <a href="https://antseed.com/docs/">docs&nbsp;→</a></p>
+      <h2>Who can join</h2>
+      <p>Macs with Apple silicon on macOS 14 or later. The first Colony serves a large model, so it starts with Mac Studios with 256&nbsp;GB or more.</p>
+      <ul><li>Pause sharing from the menu bar any time.</li><li>Joining is free.</li><li>Claim what your Mac earns to your own wallet.</li></ul>
+      <blockquote class="s-quote">Nobody sits in the middle.</blockquote>
+      <h3>Install the gateway</h3>
+      <pre><code>npm install -g @antseed/cli</code></pre>
+      <figure><div class="wash" style="--wash: url(assets/paintings/many-day.webp); --wash-d: url(assets/paintings/many-night.webp)" role="img" aria-label="Mac Studios on a hill."></div><figcaption class="s-cap"><b>Many machines</b> One Colony, one provider.</figcaption></figure>
+    </div></div>
+  </div>
+</section>
+
+<!-- COMPONENT: inline-form -->
+<section class="s-sec" id="join" aria-labelledby="join-h">
+  <div class="s-rail">
+    <header class="s-head s-padx">
+      <p class="s-eyebrow">Sign up</p>
+      <h2 class="s-h2" id="join-h">Your Mac has a place<br> <span>in the Colony.</span></h2>
+      <p class="s-sub">Leave your email. We’ll reach out with an invite to the early group.</p>
+    </header>
+    <div class="s-padx">
+      <form class="s-form" action="#" onsubmit="return false">
+        <label class="s-field"><span>Email</span><input class="s-input" type="email" name="email" placeholder="you@example.com" autocomplete="email" required></label>
+        <button class="s-btn" type="submit">Sign up</button>
+      </form>
+      <p class="s-note">The sign-up form opens on launch day.</p>
+      <!-- COMPONENT: buttons -->
+      <div class="s-actions" style="margin-top: 40px"><a class="s-btn" href="#">Primary</a><a class="s-btn ghost" href="#">Secondary</a><span class="s-btn" aria-disabled="true">Disabled</span><a class="s-link" href="#">Text link&nbsp;→</a></div>
+    </div>
+  </div>
+</section>
+
+<!-- COMPONENT: faq -->
+<section class="s-sec s-faq" id="faq" aria-labelledby="faq-h">
+  <div class="s-rail">
+    <h2 class="s-h2" id="faq-h">Frequently asked<br> <span>questions.</span></h2>
+    <div class="qs">
+      <details name="faq" open><summary>What is a Colony?</summary><div class="a"><p>A Colony is a group of machines working together to serve AI on Antseed. An operator coordinates the Colony, and each machine is paid for the answers it gives.</p></div></details>
+      <details name="faq"><summary>Can I join the Mac Colony today?</summary><div class="a"><p>Early access is invite-only while we test. Sign up with your Mac’s details and we’ll reach out with an invite to the early group.</p><a href="#join">Sign up&nbsp;→</a></div></details>
+      <details name="faq"><summary>Can I still use my Mac?</summary><div class="a"><p>Yes. Pause sharing from the menu bar any time.</p></div></details>
+      <details name="faq"><summary>Does it cost anything to join?</summary><div class="a"><p>No. Joining is free.</p></div></details>
+    </div>
+  </div>
+</section>
+
+<!-- COMPONENT: closing-band -->
+<section class="s-sec cta-band" aria-labelledby="cta-h">
+  <div class="s-rail">
+    <div class="cta-card">
+      <div class="tw" aria-hidden="true"></div>
+      <h2 class="s-h2" id="cta-h">Ask anything, <span>on any model.</span></h2>
+      <p class="s-sub">Antseed runs on your computer. Your chat, your agents and your apps all go through it.</p>
+      <div class="s-actions"><a class="s-btn" href="https://download.antseed.com/vpr/mac-arm64" target="_blank" rel="noopener noreferrer">Download for macOS</a><a class="s-link" href="https://github.com/AntSeed/antseed/releases/latest" target="_blank" rel="noopener noreferrer">All versions&nbsp;→</a></div>
+    </div>
+  </div>
+</section>
+
+<!-- COMPONENT: footer -->
+<footer class="s-sec s-foot">
+  <div class="scene" aria-hidden="true"><img class="day" src="assets/paintings/meadow-loop-day-poster.webp" width="1920" height="1080" alt="" loading="lazy" decoding="async"><img class="night" src="assets/paintings/meadow-loop-night-poster.webp" width="1920" height="1080" alt="" loading="lazy" decoding="async"></div>
+  <div class="s-rail">
+    <div class="cols">
+      <a class="brand" href="/" aria-label="Antseed"><img src="logo/antseed-logo-nav.svg" width="95.3464" height="33" alt="Antseed"></a>
+      <div class="col"><p>Product</p><a href="/#desktop">Antseed Desktop</a><a href="/#gateway">Gateway</a><a href="/#prices">Models &amp; prices</a><a href="https://antseed.com/docs/">Docs</a></div>
+      <div class="col"><p>Network</p><a href="/network/">How it works</a><a href="/#providers">Providers</a><a href="/colony/">Colony</a><a href="/network/#token">$ANTS</a><a href="https://antseedstats.com">AntSeedStats&nbsp;↗</a></div>
+      <div class="col"><p>Resources</p><a href="https://antseed.com/blog/">Blog</a><a href="/brand/">Media kit</a><a href="/ants/">Token details</a><a href="https://github.com/antseed">GitHub&nbsp;↗</a></div>
+      <div class="col"><p>Legal</p><a href="https://antseed.com/terms-of-service/">Terms</a></div>
+    </div>
+    <div class="legal"><span>© 2026 Antseed Foundation</span>
+      <div class="social">
+        <a href="https://x.com/antseed" target="_blank" rel="noopener noreferrer" aria-label="Antseed on X"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.901 1.153h3.68l-8.04 9.19L24 22.846h-7.406l-5.8-7.584-6.638 7.584H.474l8.6-9.83L0 1.154h7.594l5.243 6.932ZM17.61 20.644h2.039L6.486 3.24H4.298Z"/></svg></a>
+        <a href="https://github.com/Antseed/antseed" target="_blank" rel="noopener noreferrer" aria-label="Antseed on GitHub"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg></a>
+        <a href="https://t.me/antseed" target="_blank" rel="noopener noreferrer" aria-label="Antseed on Telegram"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg></a>
+      </div>
+      <div class="theme" role="group" aria-label="Theme">
+        <button type="button" data-mode="system" aria-label="System theme" aria-pressed="true"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.75" y="2.75" width="12.5" height="8.5" rx="1.5"/><path d="M5.5 13.75h5M8 11.25v2.5"/></svg></button>
+        <button type="button" data-mode="light" aria-label="Light theme" aria-pressed="false"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2.75"/><path d="M8 1.5v1.5M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1.06 1.06M11.54 11.54l1.06 1.06M3.4 12.6l1.06-1.06M11.54 4.46l1.06-1.06"/></svg></button>
+        <button type="button" data-mode="dark" aria-label="Dark theme" aria-pressed="false"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 9.6A5.75 5.75 0 0 1 6.4 2.5a5.75 5.75 0 1 0 7.1 7.1z"/></svg></button>
+      </div>
+    </div>
+  </div>
+</footer>
+
+</div></div>
+
+<!-- the painting effects (DESIGN.md, Motion & Micro-interaction): every .wash arrives in LED dots and breaks into dots under a mouse -->
+<script type="module" src="effects/arrival.js"></script>
+<script type="module" src="effects/mosaic.js"></script>
+<!-- the closing band's dot field (DESIGN.md, Closing band) -->
+<script type="module" src="effects/closing-dots.js"></script>
+</body>
+</html>

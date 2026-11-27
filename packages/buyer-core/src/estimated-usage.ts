@@ -1,4 +1,4 @@
-import { parseJsonObject } from '@antseed/api-adapter';
+import { isEncryptedReasoning, parseJsonObject } from '@antseed/api-adapter';
 import { estimateTokensFromBytes, estimateTokensFromBytesSampled } from './pricing.js';
 import { parseResponseUsage, readStreamEvents, type ResponseUsage } from './response-usage.js';
 
@@ -17,8 +17,6 @@ const ATTACHMENT_PARTS = new Set(['image_url', 'input_audio', 'file', 'input_ima
 const ATTACHMENT_TOKENS = 1_290;
 /** The reasoning fields of a chat message or delta, which some upstreams fill with an encrypted item instead of text. */
 const REASONING_FIELDS = new Set(['reasoning_content', 'reasoning']);
-/** How a relay marks an encrypted reasoning item it passes in a reasoning field. */
-const ENCRYPTED_REASONING_PREFIX = '__ENCRYPTED_REASONING__';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -35,14 +33,10 @@ function generatedText(value: unknown): string {
   if (Array.isArray(value)) return value.map(generatedText).join('');
   if (!isRecord(value)) return '';
   return Object.entries(value)
+    // An encrypted reasoning item's size says nothing about the tokens the model reasoned.
     .filter(([key, field]) => GENERATED_FIELDS.has(key) && !(REASONING_FIELDS.has(key) && isEncryptedReasoning(value, field)))
     .map(([, field]) => generatedText(field))
     .join('');
-}
-
-/** An encrypted reasoning item: its size says nothing about the tokens the model reasoned. */
-function isEncryptedReasoning(message: Record<string, unknown>, field: unknown): boolean {
-  return message.reasoning_encrypted === true || (typeof field === 'string' && field.startsWith(ENCRYPTED_REASONING_PREFIX));
 }
 
 /** The text of the choices in a chat response or stream event; null when it has no choices. */
