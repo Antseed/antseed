@@ -506,6 +506,56 @@ describe('encrypted reasoning from a chat seller', () => {
   });
 });
 
+describe('output_index of a translated stream', () => {
+  const call = (index: number, id: string, args: string, name?: string) =>
+    frame({ tool_calls: [{ index, ...(id ? { id, type: 'function' } : {}), function: { ...(name ? { name } : {}), arguments: args } }] });
+
+  /** Each item's single output_index, in the order the items were added; fails on a shared or changing index. */
+  const indexByItem = (frames: string[]) => {
+    const events = streamEvents(frames);
+    const seen = new Map<string, number>();
+    for (const e of events) {
+      if (typeof e.data.output_index !== 'number') continue;
+      const id = (e.data.item_id ?? (e.data.item as Record<string, unknown> | undefined)?.id) as string;
+      const index = e.data.output_index;
+      if (seen.has(id)) expect(seen.get(id), `${e.event} of ${id}`).toBe(index);
+      else seen.set(id, index);
+    }
+    const added = events.filter((e) => e.event === 'response.output_item.added').map((e) => e.data.output_index as number);
+    const output = (completedResponse(events).output as Array<{ id: string; type: string }>).map((item) => `${item.type}:${seen.get(item.id)}`);
+    return { indexes: [...seen.values()], added, output };
+  };
+
+  const cases: Array<[string, string[], string[]]> = [
+    ['reasoning, text, then two calls', [
+      frame({ role: 'assistant', reasoning_content: 'Plan.' }), frame({ content: 'Checking.' }),
+      call(0, 'call_a', '{}', 'run'), call(1, 'call_b', '{}', 'read'), frame({}, 'tool_calls'),
+    ], ['reasoning:0', 'message:1', 'function_call:2', 'function_call:3']],
+    ['a call before the text', [
+      call(0, 'call_a', '{"cmd":', 'run'), frame({ content: 'Running it.' }), call(0, '', '"ls"}'), frame({}, 'tool_calls'),
+    ], ['function_call:0', 'message:1']],
+    ['reasoning, a call, then text', [
+      frame({ role: 'assistant', reasoning_content: 'Plan.' }), call(0, 'call_a', '{}', 'run'), frame({ content: 'Done.' }), frame({}, 'tool_calls'),
+    ], ['reasoning:0', 'function_call:1', 'message:2']],
+    ['reasoning after the text', [
+      frame({ role: 'assistant', content: 'Answer.' }), frame({ reasoning_content: 'Late thought.' }), frame({}, 'stop'),
+    ], ['message:0']],
+    ['several calls with interleaved arguments, then text', [
+      call(0, 'call_a', '{"a":', 'run'), call(1, 'call_b', '{"b":', 'read'), call(0, '', '1}'), call(1, '', '2}'),
+      frame({ content: 'Both started.' }), frame({}, 'tool_calls'),
+    ], ['function_call:0', 'function_call:1', 'message:2']],
+  ];
+
+  for (const [name, frames, expected] of cases) {
+    it(`gives every item its own increasing index: ${name}`, () => {
+      const { indexes, added, output } = indexByItem(frames);
+      expect(output).toEqual(expected);
+      expect([...indexes].sort((a, b) => a - b)).toEqual(expected.map((_, i) => i));
+      expect(added).toEqual([...added].sort((a, b) => a - b));
+    });
+  }
+});
+
 describe('withoutAdapterReasoningItems and content-length', () => {
   it('sets content-length to the new body when it drops an item, and leaves it alone otherwise', () => {
     const tagged = responsesRequest(responsesBody([user, REASONING_ITEM, answer]));

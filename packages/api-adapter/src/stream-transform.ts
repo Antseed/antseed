@@ -704,6 +704,11 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
   let responseModel = options.fallbackModel ?? 'unknown';
   const createdAt = Math.floor(Date.now() / 1000);
   const toolCalls = new Map<number, CanonicalStreamToolCall>();
+  // Each output item takes the next output_index when it first appears, whatever the order: reasoning,
+  // the message and each tool call. A tool call can start before the text.
+  let nextOutputIndex = 0;
+  let messageOutputIndex: number | null = null;
+  const toolOutputIndexes = new Map<number, number>();
 
   const pushEvent = (
     emitted: Array<{ event?: string; data: unknown | string }>,
@@ -715,8 +720,14 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
 
   const getResponseId = (): string => responseId || fallbackResponsesId(options.fallbackModel);
   const getMessageId = (): string => openAIResponsesMessageId(getResponseId());
-  const getMessageOutputIndex = (): number => (reasoning === 'none' ? 0 : 1);
-  const getToolOutputIndex = (index: number): number => index + getMessageOutputIndex() + (outputStarted ? 1 : 0);
+  const getMessageOutputIndex = (): number => (messageOutputIndex ??= nextOutputIndex++);
+  const getToolOutputIndex = (index: number): number => {
+    const existing = toolOutputIndexes.get(index);
+    if (existing !== undefined) return existing;
+    const assigned = nextOutputIndex++;
+    toolOutputIndexes.set(index, assigned);
+    return assigned;
+  };
   const getReasoningItem = (): Record<string, unknown> => openAIResponsesReasoningItem(reasoningResponseId, reasoningBuffer, reasoningModel);
   const reasoningPart = (emitted: Array<{ event?: string; data: unknown | string }>, event: string, data: Record<string, unknown>): void => {
     pushEvent(emitted, event, { output_index: 0, item_id: getReasoningItem().id, content_index: 0, ...data });
@@ -727,6 +738,28 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
     reasoningPart(emitted, 'response.reasoning_text.done', { text: reasoningBuffer });
     reasoningPart(emitted, 'response.content_part.done', { part: { type: 'reasoning_text', text: reasoningBuffer } });
     pushEvent(emitted, 'response.output_item.done', { output_index: 0, item: getReasoningItem() });
+  };
+  // The finished message and tool calls, in output_index order.
+  type AnswerItem =
+    | { type: 'message'; id: string; role: 'assistant'; status: 'completed'; content: Array<{ type: 'output_text'; text: string; annotations: unknown[] }>; phase?: 'commentary' }
+    | { type: 'function_call'; outputIndex: number; id: string; call_id: string; name: string; arguments: string; status: 'completed' };
+  const answerItems = (): Array<{ index: number; item: AnswerItem }> => {
+    const phase = toolCalls.size > 0 ? { phase: 'commentary' as const } : {};
+    const items: Array<{ index: number; item: AnswerItem }> = [];
+    if (outputStarted) {
+      items.push({
+        index: getMessageOutputIndex(),
+        item: { type: 'message', id: getMessageId(), role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: textBuffer, annotations: [] }], ...phase },
+      });
+    }
+    for (const toolCall of sortedToolCalls(toolCalls)) {
+      const outputIndex = getToolOutputIndex(toolCall.index);
+      items.push({
+        index: outputIndex,
+        item: { type: 'function_call', outputIndex, id: openAIResponsesFunctionCallId(toolCall.id), call_id: toolCall.id, name: toolCall.name, arguments: toolCall.arguments, status: 'completed' },
+      });
+    }
+    return items.sort((a, b) => a.index - b.index);
   };
 
   const ensureResponseCreated = (
@@ -809,6 +842,8 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
           if (reasoning === 'none') {
             if (event.delta.trim().length === 0) continue;
             reasoning = 'open';
+            // Reasoning opens only before any other item, so it always takes output_index 0.
+            nextOutputIndex = 1;
             reasoningResponseId = getResponseId();
             reasoningModel = options.fallbackModel || responseModel;
             pushEvent(emitted, 'response.output_item.added', { output_index: 0, item: { ...getReasoningItem(), content: [] } });
@@ -864,59 +899,37 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
 
         if (event.type === 'response_done') {
           ensureResponseCreated(emitted, null);
-          const messagePhase = toolCalls.size > 0 ? 'commentary' : undefined;
           if (!outputDone) {
             outputDone = true;
             const msgId = getMessageId();
             closeReasoning(emitted);
-            if (outputStarted) {
-              pushEvent(emitted, 'response.output_text.done', {
-                output_index: getMessageOutputIndex(),
-                item_id: msgId,
-                content_index: 0,
-                text: textBuffer,
-                logprobs: [],
-              });
-              pushEvent(emitted, 'response.content_part.done', {
-                output_index: getMessageOutputIndex(),
-                item_id: msgId,
-                content_index: 0,
-                part: { type: 'output_text', text: textBuffer, annotations: [] },
-              });
-              pushEvent(emitted, 'response.output_item.done', {
-                output_index: getMessageOutputIndex(),
-                item: {
-                  type: 'message',
-                  id: msgId,
-                  role: 'assistant',
-                  status: 'completed',
-                  content: [{ type: 'output_text', text: textBuffer, annotations: [] }],
-                  ...(messagePhase ? { phase: messagePhase } : {}),
-                },
-              });
-            }
-
-            for (const toolCall of sortedToolCalls(toolCalls)) {
-              const outputIndex = getToolOutputIndex(toolCall.index);
-              const itemId = openAIResponsesFunctionCallId(toolCall.id);
+            for (const { item } of answerItems()) {
+              if (item.type === 'message') {
+                pushEvent(emitted, 'response.output_text.done', {
+                  output_index: getMessageOutputIndex(),
+                  item_id: msgId,
+                  content_index: 0,
+                  text: textBuffer,
+                  logprobs: [],
+                });
+                pushEvent(emitted, 'response.content_part.done', {
+                  output_index: getMessageOutputIndex(),
+                  item_id: msgId,
+                  content_index: 0,
+                  part: { type: 'output_text', text: textBuffer, annotations: [] },
+                });
+                pushEvent(emitted, 'response.output_item.done', { output_index: getMessageOutputIndex(), item });
+                continue;
+              }
               pushEvent(emitted, 'response.function_call_arguments.done', {
-                output_index: outputIndex,
-                item_id: itemId,
-                call_id: toolCall.id,
-                name: toolCall.name,
-                arguments: toolCall.arguments,
+                output_index: item.outputIndex,
+                item_id: item.id,
+                call_id: item.call_id,
+                name: item.name,
+                arguments: item.arguments,
               });
-              pushEvent(emitted, 'response.output_item.done', {
-                output_index: outputIndex,
-                item: {
-                  type: 'function_call',
-                  id: itemId,
-                  call_id: toolCall.id,
-                  name: toolCall.name,
-                  arguments: toolCall.arguments,
-                  status: 'completed',
-                },
-              });
+              const { outputIndex, ...functionCall } = item;
+              pushEvent(emitted, 'response.output_item.done', { output_index: outputIndex, item: functionCall });
             }
           }
 
@@ -929,22 +942,11 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
               created_at: createdAt,
               output: [
                 ...(reasoning === 'none' ? [] : [getReasoningItem()]),
-                ...(outputStarted ? [{
-                  type: 'message' as const,
-                  id: getMessageId(),
-                  role: 'assistant' as const,
-                  status: 'completed' as const,
-                  content: [{ type: 'output_text' as const, text: textBuffer, annotations: [] }],
-                  ...(messagePhase ? { phase: messagePhase } : {}),
-                }] : []),
-                ...sortedToolCalls(toolCalls).map((toolCall) => ({
-                  type: 'function_call' as const,
-                  id: openAIResponsesFunctionCallId(toolCall.id),
-                  call_id: toolCall.id,
-                  name: toolCall.name,
-                  arguments: toolCall.arguments,
-                  status: 'completed' as const,
-                })),
+                ...answerItems().map(({ item }) => {
+                  if (item.type === 'message') return item;
+                  const { outputIndex: _outputIndex, ...functionCall } = item;
+                  return functionCall;
+                }),
               ],
               output_text: textBuffer,
               ...(event.endTurn !== undefined ? { end_turn: event.endTurn } : {}),
