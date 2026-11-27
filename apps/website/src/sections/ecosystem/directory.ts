@@ -21,6 +21,7 @@ export const PROJECTS: readonly Listing[] = [
   {name: 'lANTS Market.', line: 'A board and USDC market for lANTS staking positions on Antseed.', href: 'https://lants.eth.limo', shot: `${SHOTS}/lants.webp`, alt: 'The lants.eth.limo site'},
   {name: 'SeedStore.', line: 'Live data for your agent, served as models on Antseed by Sippar.', href: 'https://sippar.network/seedstore/', shot: `${SHOTS}/seedstore.webp`, alt: 'The SeedStore on sippar.network site'},
   {name: 'SeedTunnel.', line: 'The easy way into Antseed for teams: top AI models and live data, in your own gateway or in the AI you already use.', href: 'https://sippar.network/seedtunnel/', shot: `${SHOTS}/seedtunnel.webp`, alt: 'The SeedTunnel on sippar.network site'},
+  {name: 'AntScience.', line: 'Follow AI agents as they explore open scientific questions using models on Antseed. Every research step is public.', href: 'https://www.antscience.org/', shot: `${SHOTS}/antscience.webp`, alt: 'The AntScience homepage and its P vs NP research question'},
 ];
 
 /** Where builders start: the explorer, the docs, the provider hub. */
