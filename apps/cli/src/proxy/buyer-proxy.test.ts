@@ -1968,7 +1968,7 @@ function makeBuyerProxyWithPeers(
   now?: () => number,
   routingPreferences?: ModelRoutingPreferences,
   modelRoutingClient?: ModelRoutingClientApi,
-  options: Pick<BuyerProxyConfig, 'referencePrices'> = {},
+  options: Pick<BuyerProxyConfig, 'referencePrices' | 'streamKeepAliveMs'> = {},
 ): BuyerProxy {
   const proxy = new BuyerProxy({ adaptiveRouting: { spreadTolerance: 0, explorationRate: 0 },
     port: 0,
@@ -4646,6 +4646,90 @@ test('a chat model\'s reasoning reaches a streaming Responses client only when i
   assert.equal(completed.response.end_turn, true)
 
   assert.doesNotMatch(await streamed(), /reasoning_text|antseed\.reasoning/)
+})
+
+for (const client of [
+  { protocol: 'Responses', path: '/v1/responses', body: { model: 'model-a', stream: true, input: 'Write the file.' }, keepAlive: 'response.in_progress', end: 'response.completed' },
+  { protocol: 'Messages', path: '/v1/messages', body: { model: 'model-a', stream: true, max_tokens: 1024, messages: [{ role: 'user', content: 'Write the file.' }] }, keepAlive: 'ping', end: 'message_stop' },
+]) {
+  test(`a translated ${client.protocol} stream stays alive while a chat seller is silent before a whole tool call`, async () => {
+    // A client that gives up on a stream silent for longer than this, as Codex does after its idle timeout.
+    const clientIdleTimeoutMs = 300
+    const silenceMs = 700
+    const peer = makePeer('a', ['openai'])
+    peer.providerServiceApiProtocols = { openai: { services: { 'model-a': ['openai-chat-completions'] } } }
+    const proxy = makeBuyerProxyWithPeers([peer], [peer], null, undefined, undefined, undefined, { streamKeepAliveMs: 100 })
+    ;(proxy as any)._node.sendRequest = async () => { throw new Error('not buffered') }
+    ;(proxy as any)._node.sendRequestStream = async (
+      _peer: PeerInfo,
+      request: { requestId: string },
+      callbacks: { onResponseStart: (...args: unknown[]) => void; onResponseChunk: (chunk: unknown) => void },
+    ) => {
+      const frame = (delta: Record<string, unknown>, finish: string | null = null) => Buffer.from(`data: ${JSON.stringify({
+        id: 'chatcmpl-1', object: 'chat.completion.chunk', model: 'model-a', choices: [{ index: 0, delta, finish_reason: finish }],
+      })}\n\n`)
+      const headers = { 'content-type': 'text/event-stream' }
+      const send = (data: Buffer, done = false) => callbacks.onResponseChunk({ requestId: request.requestId, data, done })
+      callbacks.onResponseStart({ requestId: request.requestId, statusCode: 200, headers, body: new Uint8Array() }, { streaming: true })
+      send(frame({ role: 'assistant', content: 'Writing it now.' }))
+      await new Promise((resolve) => setTimeout(resolve, silenceMs))
+      send(frame({ tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'write', arguments: '{"path":"a.txt"}' } }] }))
+      send(frame({}, 'tool_calls'))
+      send(Buffer.from('data: [DONE]\n\n'), true)
+      return { requestId: request.requestId, statusCode: 200, headers, body: new Uint8Array() }
+    }
+
+    const res = makeProxyResponse()
+    const writes: number[] = []
+    const write = res.write.bind(res)
+    res.write = (chunk) => {
+      writes.push(Date.now())
+      return write(chunk)
+    }
+    await (proxy as any)._handleRequest(makeProxyRequest({ path: client.path, headers: { 'x-antseed-pin-peer': peer.peerId }, body: client.body }), res)
+
+    assert.equal(res.statusCode, 200)
+    const longestSilence = Math.max(...writes.slice(1).map((at, i) => at - writes[i]!))
+    assert.ok(longestSilence < clientIdleTimeoutMs, `the client saw ${longestSilence} ms without a byte, past its ${clientIdleTimeoutMs} ms idle timeout`)
+    const names = res.body.split('\n').filter((line) => line.startsWith('event: ')).map((line) => line.slice('event: '.length))
+    assert.ok(names.includes(client.keepAlive), `a ${client.keepAlive} event kept the stream alive`)
+    assert.equal(names.at(-1), client.end)
+    assert.match(res.body, /a\.txt/)
+    // Nothing is written once the answer ended.
+    const ended = writes.length
+    await new Promise((resolve) => setTimeout(resolve, 250))
+    assert.equal(writes.length, ended)
+  })
+}
+
+test('a stream passed through untranslated gets no keep-alive, however long the seller is silent', async () => {
+  const peer = makePeer('a', ['openai-responses'])
+  peer.providerServiceApiProtocols = { 'openai-responses': { services: { 'model-a': ['openai-responses'] } } }
+  const proxy = makeBuyerProxyWithPeers([peer], [peer], null, undefined, undefined, undefined, { streamKeepAliveMs: 50 })
+  const sellerBytes = [
+    'event: response.created\ndata: {"type":"response.created","response":{"id":"resp_1","status":"in_progress","output":[]}}\n\n',
+    'event: response.completed\ndata: {"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[]}}\n\n',
+  ]
+  ;(proxy as any)._node.sendRequest = async () => { throw new Error('not buffered') }
+  ;(proxy as any)._node.sendRequestStream = async (
+    _peer: PeerInfo,
+    request: { requestId: string },
+    callbacks: { onResponseStart: (...args: unknown[]) => void; onResponseChunk: (chunk: unknown) => void },
+  ) => {
+    const headers = { 'content-type': 'text/event-stream' }
+    callbacks.onResponseStart({ requestId: request.requestId, statusCode: 200, headers, body: new Uint8Array() }, { streaming: true })
+    callbacks.onResponseChunk({ requestId: request.requestId, data: Buffer.from(sellerBytes[0]!), done: false })
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    callbacks.onResponseChunk({ requestId: request.requestId, data: Buffer.from(sellerBytes[1]!), done: true })
+    return { requestId: request.requestId, statusCode: 200, headers, body: new Uint8Array() }
+  }
+  const res = await invokeProxy(proxy, makeProxyRequest({
+    path: '/v1/responses',
+    headers: { 'x-antseed-pin-peer': peer.peerId },
+    body: { model: 'model-a', stream: true, input: 'hi' },
+  }))
+  assert.equal(res.statusCode, 200)
+  assert.equal(res.body, sellerBytes.join(''))
 })
 
 test('a Responses request to a Responses seller loses only the reasoning items the adapter made', async () => {

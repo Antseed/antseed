@@ -9,6 +9,12 @@ const decoder = new TextDecoder();
 export interface StreamingResponseAdapter {
   adaptStart(response: SerializedHttpResponse): SerializedHttpResponse;
   adaptChunk(chunk: SerializedHttpResponseChunk): SerializedHttpResponseChunk[];
+  /**
+   * An event to send while the seller is silent, so the client's stream reader sees activity: one the client's
+   * protocol defines and that changes nothing in the answer. Null before the answer started, after it ended,
+   * and for a protocol that defines none (Chat Completions).
+   */
+  keepAlive?(): Uint8Array | null;
 }
 
 export interface ParsedSseEvent {

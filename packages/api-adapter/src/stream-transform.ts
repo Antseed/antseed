@@ -64,6 +64,8 @@ interface ProtocolStreamNormalizer {
 
 interface ProtocolStreamRenderer {
   render(events: CanonicalStreamEvent[], chunk: SerializedHttpResponseChunk): SerializedHttpResponseChunk[];
+  /** See `StreamingResponseAdapter.keepAlive`. */
+  keepAlive?(): Uint8Array | null;
 }
 
 const ZERO_USAGE: ReportedUsage = { inputTokens: 0, outputTokens: 0, freshInputTokens: 0, cachedInputTokens: 0 };
@@ -103,6 +105,7 @@ export function createStreamingAdapter(
       const events = withoutLeadingThinkMarkup(normalizer.feed(chunk), thinkMarkup);
       return renderer.render(events, chunk);
     },
+    keepAlive: () => renderer.keepAlive?.() ?? null,
   };
 }
 
@@ -512,6 +515,7 @@ function createChatStreamRenderer(options: StreamTransformInternals): ProtocolSt
 
 function createAnthropicStreamRenderer(options: StreamTransformInternals): ProtocolStreamRenderer {
   let messageStarted = false;
+  let messageStopped = false;
   let textBlockStarted = false;
   let hadTextBlock = false;
   let openToolIndex: number | null = null;
@@ -700,6 +704,7 @@ function createAnthropicStreamRenderer(options: StreamTransformInternals): Proto
             },
           });
           emitted.push({ event: 'message_stop', data: { type: 'message_stop' } });
+          messageStopped = true;
         }
       }
 
@@ -710,6 +715,11 @@ function createAnthropicStreamRenderer(options: StreamTransformInternals): Proto
         return [{ requestId: chunk.requestId, data: new Uint8Array(0), done: true }];
       }
       return [];
+    },
+    // Anthropic's own keep-alive, which its API sends during a stream and its SDKs skip.
+    keepAlive() {
+      if (!messageStarted || messageStopped) return null;
+      return encodeSseEvents([{ event: 'ping', data: { type: 'ping' } }]);
     },
   };
 }
@@ -996,6 +1006,25 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
         return [{ requestId: chunk.requestId, data: new Uint8Array(0), done: true }];
       }
       return [];
+    },
+    // `response.in_progress`: a Responses event that carries no output, which the openai SDK, Codex and pi-ai
+    // read without changing the answer. A comment line would not do: SSE parsers drop comments, so a client's
+    // idle timer never sees them.
+    keepAlive() {
+      if (!responseCreated || outputDone) return null;
+      const emitted: Array<{ event?: string; data: unknown | string }> = [];
+      pushEvent(emitted, 'response.in_progress', {
+        response: {
+          id: getResponseId(),
+          object: 'response',
+          model: responseModel,
+          status: 'in_progress',
+          created_at: createdAt,
+          output: [],
+          output_text: '',
+        },
+      });
+      return encodeSseEvents(emitted);
     },
   };
 }
