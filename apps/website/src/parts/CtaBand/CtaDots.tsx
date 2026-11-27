@@ -1,4 +1,5 @@
 import {useEffect, useRef, useState, type JSX, type RefObject} from 'react';
+import {canvasDpr} from '../../lib/ledGrid';
 import {useFrameLoop} from '../../lib/useFrameLoop';
 import {useInView} from '../../lib/useInView';
 import {usePageVisible} from '../../lib/usePageVisible';
@@ -8,7 +9,6 @@ import {Colony, DAY, NIGHT} from './colony';
 import {DOT, centreX, centreY, fitGrid, grade, type Glow, type Grid, type Rect, type Tiles} from './meadow';
 import styles from './CtaDots.module.css';
 
-const MAX_DPR = 2;
 const LOAD_MARGIN = '400px 0px';
 /** The watercolours, a few hundred px wide: they are sampled one pixel per dot. The tall one on a card taller than wide. */
 const MEADOWS = {wide: '/site/assets/cta/meadow-wide.webp', tall: '/site/assets/cta/meadow-tall.webp'} as const;
@@ -125,7 +125,7 @@ export default function CtaDots({contentRef}: Props): JSX.Element {
       sc.drawImage(meadow.img, 0, 0, g.cols, g.rows);   // stretched to the card, so the meadow frames it at any shape
       const radius = parseFloat(getComputedStyle(el.parentElement ?? el).borderTopLeftRadius) || 0;
       const tiles = grade(sc.getImageData(0, 0, g.cols, g.rows).data, g, glowOf(el, contentRef.current), night, radius);
-      const dpr = Math.min(MAX_DPR, window.devicePixelRatio || 1);
+      const dpr = canvasDpr();
       for (const c of [bgCanvas, fgCanvas]) { c.width = Math.round(w * dpr); c.height = Math.round(h * dpr); c.style.width = `${w}px`; c.style.height = `${h}px`; }
       bg.setTransform(dpr, 0, 0, dpr, 0, 0);
       fg.setTransform(dpr, 0, 0, dpr, 0, 0);

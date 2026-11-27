@@ -1,4 +1,5 @@
 import {useEffect, useRef, useState, type JSX, type RefObject} from 'react';
+import {canvasDpr} from '../../lib/ledGrid';
 import {useFrameLoop} from '../../lib/useFrameLoop';
 import {useInView} from '../../lib/useInView';
 import {usePageVisible} from '../../lib/usePageVisible';
@@ -9,7 +10,6 @@ import {layOutGrid} from '../../parts/PrivacyDots/gridLayout';
 import {loadMosaic, type Box, type DotGroup} from '../../parts/PrivacyDots/mosaic';
 import styles from './EndDots.module.css';
 
-const MAX_DPR = 2;
 const QUIET_X = 40;   // room the ants leave round the title, px
 const QUIET_Y = 32;
 const LOAD_MARGIN = '400px 0px';
@@ -60,7 +60,7 @@ export default function EndDots({step, quietRef}: Props): JSX.Element {
       const w = el.clientWidth;
       const h = el.clientHeight;
       if (!w || !h) return;
-      const dpr = Math.min(MAX_DPR, window.devicePixelRatio || 1);
+      const dpr = canvasDpr();
       for (const c of [bgCanvas, fgCanvas]) { c.width = w * dpr; c.height = h * dpr; c.style.width = `${w}px`; c.style.height = `${h}px`; }
       bg.setTransform(dpr, 0, 0, dpr, 0, 0);
       fg.setTransform(dpr, 0, 0, dpr, 0, 0);
