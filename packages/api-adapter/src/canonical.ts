@@ -1408,11 +1408,10 @@ function normalizeResponsesToolChoice(toolChoice: unknown, tools: CanonicalFunct
 }
 
 function renderCanonicalToolChoiceToAnthropic(toolChoice: CanonicalToolChoice | undefined, parallelToolCalls?: boolean): unknown {
-  const choice: Record<string, unknown> | undefined = toolChoice === 'required'
-    ? { type: 'any' }
-    : toolChoice === 'auto' || toolChoice === 'none'
-      ? { type: toolChoice }
-      : toolChoice?.type === 'function' ? { type: 'tool', name: toolChoice.name } : undefined;
+  let choice: Record<string, unknown> | undefined;
+  if (toolChoice === 'required') choice = { type: 'any' };
+  else if (toolChoice === 'auto' || toolChoice === 'none') choice = { type: toolChoice };
+  else if (toolChoice?.type === 'function') choice = { type: 'tool', name: toolChoice.name };
   // `parallel_tool_calls: false` is Messages' `disable_parallel_tool_use`, which every tool_choice but `none` takes.
   if (parallelToolCalls !== false) return choice;
   if (choice?.type === 'none') return choice;

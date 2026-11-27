@@ -3,6 +3,7 @@ import { transformResponse } from '../src/response-transform.js';
 import { createStreamingAdapter } from '../src/stream-transform.js';
 import type { ServiceApiProtocol } from '../src/types.js';
 import { parseSseBuffer } from '../src/utils.js';
+import { translateChatStream } from './chat-stream-support.js';
 
 // Some chat sellers leak the model's think markup into `content`: a lone closing tag (`</mm:think>`, as one
 // MiniMax-M3 seller sends it, alone or before the answer's text) or a whole `<think>…</think>` block.
@@ -33,19 +34,10 @@ const contentThenToolFrames = (deltas: string[], args = '{"cmd":"ls"}', finish =
   frame({}, finish),
 ];
 
-function translateStream(to: ServiceApiProtocol, frames: string[]): Array<{ event: string | null; data: Json }> {
-  const adapter = createStreamingAdapter({ from: 'openai-chat-completions', to, fallbackModel: 'example-model', includeReasoning: true })!;
-  let sse = '';
-  for (const f of frames) for (const out of adapter.adaptChunk({ requestId: 'r', data: encoder.encode(f), done: false })) sse += decoder.decode(out.data);
-  for (const out of adapter.adaptChunk({ requestId: 'r', data: encoder.encode('data: [DONE]\n\n'), done: true })) sse += decoder.decode(out.data);
-  return parseSseBuffer(sse).events
-    .filter((e) => e.data !== '[DONE]')
-    .map((e) => ({ event: e.event, data: JSON.parse(e.data) as Json }));
-}
 
 /** What a Responses client sees: the streamed text, the streamed reasoning, and the final output's item types. */
 function responsesStream(frames: string[]): { text: string; reasoning: string; items: string[]; final: Json } {
-  const events = translateStream('openai-responses', frames);
+  const events = translateChatStream('openai-responses', frames);
   const final = events.find((e) => e.event === 'response.completed' || e.event === 'response.incomplete')!.data.response as Json;
   return {
     text: events.filter((e) => e.event === 'response.output_text.delta').map((e) => e.data.delta).join(''),
@@ -57,7 +49,7 @@ function responsesStream(frames: string[]): { text: string; reasoning: string; i
 
 /** The text a Messages client sees, and the block types it was given. */
 function messagesStream(frames: string[]): { text: string; blocks: string[] } {
-  const events = translateStream('anthropic-messages', frames);
+  const events = translateChatStream('anthropic-messages', frames);
   return {
     text: events.filter((e) => e.event === 'content_block_delta' && e.data.delta.type === 'text_delta').map((e) => e.data.delta.text).join(''),
     blocks: events.filter((e) => e.event === 'content_block_start').map((e) => e.data.content_block.type),
@@ -183,7 +175,7 @@ describe('text held at the start of an answer when a tool call begins', () => {
   const HELD = ['\n\n', ' ', '<', '</mm:', '\n</thi'];
 
   it.each(HELD)('streams %j to a Messages client before the tool call, each block at its own index', (held) => {
-    const events = translateStream('anthropic-messages', contentThenToolFrames([held]));
+    const events = translateChatStream('anthropic-messages', contentThenToolFrames([held]));
     const starts = events.filter((e) => e.event === 'content_block_start').map((e) => [e.data.index, e.data.content_block.type]);
     expect(starts).toEqual([[0, 'text'], [1, 'tool_use']]);
     const deltas = events.filter((e) => e.event === 'content_block_delta').map((e) => [e.data.index, e.data.delta.type]);
@@ -192,7 +184,7 @@ describe('text held at the start of an answer when a tool call begins', () => {
   });
 
   it.each(HELD)('streams %j to a Responses client before the tool call, in the order the buffered answer has', (held) => {
-    const events = translateStream('openai-responses', contentThenToolFrames([held]));
+    const events = translateChatStream('openai-responses', contentThenToolFrames([held]));
     const added = events.filter((e) => e.event === 'response.output_item.added').map((e) => [e.data.output_index, e.data.item.type]);
     expect(added).toEqual([[0, 'message'], [1, 'function_call']]);
     const final = events.find((e) => e.event === 'response.completed')!.data.response;
@@ -202,7 +194,7 @@ describe('text held at the start of an answer when a tool call begins', () => {
   });
 
   it('marks only the cut tool call incomplete when the cap falls inside its arguments', () => {
-    const events = translateStream('openai-responses', contentThenToolFrames(['\n\n'], '{"cmd":', 'length'));
+    const events = translateChatStream('openai-responses', contentThenToolFrames(['\n\n'], '{"cmd":', 'length'));
     const final = events.find((e) => e.event === 'response.incomplete')!.data.response;
     expect(final.output.map((item: Json) => [item.type, item.status])).toEqual([['message', 'completed'], ['function_call', 'incomplete']]);
   });

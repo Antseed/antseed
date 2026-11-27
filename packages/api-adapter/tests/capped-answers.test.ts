@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { transformResponse } from '../src/response-transform.js';
-import { createStreamingAdapter } from '../src/stream-transform.js';
 import type { ServiceApiProtocol } from '../src/types.js';
 import { parseSseBuffer } from '../src/utils.js';
+import { translateChatStream } from './chat-stream-support.js';
 
 // A chat seller's answer that its output cap (`finish_reason: "length"`) or a content filter
 // (`finish_reason: "content_filter"`) cut off, translated for a Responses or a Messages client.
@@ -28,15 +28,6 @@ const cutStream = (finish: string, cut: 'text' | 'reasoning' | 'tool'): string[]
   `data: ${JSON.stringify({ id: 'chatcmpl-c', model: 'example-model', choices: [], usage: USAGE })}\n\n`,
 ];
 
-function translateStream(to: ServiceApiProtocol, frames: string[], includeReasoning = true): Array<{ event: string | null; data: Json }> {
-  const adapter = createStreamingAdapter({ from: 'openai-chat-completions', to, fallbackModel: 'example-model', includeReasoning })!;
-  let sse = '';
-  for (const f of frames) for (const out of adapter.adaptChunk({ requestId: 'r', data: encoder.encode(f), done: false })) sse += decoder.decode(out.data);
-  for (const out of adapter.adaptChunk({ requestId: 'r', data: encoder.encode('data: [DONE]\n\n'), done: true })) sse += decoder.decode(out.data);
-  return parseSseBuffer(sse).events
-    .filter((e) => e.data !== '[DONE]')
-    .map((e) => ({ event: e.event, data: JSON.parse(e.data) as Json }));
-}
 
 const chatBody = (finish: string, cut: 'text' | 'reasoning' | 'tool'): Json => ({
   id: 'chatcmpl-c',
@@ -90,7 +81,7 @@ const itemStatuses = (output: Json[]): Array<[string, unknown]> => output.map((i
 
 describe.each(REASONS)('a chat answer cut by finish_reason $finish, for a Responses client', ({ finish, reason }) => {
   it('streams as response.incomplete with the reason, end_turn false, and the cut message incomplete', () => {
-    const events = translateStream(RESPONSES, cutStream(finish, 'text'));
+    const events = translateChatStream(RESPONSES, cutStream(finish, 'text'));
     const last = lastResponseEvent(events);
 
     expect(last.event).toBe('response.incomplete');
@@ -113,7 +104,7 @@ describe.each(REASONS)('a chat answer cut by finish_reason $finish, for a Respon
   });
 
   it('keeps the reasoning item when the cap falls inside the reasoning, streamed and buffered', () => {
-    const last = lastResponseEvent(translateStream(RESPONSES, cutStream(finish, 'reasoning')));
+    const last = lastResponseEvent(translateChatStream(RESPONSES, cutStream(finish, 'reasoning')));
     expect(last.event).toBe('response.incomplete');
     expect(last.data.response).toMatchObject({ status: 'incomplete', incomplete_details: { reason }, end_turn: false, output_text: '' });
     expect(last.data.response.output).toEqual([expect.objectContaining({ type: 'reasoning', content: [{ type: 'reasoning_text', text: 'The user wants an essay.' }] })]);
@@ -124,7 +115,7 @@ describe.each(REASONS)('a chat answer cut by finish_reason $finish, for a Respon
   });
 
   it('is incomplete with an empty output for a client that keeps no reasoning state', () => {
-    const last = lastResponseEvent(translateStream(RESPONSES, cutStream(finish, 'reasoning'), false));
+    const last = lastResponseEvent(translateChatStream(RESPONSES, cutStream(finish, 'reasoning'), false));
     expect(last.event).toBe('response.incomplete');
     expect(last.data.response).toMatchObject({ status: 'incomplete', incomplete_details: { reason }, end_turn: false, output: [] });
 
@@ -132,7 +123,7 @@ describe.each(REASONS)('a chat answer cut by finish_reason $finish, for a Respon
   });
 
   it('marks a tool call cut mid-arguments incomplete, and the text before it whole', () => {
-    const last = lastResponseEvent(translateStream(RESPONSES, cutStream(finish, 'tool')));
+    const last = lastResponseEvent(translateChatStream(RESPONSES, cutStream(finish, 'tool')));
     expect(last.data.response).toMatchObject({ status: 'incomplete', incomplete_details: { reason }, end_turn: false });
     expect(itemStatuses(last.data.response.output)).toEqual([['reasoning', undefined], ['message', 'completed'], ['function_call', 'incomplete']]);
 
@@ -144,7 +135,7 @@ describe.each(REASONS)('a chat answer cut by finish_reason $finish, for a Respon
 
 describe('a chat answer that finished, for a Responses client', () => {
   it('stays completed, with no incomplete_details, streamed and buffered', () => {
-    const last = lastResponseEvent(translateStream(RESPONSES, cutStream('stop', 'text')));
+    const last = lastResponseEvent(translateChatStream(RESPONSES, cutStream('stop', 'text')));
     expect(last.event).toBe('response.completed');
     expect(last.data.response).toMatchObject({ status: 'completed', end_turn: true });
     expect(last.data.response).not.toHaveProperty('incomplete_details');
@@ -159,7 +150,7 @@ describe('a chat answer that finished, for a Responses client', () => {
 describe.each(REASONS)('a chat answer cut by finish_reason $finish, for a Messages client', ({ finish, stopReason }) => {
   const named = stopReason ?? 'that is not end_turn';
   it(`streams a stop_reason ${named}`, () => {
-    const events = translateStream(MESSAGES, cutStream(finish, 'text'));
+    const events = translateChatStream(MESSAGES, cutStream(finish, 'text'));
     const delta = events.find((e) => e.event === 'message_delta')!;
     expectStopReason(delta.data.delta.stop_reason, stopReason);
     expect(events.at(-1)!.event).toBe('message_stop');
