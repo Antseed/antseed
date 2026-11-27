@@ -228,8 +228,8 @@ function isAdapterReasoningInput(item: unknown): boolean {
 
 /**
  * A Messages request for a Messages seller, without the `thinking` blocks this adapter made from a
- * chat model's reasoning in earlier turns: their `signature` is the adapter's tag, which the seller
- * would reject. Unsigned and provider-signed blocks stay, an assistant message left with no blocks is
+ * chat model's reasoning in earlier turns: their `signature` is the adapter's tag, which that seller
+ * cannot verify. Unsigned and provider-signed blocks stay, an assistant message left with no blocks is
  * dropped, and a request with none of them is returned unchanged.
  */
 export function withoutAdapterThinkingBlocks(request: SerializedHttpRequest): SerializedHttpRequest {

@@ -5779,8 +5779,9 @@ export class BuyerProxy {
       // resolve the reasoning items the adapter made there, so they are dropped; nothing else changes.
       requestForPeer = withoutAdapterReasoningItems(requestForPeer)
     } else if (requestProtocol === 'anthropic-messages') {
-      // The same for a Messages seller: it would reject the signature of a thinking block the adapter
-      // made from a chat model's reasoning. Unsigned and provider-signed blocks pass untouched.
+      // The same for a Messages seller: the signature of a thinking block the adapter made from a chat
+      // model's reasoning is one that seller cannot verify. Unsigned and provider-signed blocks pass
+      // untouched.
       requestForPeer = withoutAdapterThinkingBlocks(requestForPeer)
     }
 
