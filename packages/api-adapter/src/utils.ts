@@ -594,6 +594,11 @@ function toStringContentBlock(block: Record<string, unknown>): string {
   return '';
 }
 
+/** Whether reasoning has anything to show: whitespace alone makes no thinking block or reasoning item. */
+export function hasReasoningText(text: string): boolean {
+  return text.trim().length > 0;
+}
+
 /**
  * The reasoning a Chat Completions message or stream delta carries. Kimi, DeepSeek and most
  * OpenAI-compatible servers name it `reasoning_content`; some relays name it `reasoning`. A server

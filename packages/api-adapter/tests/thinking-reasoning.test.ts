@@ -113,7 +113,7 @@ function blockLog(events: Json[]): string[] {
 }
 
 describe('thinking blocks in the history of a Messages request', () => {
-  it('drops thinking blocks of earlier assistant turns, whose signatures a seller could not check', () => {
+  it('drops thinking blocks of earlier assistant turns that the adapter did not make', () => {
     const body = sellerBody(CHAT, {
       messages: [
         { role: 'user', content: 'Q1' },
@@ -768,5 +768,45 @@ describe('withoutAdapterThinkingBlocks: a Messages request for a native Messages
     const sized = request({ model: 'example-model', messages: [{ role: 'assistant', content: [ours, { type: 'text', text: 'A1' }] }] }, { 'Content-Length': '999' });
     const rewritten = withoutAdapterThinkingBlocks(sized);
     expect(rewritten.headers['Content-Length']).toBe(String(rewritten.body.length));
+  });
+});
+
+describe('block indexes of a translated Messages stream', () => {
+  const toolFrame = (index: number, id: string) => chatFrame({ tool_calls: [{ index, id, type: 'function', function: { name: 'lookup', arguments: '{"q":1}' } }] });
+  const SIGNATURE = 'signature_delta 0 antseed.reasoning.v1:example-model#chatcmpl-1';
+
+  it('gives text after a tool call after thinking the next index, in order', () => {
+    const events = translateStream(CHAT, MESSAGES, [
+      chatFrame({ reasoning_content: 'Need a tool.' }),
+      toolFrame(0, 'call_a'),
+      chatFrame({ content: 'Done.' }),
+      chatFrame({}, 'stop'),
+      CHAT_DONE,
+    ]);
+    expect(blockLog(events)).toEqual([
+      'start 0 thinking',
+      'thinking_delta 0 Need a tool.',
+      SIGNATURE,
+      'stop 0',
+      'start 1 tool_use',
+      'input_json_delta 1 {"q":1}',
+      'stop 1',
+      'start 2 text',
+      'text_delta 2 Done.',
+      'stop 2',
+    ]);
+  });
+
+  it('never reuses an index for a second text block', () => {
+    const events = translateStream(CHAT, MESSAGES, [
+      chatFrame({ content: 'First.' }),
+      toolFrame(0, 'call_a'),
+      chatFrame({ content: 'Second.' }),
+      toolFrame(1, 'call_b'),
+      chatFrame({}, 'tool_calls'),
+      CHAT_DONE,
+    ]);
+    const starts = events.filter((event) => event.type === 'content_block_start').map((event) => `${event.index} ${event.content_block.type}`);
+    expect(starts).toEqual(['0 text', '1 tool_use', '2 text', '3 tool_use']);
   });
 });

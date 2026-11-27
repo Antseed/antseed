@@ -3,6 +3,7 @@ import {
   adapterThinkingTextFor,
   chatReasoningText,
   extractReportedUsage,
+  hasReasoningText,
   mapFinishReasonToAnthropicStopReason,
   openAIResponsesFunctionCallId,
   openAIResponsesMessageId,
@@ -696,7 +697,7 @@ export function normalizeOpenAIChatResponseBody(
     output,
     stopReason,
     endTurn: responsesEndTurn(output.filter((item) => item.type === 'function_call').length),
-    ...(reasoning.trim().length > 0 ? { reasoning, reasoningModel: fallbacks.requestedModel || model } : {}),
+    ...(hasReasoningText(reasoning) ? { reasoning, reasoningModel: fallbacks.requestedModel || model } : {}),
     usage,
   };
 }
@@ -768,7 +769,7 @@ export function normalizeAnthropicMessagesResponseBody(
     const block = blockRaw as Record<string, unknown>;
     // A `redacted_thinking` block is opaque by design: there is nothing in it to translate.
     if (block.type === 'thinking') {
-      if (typeof block.thinking === 'string' && block.thinking.trim().length > 0) thoughts.push(block.thinking);
+      if (typeof block.thinking === 'string' && hasReasoningText(block.thinking)) thoughts.push(block.thinking);
       continue;
     }
     if (block.type === 'text') {
@@ -839,6 +840,7 @@ export function renderCanonicalResponseToOpenAIResponsesBody(response: Canonical
     .filter((item): item is Extract<CanonicalOutputItem, { type: 'text' }> => item.type === 'text');
   const text = textItems.map((item) => item.text).join('');
   const phase = textItems.find((item) => item.phase)?.phase;
+
   if (response.reasoning) {
     output.push(openAIResponsesReasoningItem(response.id, response.reasoning, response.reasoningModel ?? response.model));
   }
