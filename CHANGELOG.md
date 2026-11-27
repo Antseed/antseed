@@ -6,6 +6,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Added
+
+- API adapter (`@antseed/api-adapter`): the model's thoughts now cross between the protocols. Through `/v1/messages`, a Claude served by a Chat Completions or Responses seller returns its thoughts as a `thinking` block (`thinking_delta` events when streamed) ahead of the answer, as it already did through `/v1/chat/completions` as `reasoning_content`. The reverse holds too: a `thinking` block from a native Messages seller reaches a Chat client as `reasoning_content`, and a Responses `reasoning` item travels both ways. A Messages request that switches thinking on (`enabled` or `adaptive`) now asks a Chat or Responses seller for `reasoning_effort: "medium"` unless it names an `output_config.effort`, which always wins; a thinking budget is never turned into a level. Some Claude models return empty thoughts below `high`, so a client that wants thoughts from them sets `output_config.effort: "high"`. Requests with no `thinking`, or with it disabled, translate as before. The translated `thinking` block carries no `signature`, because the OpenAI protocols have none; thinking blocks in a request's earlier turns are dropped, as before.
+
 ## 2026-11-27 — CLI 0.1.266, Desktop 0.2.100
 
 ### Packages

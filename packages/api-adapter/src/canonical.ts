@@ -3,6 +3,7 @@ import {
   mapFinishReasonToAnthropicStopReason,
   openAIResponsesFunctionCallId,
   openAIResponsesMessageId,
+  openAIResponsesReasoningId,
   parseJsonSafe,
   reasoningUsageFields,
   RESPONSES_FINAL_ANSWER_TOOL,
@@ -44,8 +45,18 @@ const OPENAI_LOWEST_EFFORT = 'minimal';
 const MESSAGES_LOWEST_EFFORT = 'low';
 
 /**
- * The reasoning effort a Messages request names. A thinking budget names no effort, and none is
- * made up from it.
+ * The effort a Messages request that switches thinking on (`enabled` or `adaptive`) gets when it names none.
+ * A client's own `output_config.effort` always wins over it. Known limit: some Claude models (seen with
+ * several Opus, Sonnet and Fable releases) answer with empty thoughts below `high`, so for them a client
+ * that wants thoughts must name `output_config.effort: "high"`. A thinking budget is never turned into a
+ * level of its own.
+ */
+const THINKING_DEFAULT_EFFORT = 'medium';
+
+/**
+ * The reasoning effort a Messages request names: its `output_config.effort`, or, when only thinking is
+ * switched on (`enabled` with a budget, or `adaptive`), `THINKING_DEFAULT_EFFORT`. A `budget_tokens` names
+ * no level of its own, and none is made up from it.
  *
  * With thinking switched off, no effort is carried at all. Off is the Messages default, which a
  * client may only be restating, so it is not turned into the OpenAI protocols' `none`: that is a
@@ -53,14 +64,16 @@ const MESSAGES_LOWEST_EFFORT = 'low';
  * either, since the one field the OpenAI protocols have would switch reasoning on.
  */
 function reasoningEffortFromAnthropic(body: Record<string, unknown>): string | undefined {
-  const thinking = body.thinking;
-  if (thinking && typeof thinking === 'object' && (thinking as Record<string, unknown>).type === 'disabled') {
-    return undefined;
-  }
+  const thinking = body.thinking && typeof body.thinking === 'object' && !Array.isArray(body.thinking)
+    ? body.thinking as Record<string, unknown>
+    : undefined;
+  if (thinking?.type === 'disabled') return undefined;
   const config = body.output_config;
-  if (!config || typeof config !== 'object' || Array.isArray(config)) return undefined;
-  const effort = (config as Record<string, unknown>).effort;
-  return typeof effort === 'string' && effort.length > 0 ? effort : undefined;
+  if (config && typeof config === 'object' && !Array.isArray(config)) {
+    const effort = (config as Record<string, unknown>).effort;
+    if (typeof effort === 'string' && effort.length > 0) return effort;
+  }
+  return thinking?.type === 'enabled' || thinking?.type === 'adaptive' ? THINKING_DEFAULT_EFFORT : undefined;
 }
 
 /**
@@ -136,6 +149,11 @@ function assignToolsAndToolChoice(
 }
 
 export type CanonicalOutputItem =
+  /**
+   * The model's thoughts as text. A Messages `thinking` block, a Chat `reasoning_content` and a Responses
+   * `reasoning` summary all land here. No signature is kept or made up: the OpenAI protocols have none.
+   */
+  | { type: 'reasoning'; text: string }
   | { type: 'text'; text: string; phase?: CanonicalResponseMessagePhase }
   | { type: 'function_call'; id: string; name: string; arguments: Record<string, unknown> | string };
 
@@ -146,6 +164,47 @@ export interface CanonicalLlmResponse {
   stopReason: string | null;
   endTurn?: boolean;
   usage: ReportedUsage;
+}
+
+/** Whether a thought has anything to show: whitespace alone would only make an empty `thinking` block. */
+function hasContent(text: string): boolean {
+  return text.trim().length > 0;
+}
+
+/**
+ * The thoughts of a Chat Completions message. Seller stacks name the field `reasoning_content` (DeepSeek,
+ * vLLM, the gateway) or `reasoning` (OpenRouter), and the first one with text wins.
+ */
+function chatReasoningText(message: Record<string, unknown>): string {
+  for (const field of ['reasoning_content', 'reasoning']) {
+    const value = message[field];
+    if (typeof value === 'string' && hasContent(value)) return value;
+  }
+  return '';
+}
+
+/** The thoughts of a Responses `reasoning` item: its summary parts, or its raw reasoning text parts. */
+function responsesReasoningText(item: Record<string, unknown>): string {
+  const parts: string[] = [];
+  for (const field of ['summary', 'content']) {
+    const list = item[field];
+    if (!Array.isArray(list)) continue;
+    for (const part of list) {
+      if (!part || typeof part !== 'object') continue;
+      const text = (part as Record<string, unknown>).text;
+      if (typeof text === 'string' && hasContent(text)) parts.push(text);
+    }
+    if (parts.length > 0) break;
+  }
+  return parts.join('\n\n');
+}
+
+/** All the thoughts of a canonical response, as one text. */
+export function canonicalReasoningText(output: CanonicalOutputItem[]): string {
+  return output
+    .filter((item): item is Extract<CanonicalOutputItem, { type: 'reasoning' }> => item.type === 'reasoning')
+    .map((item) => item.text)
+    .join('\n\n');
 }
 
 function responseFunctionCallId(id: string): string {
@@ -668,6 +727,8 @@ export function normalizeOpenAIChatResponseBody(
   const text = toStringContent(message.content);
   const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
   const output: CanonicalOutputItem[] = [];
+  const reasoning = chatReasoningText(message);
+  if (reasoning.length > 0) output.push({ type: 'reasoning', text: reasoning });
   if (text.length > 0) {
     output.push({ type: 'text', text, phase: toolCalls.length > 0 ? 'commentary' : undefined });
   }
@@ -717,6 +778,11 @@ export function normalizeOpenAIResponsesResponseBody(
   for (const itemRaw of items) {
     if (!itemRaw || typeof itemRaw !== 'object') continue;
     const item = itemRaw as Record<string, unknown>;
+    if (item.type === 'reasoning') {
+      const text = responsesReasoningText(item);
+      if (text.length > 0) output.push({ type: 'reasoning', text });
+      continue;
+    }
     if (item.type === 'message') {
       const text = textFromResponsesContent(item.content);
       const phase = normalizeResponseMessagePhase(item.phase);
@@ -769,6 +835,12 @@ export function normalizeAnthropicMessagesResponseBody(
   for (const blockRaw of content) {
     if (!blockRaw || typeof blockRaw !== 'object') continue;
     const block = blockRaw as Record<string, unknown>;
+    // A `redacted_thinking` block is opaque by design: there is nothing in it to translate.
+    if (block.type === 'thinking') {
+      const text = typeof block.thinking === 'string' ? block.thinking : '';
+      if (hasContent(text)) output.push({ type: 'reasoning', text });
+      continue;
+    }
     if (block.type === 'text') {
       const text = typeof block.text === 'string' ? block.text : '';
       if (text.length > 0) output.push({ type: 'text', text });
@@ -796,6 +868,7 @@ export function renderCanonicalResponseToOpenAIChatBody(response: CanonicalLlmRe
     .filter((item): item is { type: 'text'; text: string } => item.type === 'text')
     .map((item) => item.text)
     .join('');
+  const reasoning = canonicalReasoningText(response.output);
   const toolCalls = response.output
     .filter((item): item is Extract<CanonicalOutputItem, { type: 'function_call' }> => item.type === 'function_call')
     .map((item) => ({
@@ -814,6 +887,7 @@ export function renderCanonicalResponseToOpenAIChatBody(response: CanonicalLlmRe
       message: {
         role: 'assistant',
         content: text.length > 0 ? text : null,
+        ...(reasoning.length > 0 ? { reasoning_content: reasoning } : {}),
         ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
       },
       finish_reason: response.stopReason ?? (toolCalls.length > 0 ? 'tool_calls' : 'stop'),
@@ -828,6 +902,15 @@ export function renderCanonicalResponseToOpenAIResponsesBody(response: Canonical
     .filter((item): item is Extract<CanonicalOutputItem, { type: 'text' }> => item.type === 'text');
   const text = textItems.map((item) => item.text).join('');
   const phase = textItems.find((item) => item.phase)?.phase;
+  const reasoning = canonicalReasoningText(response.output);
+
+  if (reasoning.length > 0) {
+    output.push({
+      type: 'reasoning',
+      id: openAIResponsesReasoningId(response.id),
+      summary: [{ type: 'summary_text', text: reasoning }],
+    });
+  }
 
   if (text.length > 0) {
     output.push({
@@ -867,6 +950,7 @@ export function renderCanonicalResponseToOpenAIResponsesBody(response: Canonical
 
 export function renderCanonicalResponseToAnthropicMessagesBody(response: CanonicalLlmResponse): Record<string, unknown> {
   const content = response.output.map((item) => {
+    if (item.type === 'reasoning') return { type: 'thinking', thinking: item.text };
     if (item.type === 'text') return { type: 'text', text: item.text };
     return {
       type: 'tool_use',

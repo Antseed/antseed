@@ -8,6 +8,7 @@ import {
   mapFinishReasonToAnthropicStopReason,
   openAIResponsesFunctionCallId,
   openAIResponsesMessageId,
+  openAIResponsesReasoningId,
   parseJsonSafe,
   parseSseBuffer,
   type StreamingResponseAdapter,
@@ -30,6 +31,7 @@ interface CanonicalStreamToolCall {
 
 type CanonicalStreamEvent =
   | { type: 'response_start'; id: string; model: string; usage: ReportedUsage }
+  | { type: 'reasoning_delta'; delta: string }
   | { type: 'text_delta'; delta: string }
   | { type: 'tool_call_start'; index: number; id: string; name: string }
   | { type: 'tool_call_delta'; index: number; argumentsDelta: string }
@@ -119,6 +121,10 @@ function createChatStreamNormalizer(options: StreamTransformInternals): Protocol
   };
 
   const parser = createChatStreamParser({
+    onReasoning(delta) {
+      emitStart(parser.getId(), parser.getModel());
+      emitted.push({ type: 'reasoning_delta', delta });
+    },
     onText(delta) {
       emitStart(parser.getId(), parser.getModel());
       textBuffer += delta;
@@ -255,6 +261,11 @@ function createAnthropicStreamNormalizer(options: StreamTransformInternals): Pro
           const delta = data.delta && typeof data.delta === 'object'
             ? data.delta as Record<string, unknown>
             : {};
+          if (delta.type === 'thinking_delta' && typeof delta.thinking === 'string') {
+            emitStart(emitted);
+            if (delta.thinking.length > 0) emitted.push({ type: 'reasoning_delta', delta: delta.thinking });
+            continue;
+          }
           if (delta.type === 'text_delta' && typeof delta.text === 'string') {
             emitStart(emitted);
             emitted.push({ type: 'text_delta', delta: delta.text });
@@ -326,6 +337,8 @@ function createResponsesStreamNormalizer(options: StreamTransformInternals): Pro
   let responseStarted = false;
   const toolOutputIndexes = new Map<number, number>();
   const toolCalls = new Map<number, CanonicalStreamToolCall>();
+  // Summary parts of one reasoning item are separate texts: a break marks where one ends and the next begins.
+  let reasoningSummaryIndex = 0;
 
   const toolIndexForOutput = (outputIndex: number): number => {
     const existing = toolOutputIndexes.get(outputIndex);
@@ -366,6 +379,17 @@ function createResponsesStreamNormalizer(options: StreamTransformInternals): Pro
           if (typeof response.model === 'string') responseModel = response.model;
           usage = extractReportedUsage({ usage: response.usage }, 'openai-responses');
           emitStart(emitted);
+          continue;
+        }
+
+        if (type === 'response.reasoning_summary_text.delta' || type === 'response.reasoning_text.delta') {
+          emitStart(emitted);
+          if (typeof data.delta === 'string' && data.delta.length > 0) {
+            const summaryIndex = typeof data.summary_index === 'number' ? data.summary_index : 0;
+            const separator = summaryIndex > reasoningSummaryIndex ? '\n\n' : '';
+            reasoningSummaryIndex = Math.max(reasoningSummaryIndex, summaryIndex);
+            emitted.push({ type: 'reasoning_delta', delta: separator + data.delta });
+          }
           continue;
         }
 
@@ -458,6 +482,11 @@ function createChatStreamRenderer(options: StreamTransformInternals): ProtocolSt
           continue;
         }
 
+        if (event.type === 'reasoning_delta') {
+          chunks.push(renderChunk({ reasoning_content: event.delta }));
+          continue;
+        }
+
         if (event.type === 'text_delta') {
           chunks.push(renderChunk({ content: event.delta }));
           continue;
@@ -503,6 +532,9 @@ function createAnthropicStreamRenderer(options: StreamTransformInternals): Proto
   let messageStarted = false;
   let textBlockStarted = false;
   let hadTextBlock = false;
+  // Thoughts are the first block of a message, when there are any: a thinking block opens only before
+  // any text or tool call, and everything after it is numbered one higher.
+  let thinkingBlockState: 'none' | 'open' | 'closed' = 'none';
   let openToolIndex: number | null = null;
   // The open tool block's arguments so far, and the calls that started while
   // they were still incomplete. Some upstreams interleave parallel calls'
@@ -515,7 +547,15 @@ function createAnthropicStreamRenderer(options: StreamTransformInternals): Proto
   let responseId = '';
   let responseModel = options.fallbackModel ?? 'unknown';
 
-  const toolBlockIndex = (index: number): number => index + (hadTextBlock ? 1 : 0);
+  const thinkingBlocks = (): number => (thinkingBlockState === 'none' ? 0 : 1);
+  const textBlockIndex = (): number => thinkingBlocks();
+  const toolBlockIndex = (index: number): number => index + thinkingBlocks() + (hadTextBlock ? 1 : 0);
+
+  const closeThinking = (emitted: Array<{ event?: string; data: unknown | string }>): void => {
+    if (thinkingBlockState !== 'open') return;
+    thinkingBlockState = 'closed';
+    emitted.push({ event: 'content_block_stop', data: { type: 'content_block_stop', index: 0 } });
+  };
 
   const startMessage = (
     emitted: Array<{ event?: string; data: unknown | string }>,
@@ -615,8 +655,28 @@ function createAnthropicStreamRenderer(options: StreamTransformInternals): Proto
           continue;
         }
 
+        if (event.type === 'reasoning_delta') {
+          startMessage(emitted, null);
+          // Thoughts that come after the answer began have no place before it: dropped, never reordered.
+          if (thinkingBlockState === 'closed' || hadTextBlock || openToolIndex !== null || heldTools.size > 0) continue;
+          if (thinkingBlockState === 'none') {
+            if (event.delta.trim().length === 0) continue;
+            thinkingBlockState = 'open';
+            emitted.push({
+              event: 'content_block_start',
+              data: { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } },
+            });
+          }
+          emitted.push({
+            event: 'content_block_delta',
+            data: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: event.delta } },
+          });
+          continue;
+        }
+
         if (event.type === 'text_delta') {
           startMessage(emitted, null);
+          closeThinking(emitted);
           releaseHeldTools(emitted, true);
           closeOpenTool(emitted);
           if (!textBlockStarted) {
@@ -624,20 +684,21 @@ function createAnthropicStreamRenderer(options: StreamTransformInternals): Proto
             hadTextBlock = true;
             emitted.push({
               event: 'content_block_start',
-              data: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+              data: { type: 'content_block_start', index: textBlockIndex(), content_block: { type: 'text', text: '' } },
             });
           }
           emitted.push({
             event: 'content_block_delta',
-            data: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: event.delta } },
+            data: { type: 'content_block_delta', index: textBlockIndex(), delta: { type: 'text_delta', text: event.delta } },
           });
           continue;
         }
 
         if (event.type === 'tool_call_start') {
           startMessage(emitted, null);
+          closeThinking(emitted);
           if (textBlockStarted) {
-            emitted.push({ event: 'content_block_stop', data: { type: 'content_block_stop', index: 0 } });
+            emitted.push({ event: 'content_block_stop', data: { type: 'content_block_stop', index: textBlockIndex() } });
             textBlockStarted = false;
           }
           if (openToolIndex === event.index || heldTools.has(event.index)) continue;
@@ -667,10 +728,11 @@ function createAnthropicStreamRenderer(options: StreamTransformInternals): Proto
 
         if (event.type === 'response_done') {
           startMessage(emitted, null);
+          closeThinking(emitted);
           releaseHeldTools(emitted, true);
           closeOpenTool(emitted);
           if (textBlockStarted) {
-            emitted.push({ event: 'content_block_stop', data: { type: 'content_block_stop', index: 0 } });
+            emitted.push({ event: 'content_block_stop', data: { type: 'content_block_stop', index: textBlockIndex() } });
             textBlockStarted = false;
           }
           emitted.push({
@@ -709,6 +771,10 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
   let outputStarted = false;
   let outputDone = false;
   let textBuffer = '';
+  // Thoughts are the first output item when there are any, ahead of the message and the calls; they
+  // are dropped once the answer has begun, since an item cannot be put in front of ones already sent.
+  let reasoningStarted = false;
+  let reasoningBuffer = '';
   let responseId = '';
   let responseModel = options.fallbackModel ?? 'unknown';
   const createdAt = Math.floor(Date.now() / 1000);
@@ -724,7 +790,18 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
 
   const getResponseId = (): string => responseId || fallbackResponsesId(options.fallbackModel);
   const getMessageId = (): string => openAIResponsesMessageId(getResponseId());
-  const getToolOutputIndex = (index: number): number => index + (outputStarted ? 1 : 0);
+  const getReasoningId = (): string => openAIResponsesReasoningId(getResponseId());
+  const reasoningItem = (status: 'in_progress' | 'completed'): Record<string, unknown> => ({
+    type: 'reasoning',
+    id: getReasoningId(),
+    status,
+    summary: status === 'completed' || reasoningBuffer.length > 0
+      ? [{ type: 'summary_text', text: reasoningBuffer }]
+      : [],
+  });
+  /** Where the message sits among the output items: after the reasoning item, if there is one. */
+  const getMessageOutputIndex = (): number => (reasoningStarted ? 1 : 0);
+  const getToolOutputIndex = (index: number): number => index + (reasoningStarted ? 1 : 0) + (outputStarted ? 1 : 0);
 
   const ensureResponseCreated = (
     emitted: Array<{ event?: string; data: unknown | string }>,
@@ -756,7 +833,7 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
     outputStarted = true;
     const msgId = getMessageId();
     pushEvent(emitted, 'response.output_item.added', {
-      output_index: 0,
+      output_index: getMessageOutputIndex(),
       item: {
         type: 'message',
         id: msgId,
@@ -766,7 +843,7 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
       },
     });
     pushEvent(emitted, 'response.content_part.added', {
-      output_index: 0,
+      output_index: getMessageOutputIndex(),
       item_id: msgId,
       content_index: 0,
       part: { type: 'output_text', text: '', annotations: [] },
@@ -783,11 +860,35 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
           continue;
         }
 
+        if (event.type === 'reasoning_delta') {
+          ensureResponseCreated(emitted, null);
+          if (outputStarted || toolCalls.size > 0 || outputDone) continue;
+          if (!reasoningStarted) {
+            if (event.delta.trim().length === 0) continue;
+            reasoningStarted = true;
+            pushEvent(emitted, 'response.output_item.added', { output_index: 0, item: reasoningItem('in_progress') });
+            pushEvent(emitted, 'response.reasoning_summary_part.added', {
+              output_index: 0,
+              item_id: getReasoningId(),
+              summary_index: 0,
+              part: { type: 'summary_text', text: '' },
+            });
+          }
+          reasoningBuffer += event.delta;
+          pushEvent(emitted, 'response.reasoning_summary_text.delta', {
+            output_index: 0,
+            item_id: getReasoningId(),
+            summary_index: 0,
+            delta: event.delta,
+          });
+          continue;
+        }
+
         if (event.type === 'text_delta') {
           ensureTextOutputStarted(emitted);
           textBuffer += event.delta;
           pushEvent(emitted, 'response.output_text.delta', {
-            output_index: 0,
+            output_index: getMessageOutputIndex(),
             item_id: getMessageId(),
             content_index: 0,
             delta: event.delta,
@@ -843,23 +944,38 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
           const messagePhase = toolCalls.size > 0 ? 'commentary' : undefined;
           if (!outputDone) {
             outputDone = true;
+            if (reasoningStarted) {
+              pushEvent(emitted, 'response.reasoning_summary_text.done', {
+                output_index: 0,
+                item_id: getReasoningId(),
+                summary_index: 0,
+                text: reasoningBuffer,
+              });
+              pushEvent(emitted, 'response.reasoning_summary_part.done', {
+                output_index: 0,
+                item_id: getReasoningId(),
+                summary_index: 0,
+                part: { type: 'summary_text', text: reasoningBuffer },
+              });
+              pushEvent(emitted, 'response.output_item.done', { output_index: 0, item: reasoningItem('completed') });
+            }
             const msgId = getMessageId();
             if (outputStarted) {
               pushEvent(emitted, 'response.output_text.done', {
-                output_index: 0,
+                output_index: getMessageOutputIndex(),
                 item_id: msgId,
                 content_index: 0,
                 text: textBuffer,
                 logprobs: [],
               });
               pushEvent(emitted, 'response.content_part.done', {
-                output_index: 0,
+                output_index: getMessageOutputIndex(),
                 item_id: msgId,
                 content_index: 0,
                 part: { type: 'output_text', text: textBuffer, annotations: [] },
               });
               pushEvent(emitted, 'response.output_item.done', {
-                output_index: 0,
+                output_index: getMessageOutputIndex(),
                 item: {
                   type: 'message',
                   id: msgId,
@@ -903,6 +1019,7 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
               status: 'completed',
               created_at: createdAt,
               output: [
+                ...(reasoningStarted ? [reasoningItem('completed')] : []),
                 ...(outputStarted ? [{
                   type: 'message' as const,
                   id: getMessageId(),

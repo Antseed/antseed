@@ -39,6 +39,10 @@ export function openAIResponsesMessageId(responseId: string): string {
   return `msg_${responseId}_1`;
 }
 
+export function openAIResponsesReasoningId(responseId: string): string {
+  return `rs_${responseId}`;
+}
+
 export function openAIResponsesFunctionCallId(callId: string): string {
   return callId.startsWith('fc_') ? callId : `fc_${callId}`;
 }
@@ -646,6 +650,8 @@ export interface ChatStreamFinishInfo {
 }
 
 export interface ChatStreamCallbacks {
+  /** A piece of the model's thoughts (`delta.reasoning_content`, or `delta.reasoning` where a seller names it so). Never called with an empty piece. */
+  onReasoning?(delta: string): void;
   onText(delta: string): void;
   onToolCallStart(index: number, id: string, name: string): void;
   onToolCallDelta(index: number, id: string, argumentsDelta: string): void;
@@ -708,6 +714,13 @@ export function createChatStreamParser(
 
         if (typeof firstChoice?.finish_reason === 'string' && firstChoice.finish_reason.length > 0) {
           finishReason = firstChoice.finish_reason;
+        }
+
+        const reasoningDelta = typeof delta?.reasoning_content === 'string' && delta.reasoning_content.length > 0
+          ? delta.reasoning_content
+          : (typeof delta?.reasoning === 'string' ? delta.reasoning : '');
+        if (reasoningDelta.length > 0) {
+          callbacks.onReasoning?.(reasoningDelta);
         }
 
         const textDelta = typeof delta?.content === 'string' ? delta.content : '';
