@@ -23,6 +23,8 @@ export {
 
 export {
   DEFAULT_ANTHROPIC_MAX_TOKENS,
+  type NamespacedToolName,
+  type NamespacedToolNames,
 } from './canonical.js';
 
 export {

@@ -1,3 +1,4 @@
+import type { NamespacedToolNames } from './canonical.js';
 import { createLeadingThinkMarkupFilter, type LeadingThinkMarkupFilter, type ThinkMarkupPiece } from './think-markup.js';
 import type { SerializedHttpResponseChunk, ServiceApiProtocol } from './types.js';
 import {
@@ -25,6 +26,8 @@ export interface ServiceApiStreamTransformOptions {
   fallbackModel?: string | null;
   /** A Responses client that keeps reasoning state gets a chat model's reasoning (see `includeReasoning` on transformRequest). */
   includeReasoning?: boolean;
+  /** The request's flattened namespace functions (see `namespacedTools` on transformRequest). */
+  namespacedTools?: NamespacedToolNames;
 }
 
 interface CanonicalStreamToolCall {
@@ -32,13 +35,15 @@ interface CanonicalStreamToolCall {
   id: string;
   name: string;
   arguments: string;
+  /** The Responses namespace of the client's tool, whose own name `name` then is. */
+  namespace?: string;
 }
 
 type CanonicalStreamEvent =
   | { type: 'response_start'; id: string; model: string; usage: ReportedUsage }
   | { type: 'text_delta'; delta: string }
   | { type: 'reasoning_delta'; delta: string }
-  | { type: 'tool_call_start'; index: number; id: string; name: string }
+  | { type: 'tool_call_start'; index: number; id: string; name: string; namespace?: string }
   | { type: 'tool_call_delta'; index: number; argumentsDelta: string }
   | {
     type: 'response_done';
@@ -98,15 +103,25 @@ export function createStreamingAdapter(
   const normalizer = createNormalizer(internals);
   const renderer = createRenderer(internals);
   const thinkMarkup = createLeadingThinkMarkupFilter();
+  const namespacedTools = options.to === 'openai-responses' ? options.namespacedTools ?? {} : {};
 
   return {
     adaptStart: makeStreamingStartResponse,
     adaptChunk(chunk) {
-      const events = withoutLeadingThinkMarkup(normalizer.feed(chunk), thinkMarkup);
+      const events = withNamespacedCalls(withoutLeadingThinkMarkup(normalizer.feed(chunk), thinkMarkup), namespacedTools);
       return renderer.render(events, chunk);
     },
     keepAlive: () => renderer.keepAlive?.() ?? null,
   };
+}
+
+/** A call to a flattened namespace function as the client defined it: the tool's own name and its namespace. */
+function withNamespacedCalls(events: CanonicalStreamEvent[], namespacedTools: NamespacedToolNames): CanonicalStreamEvent[] {
+  return events.map((event) => {
+    if (event.type !== 'tool_call_start' || !Object.hasOwn(namespacedTools, event.name)) return event;
+    const origin = namespacedTools[event.name]!;
+    return { ...event, name: origin.name, namespace: origin.namespace };
+  });
 }
 
 /**
@@ -780,7 +795,7 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
   // The finished message and tool calls, in output_index order.
   type AnswerItem =
     | { type: 'message'; id: string; role: 'assistant'; status: 'completed' | 'incomplete'; content: Array<{ type: 'output_text'; text: string; annotations: unknown[] }>; phase?: 'commentary' }
-    | { type: 'function_call'; outputIndex: number; id: string; call_id: string; name: string; arguments: string; status: 'completed' | 'incomplete' };
+    | { type: 'function_call'; outputIndex: number; id: string; call_id: string; name: string; namespace?: string; arguments: string; status: 'completed' | 'incomplete' };
   const answerItems = (ending: ReturnType<typeof openAIResponsesEnding>): Array<{ index: number; item: AnswerItem }> => {
     const phase = toolCalls.size > 0 ? { phase: 'commentary' as const } : {};
     const items: Array<{ index: number; item: AnswerItem }> = [];
@@ -794,7 +809,7 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
       const outputIndex = getToolOutputIndex(toolCall.index);
       items.push({
         index: outputIndex,
-        item: { type: 'function_call', outputIndex, id: openAIResponsesFunctionCallId(toolCall.id), call_id: toolCall.id, name: toolCall.name, arguments: toolCall.arguments, status: openAIResponsesItemStatus(ending, lastWritten === toolCall.index, toolCall.arguments) },
+        item: { type: 'function_call', outputIndex, id: openAIResponsesFunctionCallId(toolCall.id), call_id: toolCall.id, name: toolCall.name, ...namespaceOf(toolCall), arguments: toolCall.arguments, status: openAIResponsesItemStatus(ending, lastWritten === toolCall.index, toolCall.arguments) },
       });
     }
     return items.sort((a, b) => a.index - b.index);
@@ -896,11 +911,12 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
         if (event.type === 'tool_call_start') {
           closeReasoning(emitted);
           ensureResponseCreated(emitted, null);
-          const toolCall = {
+          const toolCall: CanonicalStreamToolCall = {
             index: event.index,
             id: event.id || `call_${event.index + 1}`,
             name: event.name || 'tool',
             arguments: '',
+            ...namespaceOf(event),
           };
           toolCalls.set(event.index, toolCall);
           lastWritten = event.index;
@@ -912,6 +928,7 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
               id: itemId,
               call_id: toolCall.id,
               name: toolCall.name,
+              ...namespaceOf(toolCall),
               arguments: '',
               status: 'in_progress',
             },
@@ -1069,6 +1086,10 @@ function openAIResponsesStreamFinishReason(
     return null;
   }
   return toolCalls.size > 0 ? 'tool_calls' : 'stop';
+}
+
+function namespaceOf(call: { namespace?: string }): { namespace?: string } {
+  return call.namespace ? { namespace: call.namespace } : {};
 }
 
 function responseToolCallId(value: unknown, index: number): string {

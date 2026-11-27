@@ -7,6 +7,7 @@ import {
   renderCanonicalResponseToOpenAIChatBody,
   renderCanonicalResponseToOpenAIResponsesBody,
   type CanonicalLlmResponse,
+  type NamespacedToolNames,
 } from './canonical.js';
 import { stripLeadingThinkMarkup } from './think-markup.js';
 import { encodeJson, encodeText, parseJsonObject, reasoningUsageFields, type ReportedUsage } from './utils.js';
@@ -18,6 +19,8 @@ export interface ServiceApiResponseTransformOptions {
   fallbackModel?: string | null;
   /** A Responses client that keeps reasoning state gets a chat model's reasoning (see `includeReasoning` on transformRequest). */
   includeReasoning?: boolean;
+  /** The request's flattened namespace functions (see `namespacedTools` on transformRequest). */
+  namespacedTools?: NamespacedToolNames;
 }
 
 type ResponseNormalizer = (
@@ -61,7 +64,10 @@ export function transformResponse(
     requestedModel: options.fallbackModel ?? null,
   }), options.fallbackModel ?? null);
   const { reasoning: _reasoning, reasoningModel: _reasoningModel, ...withoutReasoning } = normalized;
-  const canonical: CanonicalLlmResponse = options.includeReasoning === true ? normalized : withoutReasoning;
+  const canonical: CanonicalLlmResponse = withNamespacedCalls(
+    options.includeReasoning === true ? normalized : withoutReasoning,
+    options.to === 'openai-responses' ? options.namespacedTools : undefined,
+  );
   const body = render(canonical);
 
   if (options.streamRequested) {
@@ -99,6 +105,18 @@ function withoutLeadingThinkMarkup(response: CanonicalLlmResponse, requestedMode
     ...(reasoning.trim().length > 0
       ? { reasoning, reasoningModel: response.reasoningModel ?? (requestedModel || response.model) }
       : {}),
+  };
+}
+
+/** A call to a flattened namespace function as the client defined it: the tool's own name and its namespace. */
+function withNamespacedCalls(response: CanonicalLlmResponse, namespacedTools: NamespacedToolNames | undefined): CanonicalLlmResponse {
+  if (!namespacedTools || Object.keys(namespacedTools).length === 0) return response;
+  return {
+    ...response,
+    output: response.output.map((item) => {
+      const origin = item.type === 'function_call' && Object.hasOwn(namespacedTools, item.name) ? namespacedTools[item.name] : undefined;
+      return origin ? { ...item, name: origin.name, namespace: origin.namespace } : item;
+    }),
   };
 }
 

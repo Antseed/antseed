@@ -6,7 +6,9 @@ import {
   renderCanonicalRequestToAnthropicMessagesBody,
   renderCanonicalRequestToOpenAIChatBody,
   renderCanonicalRequestToOpenAIResponsesBody,
+  namespacedToolNames,
   type CanonicalLlmRequest,
+  type NamespacedToolNames,
 } from './canonical.js';
 import {
   encodeJson,
@@ -27,6 +29,12 @@ export interface ServiceApiRequestTransformResult {
    * then return a chat model's reasoning to it as a `reasoning` item.
    */
   includeReasoning: boolean;
+  /**
+   * The functions flattened out of the request's `namespace` tools, by the name the seller sees. Pass it to
+   * `createStreamingAdapter` and `transformResponse`, which then return a call to one of them to a Responses
+   * client with the tool's own name and its `namespace`, as the client defined it.
+   */
+  namespacedTools: NamespacedToolNames;
 }
 
 export interface ServiceApiRequestTransformOptions {
@@ -99,6 +107,7 @@ export function transformRequest(
       streamRequested,
       requestedModel: normalized.model,
       includeReasoning: requestsReasoningState(options.from, body),
+      namespacedTools: {},
     };
   }
 
@@ -124,6 +133,7 @@ export function transformRequest(
     streamRequested,
     requestedModel: normalized.model,
     includeReasoning: requestsReasoningState(options.from, body),
+    namespacedTools: namespacedToolNames(normalized),
   };
 }
 

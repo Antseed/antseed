@@ -4732,6 +4732,66 @@ test('a stream passed through untranslated gets no keep-alive, however long the 
   assert.equal(res.body, sellerBytes.join(''))
 })
 
+for (const stream of [true, false]) {
+  test(`a Codex namespace tool reaches a chat seller flat and its call returns with its namespace (${stream ? 'streamed' : 'buffered'})`, async () => {
+    const peer = makePeer('a', ['openai'])
+    peer.providerServiceApiProtocols = { openai: { services: { 'model-a': ['openai-chat-completions'] } } }
+    const proxy = makeBuyerProxyWithPeers([peer], [peer])
+    let sentBody: Record<string, unknown> | null = null
+    const call = { id: 'call_1', type: 'function', function: { name: 'spawn_agent', arguments: '{"message":"hi"}' } }
+    ;(proxy as any)._node.sendRequest = async (_peer: PeerInfo, request: { requestId: string; body: Uint8Array }) => {
+      sentBody = JSON.parse(new TextDecoder().decode(request.body)) as Record<string, unknown>
+      return {
+        requestId: request.requestId,
+        statusCode: 200,
+        headers: { 'content-type': 'application/json' },
+        body: Buffer.from(JSON.stringify({
+          id: 'chatcmpl-1', model: 'model-a', usage: { prompt_tokens: 1, completion_tokens: 1 },
+          choices: [{ index: 0, finish_reason: 'tool_calls', message: { role: 'assistant', content: null, tool_calls: [call] } }],
+        })),
+      }
+    }
+    ;(proxy as any)._node.sendRequestStream = async (
+      _peer: PeerInfo,
+      request: { requestId: string; body: Uint8Array },
+      callbacks: { onResponseStart: (...args: unknown[]) => void; onResponseChunk: (chunk: unknown) => void },
+    ) => {
+      sentBody = JSON.parse(new TextDecoder().decode(request.body)) as Record<string, unknown>
+      const frame = (delta: Record<string, unknown>, finish: string | null = null) => Buffer.from(`data: ${JSON.stringify({
+        id: 'chatcmpl-1', object: 'chat.completion.chunk', model: 'model-a', choices: [{ index: 0, delta, finish_reason: finish }],
+      })}\n\n`)
+      const headers = { 'content-type': 'text/event-stream' }
+      callbacks.onResponseStart({ requestId: request.requestId, statusCode: 200, headers, body: new Uint8Array() }, { streaming: true })
+      for (const data of [frame({ role: 'assistant', tool_calls: [{ index: 0, ...call }] }), frame({}, 'tool_calls')]) {
+        callbacks.onResponseChunk({ requestId: request.requestId, data, done: false })
+      }
+      callbacks.onResponseChunk({ requestId: request.requestId, data: Buffer.from('data: [DONE]\n\n'), done: true })
+      return { requestId: request.requestId, statusCode: 200, headers, body: new Uint8Array() }
+    }
+    const fn = (name: string) => ({ type: 'function', name, parameters: { type: 'object' } })
+    const res = await invokeProxy(proxy, makeProxyRequest({
+      path: '/v1/responses',
+      headers: { 'x-antseed-pin-peer': peer.peerId },
+      body: {
+        model: 'model-a', stream, input: 'Start a helper.', parallel_tool_calls: true,
+        tools: [fn('exec_command'), { type: 'namespace', name: 'multi_agent_v1', description: 'Agents.', tools: [fn('spawn_agent')] }, { type: 'web_search' }],
+      },
+    }))
+    assert.equal(res.statusCode, 200)
+    const sent = sentBody as Record<string, unknown> | null
+    assert.deepEqual((sent?.tools as Array<{ function: { name: string } }>).map((tool) => tool.function.name), ['exec_command', 'spawn_agent'])
+    assert.equal(sent?.parallel_tool_calls, true)
+
+    const output = stream
+      ? (JSON.parse(res.body.split('\n').find((line) => line.startsWith('data: {"type":"response.completed"'))!.slice('data: '.length)) as { response: { output: unknown[] } }).response.output
+      : (JSON.parse(res.body) as { output: unknown[] }).output
+    assert.deepEqual(output.map((item) => {
+      const { type, name, namespace, call_id } = item as Record<string, unknown>
+      return { type, name, namespace, call_id }
+    }), [{ type: 'function_call', name: 'spawn_agent', namespace: 'multi_agent_v1', call_id: 'call_1' }])
+  })
+}
+
 test('a Responses request to a Responses seller loses only the reasoning items the adapter made', async () => {
   const peer = makePeer('a', ['openai-responses'])
   peer.providerServiceApiProtocols = { 'openai-responses': { services: { 'example-model': ['openai-responses'] } } }

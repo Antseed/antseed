@@ -19,6 +19,27 @@ export interface CanonicalFunctionTool {
   name: string;
   description?: string;
   parameters: Record<string, unknown>;
+  /**
+   * The Responses `namespace` tool this function came from, and its name there. `name` is the flat name a
+   * target without namespaces sees (see normalizeResponsesTools); a call to it goes back as `origin`.
+   */
+  origin?: NamespacedToolName;
+}
+
+/** A function inside a Responses `namespace` tool: Codex groups some tools so and expects calls back with both. */
+export interface NamespacedToolName {
+  namespace: string;
+  name: string;
+}
+
+/** The functions a request flattened out of its namespace tools, by the flat name the seller sees. */
+export type NamespacedToolNames = Record<string, NamespacedToolName>;
+
+/** The flat names a request's tools were given, for mapping a seller's calls back (see `origin`). */
+export function namespacedToolNames(request: CanonicalLlmRequest): NamespacedToolNames {
+  const names: NamespacedToolNames = {};
+  for (const tool of request.tools ?? []) if (tool.origin) names[tool.name] = { ...tool.origin };
+  return names;
 }
 
 export type CanonicalToolChoice =
@@ -124,6 +145,8 @@ export interface CanonicalLlmRequest {
   stop?: string | string[];
   tools?: CanonicalFunctionTool[];
   toolChoice?: CanonicalToolChoice;
+  /** Whether the model may call several tools in one answer (`parallel_tool_calls`); sent only with tools. */
+  parallelToolCalls?: boolean;
   metadata?: Record<string, unknown>;
   user?: string;
   promptCacheKey?: string;
@@ -134,15 +157,17 @@ function assignToolsAndToolChoice(
   body: Record<string, unknown>,
   tools: unknown[] | undefined,
   toolChoice: unknown,
+  parallelToolCalls?: boolean,
 ): void {
   if (!tools || tools.length === 0) return;
   body.tools = tools;
   if (toolChoice !== undefined) body.tool_choice = toolChoice;
+  if (parallelToolCalls !== undefined) body.parallel_tool_calls = parallelToolCalls;
 }
 
 export type CanonicalOutputItem =
   | { type: 'text'; text: string; phase?: CanonicalResponseMessagePhase }
-  | { type: 'function_call'; id: string; name: string; arguments: Record<string, unknown> | string };
+  | { type: 'function_call'; id: string; name: string; arguments: Record<string, unknown> | string; namespace?: string };
 
 export interface CanonicalLlmResponse {
   id: string;
@@ -245,7 +270,7 @@ export function renderCanonicalRequestToOpenAIChatBody(
   if (request.stop !== undefined) body.stop = request.stop;
   const tools = renderCanonicalToolsToOpenAIChat(request.tools);
   const toolChoice = renderCanonicalToolChoiceToOpenAIChat(request.toolChoice);
-  assignToolsAndToolChoice(body, tools, toolChoice);
+  assignToolsAndToolChoice(body, tools, toolChoice, request.parallelToolCalls);
   if (request.metadata) body.metadata = request.metadata;
   if (request.user) body.user = request.user;
   // Routes the request to the cache that holds this conversation's prefix.
@@ -302,7 +327,7 @@ export function renderCanonicalRequestToOpenAIResponsesBody(
   if (request.stop !== undefined) body.stop = request.stop;
   const tools = renderCanonicalToolsToOpenAIResponses(request.tools);
   const toolChoice = renderCanonicalToolChoiceToOpenAIResponses(request.toolChoice);
-  assignToolsAndToolChoice(body, tools, toolChoice);
+  assignToolsAndToolChoice(body, tools, toolChoice, request.parallelToolCalls);
   if (options.includeMetadata !== false && request.metadata) body.metadata = request.metadata;
   if (options.includeUser !== false && request.user) body.user = request.user;
   if (request.promptCacheKey) body.prompt_cache_key = request.promptCacheKey;
@@ -548,6 +573,7 @@ export function normalizeOpenAIChatRequestBody(body: Record<string, unknown>): C
   if (Array.isArray(body.tools)) request.tools = normalizeChatTools(body.tools);
   const toolChoice = normalizeChatToolChoice(body.tool_choice);
   if (toolChoice !== undefined) request.toolChoice = toolChoice;
+  if (typeof body.parallel_tool_calls === 'boolean') request.parallelToolCalls = body.parallel_tool_calls;
   if (body.metadata && typeof body.metadata === 'object' && !Array.isArray(body.metadata)) {
     request.metadata = body.metadata as Record<string, unknown>;
   }
@@ -567,6 +593,8 @@ export function normalizeOpenAIResponsesRequestBody(body: Record<string, unknown
   if (typeof body.instructions === 'string' && body.instructions.length > 0) {
     request.instructions = body.instructions;
   }
+  // Read first: a namespace call in the history goes to the seller under the flat name its tool has here.
+  if (Array.isArray(body.tools)) request.tools = normalizeResponsesTools(body.tools);
 
   const input = body.input;
   if (typeof input === 'string') {
@@ -603,11 +631,14 @@ export function normalizeOpenAIResponsesRequestBody(body: Record<string, unknown
       }
 
       if (type === 'function_call') {
+        const name = typeof msg.name === 'string' ? msg.name : '';
         request.input.push({
           type: 'function_call',
           id: typeof msg.call_id === 'string' && msg.call_id.length > 0
             ? msg.call_id : (typeof msg.id === 'string' ? msg.id : ''),
-          name: typeof msg.name === 'string' ? msg.name : '',
+          name: typeof msg.namespace === 'string' && msg.namespace.length > 0
+            ? flatToolName(request.tools, msg.namespace, name)
+            : name,
           arguments: typeof msg.arguments === 'string' ? msg.arguments : JSON.stringify(msg.arguments ?? {}),
           ...takeReasoning(),
         });
@@ -640,9 +671,9 @@ export function normalizeOpenAIResponsesRequestBody(body: Record<string, unknown
   if (typeof body.temperature === 'number') request.temperature = body.temperature;
   if (typeof body.top_p === 'number') request.topP = body.top_p;
   if (typeof body.stop === 'string' || Array.isArray(body.stop)) request.stop = body.stop as string | string[];
-  if (Array.isArray(body.tools)) request.tools = normalizeResponsesTools(body.tools);
   const toolChoice = normalizeResponsesToolChoice(body.tool_choice);
   if (toolChoice !== undefined) request.toolChoice = toolChoice;
+  if (typeof body.parallel_tool_calls === 'boolean') request.parallelToolCalls = body.parallel_tool_calls;
   if (body.metadata && typeof body.metadata === 'object' && !Array.isArray(body.metadata)) {
     request.metadata = body.metadata as Record<string, unknown>;
   }
@@ -850,6 +881,7 @@ export function renderCanonicalResponseToOpenAIResponsesBody(response: Canonical
       id: openAIResponsesFunctionCallId(item.id),
       call_id: item.id,
       name: item.name,
+      ...(item.namespace ? { namespace: item.namespace } : {}),
       arguments: stringifyToolArguments(item.arguments),
       status: openAIResponsesItemStatus(ending, item === last, item.arguments),
     });
@@ -1192,17 +1224,53 @@ function normalizeChatTools(tools: unknown[]): CanonicalFunctionTool[] | undefin
   return out.length > 0 ? out : undefined;
 }
 
+/**
+ * A Responses request's function tools, as functions any target can offer.
+ *
+ * - A `namespace` tool's functions become plain functions where the namespace was. Each keeps its own name,
+ *   which the client's instructions use, unless a plain function or an earlier namespace has it; then it is
+ *   `<namespace>__<name>`. `origin` keeps the namespace, so a call goes back as the client defined the tool.
+ * - Built-in tools the provider runs (`web_search`, `file_search`, `code_interpreter`, `image_generation`,
+ *   `computer_use_preview`, `mcp`, `local_shell`, ...) and freeform `custom` tools are dropped: a Chat
+ *   Completions or Messages seller can run none of them, and an unknown tool type would fail the request.
+ */
 function normalizeResponsesTools(tools: unknown[]): CanonicalFunctionTool[] | undefined {
-  const out: CanonicalFunctionTool[] = [];
-  for (const raw of tools) {
-    if (!raw || typeof raw !== 'object') continue;
-    const tool = raw as Record<string, unknown>;
-    if (tool.type !== 'function' || typeof tool.name !== 'string' || tool.name.length === 0) continue;
+  const functionTool = (tool: Record<string, unknown>): CanonicalFunctionTool | null => {
+    if (tool.type !== 'function' || typeof tool.name !== 'string' || tool.name.length === 0) return null;
     const entry: CanonicalFunctionTool = { name: tool.name, parameters: toolParameters(tool.parameters) };
     if (typeof tool.description === 'string' && tool.description.length > 0) entry.description = tool.description;
-    out.push(entry);
+    return entry;
+  };
+  const objects = tools.filter((raw): raw is Record<string, unknown> => Boolean(raw) && typeof raw === 'object' && !Array.isArray(raw));
+  // Plain functions keep their names whatever comes first; namespaced ones take what is left.
+  const taken = new Set(objects.map(functionTool).filter((tool) => tool !== null).map((tool) => tool.name));
+
+  const out: CanonicalFunctionTool[] = [];
+  for (const tool of objects) {
+    const plain = functionTool(tool);
+    if (plain) {
+      out.push(plain);
+      continue;
+    }
+    if (tool.type !== 'namespace' || typeof tool.name !== 'string' || tool.name.length === 0 || !Array.isArray(tool.tools)) continue;
+    for (const raw of tool.tools) {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+      const inner = functionTool(raw as Record<string, unknown>);
+      if (!inner) continue;
+      const origin = { namespace: tool.name, name: inner.name };
+      let name = taken.has(inner.name) ? `${tool.name}__${inner.name}` : inner.name;
+      for (let n = 2; taken.has(name); n++) name = `${tool.name}__${inner.name}_${n}`;
+      taken.add(name);
+      out.push({ ...inner, name, origin });
+    }
   }
   return out.length > 0 ? out : undefined;
+}
+
+/** The flat name a request gave the function `name` of `namespace`; one it no longer offers keeps a prefixed name. */
+function flatToolName(tools: CanonicalFunctionTool[] | undefined, namespace: string, name: string): string {
+  const tool = tools?.find((candidate) => candidate.origin?.namespace === namespace && candidate.origin.name === name);
+  return tool?.name ?? `${namespace}__${name}`;
 }
 
 function renderCanonicalToolsToAnthropic(
