@@ -1029,7 +1029,9 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     await h.settle();
 
     expect(response.statusCode).toBe(200);
-    expect(h.topUp).toHaveBeenCalledTimes(2);
+    // The top-up runs after accept, in the background: its retry lands after a short wait.
+    await vi.waitFor(() => expect(h.topUp).toHaveBeenCalledTimes(2), { timeout: 3_000 });
+    await vi.waitFor(() => expect(h.seller.getReserveMax(onlyOneOff(h).channelId)).toBe(VIDEO_PRICE));
     expect(h.close).not.toHaveBeenCalled();
   });
 

@@ -700,7 +700,8 @@ export class SellerRequestHandler {
           });
           return;
         }
-        if (spm.getReserveMax(oneOff.sessionId) < estimatedRequestCost) {
+        // The opening reserve plus the top-up held for this channel, which is sent once the create is accepted.
+        if (!spm.oneOffChannelCovers(oneOff.sessionId, estimatedRequestCost)) {
           this._sendJsonError(mux, request.requestId, 409, 'one_off_channel_mismatch', 'The payment channel opened for this video does not cover its price');
           return;
         }
@@ -1503,9 +1504,10 @@ export class SellerRequestHandler {
    * After a video create, save the job's owner and its price (charged later,
    * when the buyer downloads the video) against the job's one-off channel.
    * Returns the reply to send: the provider's reply, or a 503 if the job could
-   * not be saved, so no job is handed out that could never be charged. When
-   * no job was accepted, the one-off channel is closed at once so the buyer
-   * gets back everything but the already-settled serious fee.
+   * not be saved, so no job is handed out that could never be charged. Only
+   * an accepted, recorded job tops up its one-off channel (settling the
+   * serious fee); when no job was accepted, the channel is closed at once at
+   * 0, so the buyer gets back the whole reserve.
    */
   private _acceptVideoCreate(
     route: NativeVideoRoute,

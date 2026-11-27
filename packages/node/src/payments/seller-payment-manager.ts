@@ -53,6 +53,14 @@ export interface SellerPaymentConfig {
   serveWhileClosePending?: boolean;
   /** Called when a buyer's opening reserve() fails on-chain, so a host can say so outside debug logs. */
   onReserveFailed?: (failure: ReserveFailure) => void;
+  /**
+   * Reads a buyer's available (unlocked) AntseedDeposits balance. A video's
+   * one-off channel tops up only after its create is accepted, so this read
+   * checks before the create that the rest of the price can still be locked.
+   * Without it the check is skipped: a topUp that then fails closes the
+   * channel at the serious fee from the opening reserve.
+   */
+  readBuyerAvailableDeposit?: (buyerEvmAddr: string) => Promise<bigint>;
 }
 
 /** A buyer's opening reserve() that failed: the buyer was not served on this channel. */
@@ -158,6 +166,19 @@ interface PendingOneOffPlan {
   requiredCumulativeAmount: bigint;
   requestCost: bigint;
   expiresAt: number;
+}
+
+/**
+ * A one-off channel's top-up the buyer signed at open (its threshold
+ * SpendingAuth and the ReserveAuth for the full price), held unsent until the
+ * provider accepts the create. Until then the threshold auth is not the
+ * seller's to settle: a create never accepted closes the channel at 0.
+ */
+interface HeldOneOffTopUp {
+  auth: LatestAuth;
+  newMaxAmount: bigint;
+  deadline: number;
+  reserveAuthSig: string;
 }
 
 /** handleSpendingAuth's internal result: 'awaiting-top-up' asks it to wait for a mining top-up and retry. */
@@ -315,6 +336,16 @@ export class SellerPaymentManager {
 
   /** One-off channel -> buyer, from the reserve until its create is accepted or the channel ends. */
   private readonly _unacceptedOneOffs = new Map<string, string>();
+
+  /**
+   * One-off channel -> its held top-up, from the reserve until the create is
+   * accepted or the channel ends. In memory only: nothing that closes or
+   * settles a channel reads it, and a restart loses it, so a channel whose
+   * create was not accepted before a restart closes at 0.
+   */
+  private readonly _heldOneOffTopUps = new Map<string, HeldOneOffTopUp>();
+  /** One-off channel -> its topUp() after accept, resolving true once the full price is locked. */
+  private readonly _oneOffTopUps = new Map<string, Promise<boolean>>();
 
   private readonly _minSettleDelta: bigint;
 
@@ -503,6 +534,7 @@ export class SellerPaymentManager {
     this._blockedChannels.delete(channelId);
     this._lastSettledCumulative.delete(channelId);
     this._unacceptedOneOffs.delete(channelId);
+    this._heldOneOffTopUps.delete(channelId);
     this._releaseAcceptedWaiters(channelId);
     if (!this._oneOffChannelIds.delete(channelId)) this._deactivateBuyerForChannel(peerId, channelId);
     debugLog(`[SellerPayment] Evicted stale channel ${channelId.slice(0, 18)}... — ${reason}`);
@@ -1221,9 +1253,29 @@ export class SellerPaymentManager {
     return jobs;
   }
 
-  /** This channel's create was accepted: the channel is in use, so it stops counting against the buyer. */
+  /**
+   * This channel's create was accepted: the channel is in use, so it stops
+   * counting against the buyer. A held top-up becomes the seller's: its
+   * threshold auth (the serious fee) is stored as the channel's latest auth,
+   * settleable from the opening reserve, and topUp() locks the rest of the price.
+   */
   markOneOffCreateAccepted(channelId: string): void {
     this._unacceptedOneOffs.delete(channelId);
+    const held = this._heldOneOffTopUps.get(channelId);
+    const channel = this._channelStore.getChannel(channelId);
+    if (!held || !channel || !this._oneOffChannelIds.has(channelId)) return;
+    this._heldOneOffTopUps.delete(channelId);
+    this._acceptedCumulative.set(channelId, held.auth.cumulativeAmount);
+    this._latestAuth.set(channelId, held.auth);
+    this._channelStore.upsertChannel({
+      ...channel,
+      authMax: held.auth.cumulativeAmount.toString(),
+      latestBuyerSig: held.auth.spendingAuthSig,
+      latestSpendingAuthSig: held.auth.spendingAuthSig,
+      latestMetadata: held.auth.metadata,
+      updatedAt: Date.now(),
+    });
+    this._submitOneOffTopUp(channelId, held);
   }
 
   /** The active one-off channel opened for this buyer's request, or null. */
@@ -1261,6 +1313,11 @@ export class SellerPaymentManager {
    * or was abandoned.
    */
   async closeOneOffChannel(channelId: string, reason: string): Promise<boolean> {
+    // A topUp() still mining is waited for, so the close never races it.
+    const toppingUp = this._oneOffTopUps.get(channelId);
+    if (toppingUp) await toppingUp.catch(() => false);
+    // A channel closed before its create was accepted never settles the held threshold auth.
+    this._heldOneOffTopUps.delete(channelId);
     if (!this._oneOffChannelIds.has(channelId)) return false;
     const channel = this._channelStore.getChannel(channelId);
     if (!channel) return false;
@@ -1315,9 +1372,11 @@ export class SellerPaymentManager {
   }
 
   /**
-   * Open a one-off channel: reserve() the opening amount and, for a price
-   * above it, topUp() to the full price with the buyer's threshold auth in the
-   * same flow. Never touches the buyer's session channel.
+   * Open a one-off channel: reserve() the opening amount. For a price above
+   * it, the buyer's threshold auth and top-up are held, and topUp() to the full
+   * price is sent only once the provider accepts the create
+   * (markOneOffCreateAccepted): a create never accepted costs the buyer
+   * nothing. Never touches the buyer's session channel.
    */
   private async _openOneOffChannel(
     buyerPeerId: string,
@@ -1398,57 +1457,21 @@ export class SellerPaymentManager {
     ));
     const now = Date.now();
     const { seller: sellerEvmAddr } = await this._resolvedAddresses!;
+    // Held before the row is written, so the one-off check never takes this
+    // channel for one whose held top-up a restart lost.
     if (batch) {
-      // Record the reserve before the top-up: if anything below fails, the
-      // channel still holds the buyer's funds and must stay known so the
-      // one-off check closes it, rather than leaving an orphan on-chain.
-      this._channelStore.upsertChannel({
-        sessionId: channelId,
-        peerId: buyerPeerId,
-        role: CHANNEL_ROLE.SELLER,
-        channelKind: CHANNEL_KIND.ONE_OFF,
-        oneOffRequestId: requestId,
-        sellerEvmAddr,
-        buyerEvmAddr,
-        nonce: 0,
-        authMax: '0',
-        previousConsumption: openingReserve.toString(), // repurposed: stores reserveMax
-        deadline: reserveDeadline,
-        previousSessionId: '',
-        tokensDelivered: '0',
-        requestCount: 0,
-        reservedAt: now,
-        settledAt: null,
-        settledAmount: null,
-        status: CHANNEL_STATUS.ACTIVE,
-        latestBuyerSig: payload.spendingAuthSig,
-        latestSpendingAuthSig: null,
-        latestMetadata: payload.metadata,
-        createdAt: now,
-        updatedAt: now,
+      this._heldOneOffTopUps.set(channelId, {
+        auth: latestAuth,
+        newMaxAmount: finalReserve,
+        deadline: finalDeadline,
+        reserveAuthSig: batch.reserveAuthSig,
       });
-      try {
-        await this._retryUntilChannelVisible(channelId, 'top-up', () => this._channelsClient.topUp(
-          this._signer,
-          channelId,
-          latestAuth.cumulativeAmount,
-          batch.metadata,
-          batch.spendingAuthSig,
-          finalReserve,
-          BigInt(finalDeadline),
-          batch.reserveAuthSig,
-        ));
-      } catch (err) {
-        this._oneOffChannelIds.add(channelId);
-        this._reserveMax.set(channelId, openingReserve);
-        if (!(await this.closeOneOffChannel(channelId, 'top-up failed'))) {
-          debugWarn(`[SellerPayment] Failed to release one-off reserve after top-up failure; the one-off check retries the close`);
-        }
-        throw err;
-      }
     }
-
-    const session: StoredChannel = {
+    // Recorded at the opening reserve, with no SpendingAuth: until its create
+    // is accepted, the channel can only be closed at 0. A held top-up stores
+    // only its ReserveAuth, which moves no money on its own; it marks the
+    // channel so a restart before accept closes it at 0.
+    this._channelStore.upsertChannel({
       sessionId: channelId,
       peerId: buyerPeerId,
       role: CHANNEL_ROLE.SELLER,
@@ -1457,9 +1480,9 @@ export class SellerPaymentManager {
       sellerEvmAddr,
       buyerEvmAddr,
       nonce: 0,
-      authMax: latestAuth.cumulativeAmount.toString(),
-      previousConsumption: finalReserve.toString(), // repurposed: stores reserveMax
-      deadline: finalDeadline,
+      authMax: '0',
+      previousConsumption: openingReserve.toString(), // repurposed: stores reserveMax
+      deadline: reserveDeadline,
       previousSessionId: '',
       tokensDelivered: '0',
       requestCount: 0,
@@ -1467,23 +1490,132 @@ export class SellerPaymentManager {
       settledAt: null,
       settledAmount: null,
       status: CHANNEL_STATUS.ACTIVE,
-      latestBuyerSig: latestAuth.spendingAuthSig || payload.spendingAuthSig,
-      latestSpendingAuthSig: latestAuth.spendingAuthSig || null,
-      latestMetadata: latestAuth.metadata,
+      latestBuyerSig: payload.spendingAuthSig,
+      latestSpendingAuthSig: null,
+      latestMetadata: payload.metadata,
+      ...(batch ? {
+        reserveMaxAmount: finalReserve.toString(),
+        latestReserveAuthSig: batch.reserveAuthSig,
+        latestReserveDeadline: finalDeadline,
+      } : {}),
       createdAt: now,
       updatedAt: now,
-    };
-    this._channelStore.upsertChannel(session);
+    });
     this._oneOffChannelIds.add(channelId);
-    this._acceptedCumulative.set(channelId, latestAuth.cumulativeAmount);
-    this._reserveMax.set(channelId, finalReserve);
+    this._acceptedCumulative.set(channelId, 0n);
+    this._reserveMax.set(channelId, openingReserve);
     this._spent.set(channelId, 0n);
-    this._latestAuth.set(channelId, latestAuth);
-    if (latestAuth.cumulativeAmount > 0n) this._lastSettledCumulative.set(channelId, latestAuth.cumulativeAmount);
+    this._latestAuth.set(channelId, { spendingAuthSig: '', cumulativeAmount: 0n, metadataHash: payload.metadataHash, metadata: payload.metadata });
+
+    // The rest of the price is locked only after the create is accepted:
+    // check now that the buyer's deposits still cover it, or refuse before
+    // the create, releasing the opening reserve.
+    if (batch && !(await this._buyerCoversTopUp(buyerEvmAddr, finalReserve - openingReserve, channelId))) {
+      if (!(await this.closeOneOffChannel(channelId, 'deposits do not cover the price'))) {
+        debugWarn(`[SellerPayment] Failed to release one-off reserve after the deposit check; the one-off check retries the close`);
+      }
+      throw new Error(`buyer deposits do not cover the rest of the video price on ${channelId.slice(0, 18)}...`);
+    }
 
     paymentMux.sendAuthAck({ channelId });
-    debugLog(`[SellerPayment] One-off channel ${channelId.slice(0, 18)}... opened for request ${requestId} (reserve=${finalReserve}, settled=${latestAuth.cumulativeAmount})`);
+    debugLog(`[SellerPayment] One-off channel ${channelId.slice(0, 18)}... opened for request ${requestId} (reserve=${openingReserve}${batch ? `, top-up to ${finalReserve} held until the create is accepted` : ''})`);
     return 'reserved';
+  }
+
+  /** Whether the buyer's available deposits cover `amount` more, by a read-only call. A failed read does not. */
+  private async _buyerCoversTopUp(buyerEvmAddr: string, amount: bigint, channelId: string): Promise<boolean> {
+    const read = this._config.readBuyerAvailableDeposit;
+    if (!read) return true;
+    try {
+      const available = await read(buyerEvmAddr);
+      if (available >= amount) return true;
+      debugWarn(`[SellerPayment] One-off channel ${channelId.slice(0, 18)}...: buyer deposits ${available} do not cover the rest of the price ${amount}`);
+    } catch (err) {
+      debugWarn(`[SellerPayment] Could not read buyer deposits for one-off channel ${channelId.slice(0, 18)}...: ${this._formatError(err)}`);
+    }
+    return false;
+  }
+
+  /**
+   * Whether this one-off channel can pay `amount`: its reserve, or the
+   * top-up held for it, which is sent once the create is accepted.
+   */
+  oneOffChannelCovers(channelId: string, amount: bigint): boolean {
+    const held = this._heldOneOffTopUps.get(channelId)?.newMaxAmount ?? 0n;
+    const reserve = this._reserveMax.get(channelId) ?? 0n;
+    return (held > reserve ? held : reserve) >= amount;
+  }
+
+  /**
+   * Submit a one-off channel's top-up once its create was accepted, in the
+   * background. If it does not land, the channel is closed with the threshold
+   * auth on the opening reserve: the serious fee, which the seller holds either
+   * way, and nothing more for the job.
+   */
+  private _submitOneOffTopUp(channelId: string, held: HeldOneOffTopUp): void {
+    const run = (async (): Promise<boolean> => {
+      try {
+        await this._retryUntilChannelVisible(channelId, 'top-up', () => this._channelsClient.topUp(
+          this._signer,
+          channelId,
+          held.auth.cumulativeAmount,
+          held.auth.metadata,
+          held.auth.spendingAuthSig,
+          held.newMaxAmount,
+          BigInt(held.deadline),
+          held.reserveAuthSig,
+        ));
+      } catch (err) {
+        debugWarn(`[SellerPayment] One-off top-up after accept failed for ${channelId.slice(0, 18)}...: ${this._formatError(err)}`);
+        // A submission that timed out may still have landed.
+        let landed = false;
+        try {
+          const state = classifyOnChainChannel(await this._channelsClient.getSession(channelId));
+          landed = state.exists && state.channel.deposit >= held.newMaxAmount;
+        } catch { /* not landed as far as can be told */ }
+        if (!landed) return false;
+      }
+      this._recordOneOffTopUp(channelId, held.newMaxAmount, held.deadline, held.auth.cumulativeAmount);
+      return true;
+    })();
+    this._oneOffTopUps.set(channelId, run);
+    void run.then(async (landed) => {
+      if (this._oneOffTopUps.get(channelId) === run) this._oneOffTopUps.delete(channelId);
+      if (landed || !this._oneOffChannelIds.has(channelId)) return;
+      this._clearPersistedTopUp(channelId, held.newMaxAmount);
+      if (!(await this.closeOneOffChannel(channelId, 'top-up failed after accept'))) {
+        debugWarn(`[SellerPayment] Failed to close one-off channel ${channelId.slice(0, 18)}... after its top-up failed; the one-off check retries the close`);
+      }
+    }).catch((err) => {
+      debugWarn(`[SellerPayment] One-off top-up follow-up failed for ${channelId.slice(0, 18)}...: ${this._formatError(err)}`);
+    });
+  }
+
+  /** The one-off channel's full price is locked on-chain: raise its ceiling and forget the stored top-up. */
+  private _recordOneOffTopUp(channelId: string, newMaxAmount: bigint, deadline: number, settled: bigint): void {
+    if (!this._oneOffChannelIds.has(channelId)) return;
+    this._updateReserveCeiling(channelId, newMaxAmount, deadline);
+    if (settled > 0n) this._lastSettledCumulative.set(channelId, settled);
+    this._clearPersistedTopUp(channelId, newMaxAmount);
+  }
+
+  /**
+   * After a restart, finish the top-up of a one-off channel whose create was
+   * accepted before the stop: one the chain already applied is recorded, one
+   * it did not is sent again with the stored signatures.
+   */
+  private _resumeOneOffTopUp(channel: StoredChannel, onChainDeposit: bigint): void {
+    const channelId = channel.sessionId;
+    const newMaxAmount = BigInt(channel.reserveMaxAmount ?? '0');
+    const deadline = channel.latestReserveDeadline ?? channel.deadline;
+    if (onChainDeposit >= newMaxAmount) {
+      this._recordOneOffTopUp(channelId, onChainDeposit, deadline, BigInt(channel.authMax || '0'));
+      return;
+    }
+    const auth = this._latestAuth.get(channelId);
+    if (!auth?.spendingAuthSig || !channel.latestReserveAuthSig) return;
+    debugLog(`[SellerPayment] Resuming one-off top-up after restart: channel=${channelId.slice(0, 18)}... newMax=${newMaxAmount}`);
+    this._submitOneOffTopUp(channelId, { auth, newMaxAmount, deadline, reserveAuthSig: channel.latestReserveAuthSig });
   }
 
   /**
@@ -1497,6 +1629,9 @@ export class SellerPaymentManager {
   ): Promise<'accepted' | 'rejected'> {
     const channelId = payload.channelId;
     const cumulativeAmount = BigInt(payload.cumulativeAmount);
+    // A delivery can come before the topUp() after accept lands; judge its auth against the ceiling it sets.
+    const toppingUp = this._oneOffTopUps.get(channelId);
+    if (toppingUp) await toppingUp.catch(() => false);
     const channel = this._channelStore.getChannel(channelId);
     if (!channel || channel.peerId !== buyerPeerId || channel.status !== CHANNEL_STATUS.ACTIVE) return 'rejected';
     const recovered = verifyTypedData(channelsDomain, SPENDING_AUTH_TYPES, {
@@ -1559,6 +1694,15 @@ export class SellerPaymentManager {
           continue;
         }
         this._oneOffChannelIds.add(channel.sessionId);
+        // A stored top-up that no live create or topUp() holds was left by a restart.
+        if (channel.latestReserveAuthSig && !this._heldOneOffTopUps.has(channel.sessionId) && !this._oneOffTopUps.has(channel.sessionId)) {
+          if (!channel.latestSpendingAuthSig) {
+            // Its create was not accepted before the stop: the channel earns nothing.
+            await this.closeOneOffChannel(channel.sessionId, 'restarted before the create was accepted');
+            continue;
+          }
+          this._resumeOneOffTopUp(channel, state.channel.deposit);
+        }
         const age = now - channel.reservedAt;
         const spent = this._spent.get(channel.sessionId) ?? 0n;
         const accepted = this._acceptedCumulative.get(channel.sessionId) ?? 0n;
@@ -1770,10 +1914,18 @@ export class SellerPaymentManager {
    */
   async waitForRunningTopUps(timeoutMs: number): Promise<boolean> {
     const deadline = Date.now() + timeoutMs;
-    const results = await Promise.all(
-      [...this._topUpsRunning.keys()].map((channelId) => this.waitForTopUp(channelId, Math.max(0, deadline - Date.now()))),
-    );
-    return results.every(Boolean);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), timeoutMs); });
+    try {
+      const results = await Promise.all([
+        ...[...this._topUpsRunning.keys()].map((channelId) => this.waitForTopUp(channelId, Math.max(0, deadline - Date.now()))),
+        // A one-off top-up after accept that does not land in time is sent again on the next start.
+        ...[...this._oneOffTopUps.values()].map((running) => Promise.race([running.then(() => true, () => true), timedOut])),
+      ]);
+      return results.every(Boolean);
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   private _formatError(err: unknown): string {
@@ -2399,6 +2551,7 @@ export class SellerPaymentManager {
     this._lastSettledCumulative.delete(channelId);
     this._hydratedChannelIds.delete(channelId);
     this._unacceptedOneOffs.delete(channelId);
+    this._heldOneOffTopUps.delete(channelId);
     this._releaseAcceptedWaiters(channelId);
   }
 
@@ -3237,6 +3390,13 @@ export class SellerPaymentManager {
    * on-chain to claim earnings before the grace period expires.
    */
   async handleCloseRequested(channelId: string): Promise<void> {
+    // A one-off create still with the provider decides what its channel earns:
+    // once accepted, the held threshold auth (topUp() then reverts and the
+    // channel closes with it, inside the grace period); refused, nothing.
+    if (this._heldOneOffTopUps.has(channelId) && (this._channelStore.getChannel(channelId)?.requestCount ?? 0) > 0) {
+      debugLog(`[SellerPayment] CloseRequested for one-off channel ${channelId.slice(0, 18)}... — its create is running; closing once it is decided`);
+      return;
+    }
     const accepted = this._acceptedCumulative.get(channelId) ?? 0n;
 
     if (accepted > 0n) {
