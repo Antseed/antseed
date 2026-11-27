@@ -13,10 +13,27 @@ import {
   parseServiceUnitBillingModelsJson,
   parseServiceAliasMap,
   parseServicePricingJson,
+  servicesAwaitingReasoning,
 } from '@antseed/provider-core';
 import type { ServiceApiProtocol, ServiceCapabilities } from '@antseed/node';
 import { VeniceImageEditProvider } from './venice-image-edit.js';
 import { announceVeniceSpeechVoices, withSpeechServiceCapabilityDefaults } from './speech.js';
+import { announceUpstreamReasoning } from './reasoning.js';
+
+/** A relay that reads upstream listings after its token is ready. */
+class OpenAiProvider extends BaseProvider {
+  constructor(
+    private readonly afterInit: (() => Promise<void>) | undefined,
+    config: ConstructorParameters<typeof BaseProvider>[0],
+  ) {
+    super(config);
+  }
+
+  override async init(): Promise<void> {
+    await super.init();
+    await this.afterInit?.();
+  }
+}
 
 const SPECIAL_OPENAI_COMPAT_PROVIDERS = ['openrouter', 'venice'] as const;
 type OpenAiCompatFlavor = 'generic' | (typeof SPECIAL_OPENAI_COMPAT_PROVIDERS)[number];
@@ -287,12 +304,17 @@ const plugin: AntseedProviderPlugin = {
     const imageEditModelMap = parseImageEditModelMap(config['ANTSEED_SERVICE_IMAGE_EDIT_MODEL_MAP_JSON']);
     validateVeniceEditModelMap(flavor, allowedServices, serviceApiProtocols, imageEditModelMap);
     const serviceUnitBillingModels = parseServiceUnitBillingModelsJson(config['ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON']);
-    const serviceCapabilities = withSpeechServiceCapabilityDefaults(serviceApiProtocols, withImageServiceCapabilityDefaults(
+    const configuredCapabilities = withSpeechServiceCapabilityDefaults(serviceApiProtocols, withImageServiceCapabilityDefaults(
       serviceApiProtocols,
       parseServiceCapabilitiesJson(config['ANTSEED_SERVICE_CAPABILITIES_JSON']),
       flavor,
       imageEditModelMap,
     ));
+    // OpenRouter's catalogue has no level list per host and Venice's listing has none, so neither is read.
+    const fillsReasoning = flavor === 'generic'
+      && servicesAwaitingReasoning(allowedServices, serviceApiProtocols, configuredCapabilities).length > 0;
+    // Filled in place at init, so the provider holds the object even when the seller configured none.
+    const serviceCapabilities = configuredCapabilities ?? (fillsReasoning ? {} : undefined);
     const pathRewrite = parseJsonObject(config['OPENAI_PATH_REWRITE_JSON'], 'OPENAI_PATH_REWRITE_JSON') as Record<string, string> | undefined;
     const fallbackUpstreams = parseFallbackUpstreamsJson(config['ANTSEED_FALLBACK_UPSTREAMS_JSON'])?.map((fallback) => ({
       baseUrl: fallback.baseUrl,
@@ -302,7 +324,22 @@ const plugin: AntseedProviderPlugin = {
       ...(fallback.pathRewrite ? { pathRewrite: fallback.pathRewrite } : {}),
     }));
 
-    const baseProvider = new BaseProvider({
+    const upstreamModelOf = (service: string) => serviceRewriteMap?.[service.trim().toLowerCase()] ?? service;
+    // Upstreams that list each model's reasoning levels (by response shape) fill the lists the seller left unset.
+    const announceReasoning = fillsReasoning && serviceCapabilities
+      ? () => announceUpstreamReasoning(
+          baseUrl,
+          pathRewrite,
+          // The headers a chat request carries, in the relay's order: extra headers after the key.
+          { authorization: `Bearer ${apiKey}`, ...extraHeaders },
+          allowedServices,
+          serviceApiProtocols,
+          serviceCapabilities,
+          upstreamModelOf,
+        )
+      : undefined;
+
+    const baseProvider = new OpenAiProvider(announceReasoning, {
       name: 'openai',
       services: allowedServices,
       pricing,
@@ -332,7 +369,7 @@ const plugin: AntseedProviderPlugin = {
           allowedServices,
           serviceApiProtocols,
           serviceCapabilities,
-          (service) => serviceRewriteMap?.[service.trim().toLowerCase()] ?? service,
+          upstreamModelOf,
         )
       : undefined;
     return new VeniceImageEditProvider(baseProvider, imageEditModelMap ?? {}, announceSpeechVoices);

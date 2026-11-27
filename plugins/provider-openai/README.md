@@ -103,6 +103,12 @@ antseed config seller add-service venice tts-kokoro \
 
 On Venice the provider reads each speech model's voices from `GET /api/v1/models?type=tts` at startup and announces them as `capabilities.speech`, unless the service config sets `capabilities.speech.voices`. The seller refuses a voice that is not listed. Body injection (`OPENAI_BODY_INJECT_JSON`) is not applied to speech requests.
 
+### Reasoning efforts
+
+At startup the provider reads the upstream's model list once, `GET {baseUrl}/v1/models` with the same key and extra headers (next to a rewritten chat path: `{"/v1/chat/completions":"/v3/chat/completions"}` reads `/v3/models`; an explicit `/v1/models` rewrite wins). For each Chat Completions or Responses service whose upstream model entry lists its reasoning levels, it announces them as `capabilities.reasoningEfforts`, unless the service config sets a list. It recognises the entry by its shape: `capabilities.reasoning_effort`, or `effort.supported_levels`.
+
+`reasoning: true` is set when the listed levels include one other than `none`. Nothing is filled for a service with `reasoning: false`, and a list with any label that breaks the label rule fills nothing. A filled list is exactly what the upstream publishes, so it may lack `none`. If the list can't be read within 10 seconds, answers with an error or is larger than 4 MiB, the capabilities stay as configured, the provider logs one line naming the host and path, and the seller starts normally. OpenRouter's catalogue and Venice's listing are not read: neither has a level list per model. Fallback upstreams are not read; the announcement describes the main upstream.
+
 ## How It Works
 
 Uses `BaseProvider` and `StaticTokenProvider` from `@antseed/provider-core` to relay requests to OpenAI-compatible APIs with `Authorization: Bearer` authentication. Venice image edits use a provider-local native endpoint adapter while preserving the same Antseed request, routing, metering, and payment flow.
