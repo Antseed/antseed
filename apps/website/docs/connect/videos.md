@@ -97,7 +97,7 @@ Edits take longer than new videos; Recast can take 15 minutes or more. Recast an
 
 - **Frames** are ordinary image requests, charged per image when they are made. The agent quotes the image model's price before making them.
 - **The video** is charged once, when the finished MP4 is first delivered. Checking a job's status costs nothing, and downloading the same video again does not charge again.
-- **A video that fails** costs nothing when it is priced at $1.00 or less. Above $1.00, a job the upstream accepted that then fails, or is never downloaded, costs the payment channel's opening fee ($0.65 on Base). A create the seller or upstream refuses costs nothing, and so does a create the buyer refuses itself, such as one above the price limit.
+- **A video that fails** costs nothing when it is priced at $1.00 or less. Above $1.00, a job the upstream accepted that then fails, or is never downloaded, costs the payment channel's opening fee ($0.65 on Base). A create the seller or upstream refuses costs nothing (a seller on an older release keeps the opening fee for it too), and so does a create the buyer refuses itself, such as one above the price limit.
 - **No single video above $5.00.** The buyer refuses it by default (`payments.maxVideoRequestUsdc`). Pick a shorter duration or lower resolution.
 
 The agent sends the create to the cheapest seller that supports your settings, as `<peerId>@<model>`. If that seller fails, it offers the next one from the price list and asks first; it does not switch sellers or models on its own.
