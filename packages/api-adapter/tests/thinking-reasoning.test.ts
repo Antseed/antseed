@@ -826,6 +826,19 @@ describe('withoutAdapterThinkingBlocks: a Messages request for a native Messages
     const rewritten = withoutAdapterThinkingBlocks(sized);
     expect(rewritten.headers['Content-Length']).toBe(String(rewritten.body.length));
   });
+
+  it('returns a request unchanged when the tag appears only outside a thinking block', () => {
+    const tag = ours.signature;
+    for (const messages of [
+      [{ role: 'assistant', content: [unsigned, { type: 'text', text: `The signature was ${tag}.` }] }],
+      [{ role: 'assistant', content: [{ type: 'redacted_thinking', data: tag }, { type: 'text', text: 'A1' }] }],
+      [{ role: 'user', content: `What does ${tag} mean?` }],
+      [{ role: 'user', content: [{ type: 'text', text: tag }] }],
+    ]) {
+      const untouched = request({ model: 'example-model', messages });
+      expect(withoutAdapterThinkingBlocks(untouched)).toBe(untouched);
+    }
+  });
 });
 
 describe('block indexes of a translated Messages stream', () => {

@@ -4686,6 +4686,11 @@ test('a Messages request to a Messages seller loses only the thinking blocks the
   // With nothing to drop, the seller gets the client's bytes as sent.
   const raw = `{"model": "example-model",  "max_tokens": 1024, "messages": ${JSON.stringify(messages([unsigned, signed]))}}`
   assert.equal(await bytesSentToPeer(peer, raw, '/v1/messages'), raw)
+
+  // The tag in a text block is not one of ours to drop: the bytes still pass as sent.
+  const quoted = { type: 'text', text: `The signature was ${ours.signature}.` }
+  const rawWithTag = `{"model": "example-model",  "max_tokens": 1024, "messages": ${JSON.stringify(messages([unsigned, quoted]))}}`
+  assert.equal(await bytesSentToPeer(peer, rawWithTag, '/v1/messages'), rawWithTag)
 })
 
 test('non-stream transformed responses requests force upstream stream without streaming to client', async () => {
