@@ -114,9 +114,10 @@ describe('reasoning effort from an Anthropic Messages client to an OpenAI seller
       expect(reasoningFields(translated(MESSAGES, to, { max_tokens: 4096, output_config: { effort: level } }))).toEqual(effort(level));
     });
 
-    it(`invents no effort from a thinking budget or from adaptive thinking alone for a ${to} seller`, () => {
-      expect(reasoningFields(translated(MESSAGES, to, { max_tokens: 4096, thinking: { type: 'enabled', budget_tokens: 2000 } }))).toEqual({});
-      expect(reasoningFields(translated(MESSAGES, to, { max_tokens: 4096, thinking: { type: 'adaptive' } }))).toEqual({});
+    it(`names the default effort medium for switched-on thinking, never one derived from the budget, for a ${to} seller`, () => {
+      expect(reasoningFields(translated(MESSAGES, to, { max_tokens: 4096, thinking: { type: 'enabled', budget_tokens: 2000 } }))).toEqual(effort('medium'));
+      expect(reasoningFields(translated(MESSAGES, to, { max_tokens: 4096, thinking: { type: 'enabled', budget_tokens: 32000 } }))).toEqual(effort('medium'));
+      expect(reasoningFields(translated(MESSAGES, to, { max_tokens: 4096, thinking: { type: 'adaptive' } }))).toEqual(effort('medium'));
       expect(reasoningFields(translated(MESSAGES, to, { max_tokens: 4096 }))).toEqual({});
     });
 
@@ -142,8 +143,14 @@ describe('reasoning effort in the Chat Completions body a routing service is ask
 
   it('names no effort for a Messages request with thinking disabled or with no effort', () => {
     expect(reasoningFields(renderRequestBodyAsOpenAIChat(MESSAGES, { ...prompt, thinking: { type: 'disabled' } })!)).toEqual({});
-    expect(reasoningFields(renderRequestBodyAsOpenAIChat(MESSAGES, { ...prompt, thinking: { type: 'adaptive' } })!)).toEqual({});
     expect(reasoningFields(renderRequestBodyAsOpenAIChat(MESSAGES, prompt)!)).toEqual({});
+  });
+
+  it('names the default effort medium for a Messages request with thinking switched on', () => {
+    expect(reasoningFields(renderRequestBodyAsOpenAIChat(MESSAGES, { ...prompt, thinking: { type: 'adaptive' } })!))
+      .toEqual({ reasoning_effort: 'medium' });
+    expect(reasoningFields(renderRequestBodyAsOpenAIChat(MESSAGES, { ...prompt, thinking: { type: 'enabled', budget_tokens: 2000 } })!))
+      .toEqual({ reasoning_effort: 'medium' });
   });
 });
 

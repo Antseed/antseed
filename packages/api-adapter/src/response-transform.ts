@@ -173,19 +173,24 @@ function buildAnthropicMessagesStream(
 
   for (const [index, block] of content.entries()) {
     const isText = block.type === 'text';
+    const isThinking = block.type === 'thinking';
     pushEvent('content_block_start', {
       type: 'content_block_start',
       index,
-      content_block: isText
-        ? { type: 'text', text: '' }
-        : { type: 'tool_use', id: block.id, name: block.name, input: {} },
+      content_block: isThinking
+        ? { type: 'thinking', thinking: '' }
+        : isText
+          ? { type: 'text', text: '' }
+          : { type: 'tool_use', id: block.id, name: block.name, input: {} },
     });
     pushEvent('content_block_delta', {
       type: 'content_block_delta',
       index,
-      delta: isText
-        ? { type: 'text_delta', text: block.text }
-        : { type: 'input_json_delta', partial_json: JSON.stringify(block.input ?? {}) },
+      delta: isThinking
+        ? { type: 'thinking_delta', thinking: block.thinking }
+        : isText
+          ? { type: 'text_delta', text: block.text }
+          : { type: 'input_json_delta', partial_json: JSON.stringify(block.input ?? {}) },
     });
     pushEvent('content_block_stop', { type: 'content_block_stop', index });
   }
@@ -223,6 +228,10 @@ function buildOpenAIChatStream(response: CanonicalLlmResponse): Uint8Array {
 
   let toolCallIndex = 0;
   for (const item of response.output) {
+    if (item.type === 'reasoning') {
+      pushChunk({ reasoning_content: item.text });
+      continue;
+    }
     if (item.type === 'text') {
       if (item.text.length > 0) pushChunk({ content: item.text });
       continue;
