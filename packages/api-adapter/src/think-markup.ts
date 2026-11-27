@@ -130,19 +130,6 @@ export function createLeadingThinkMarkupFilter(): LeadingThinkMarkupFilter {
   };
 }
 
-/**
- * A whole answer text without its leading think markup, and the reasoning a leading block held. `turnEnded`:
- * the answer finished without a tool call (see `LeadingThinkMarkupFilter.end`).
- */
-export function stripLeadingThinkMarkup(text: string, turnEnded: boolean): { text: string; reasoning: string } {
-  const filter = createLeadingThinkMarkupFilter();
-  const pieces = [...filter.push(text), ...filter.end(turnEnded)];
-  return {
-    text: pieces.filter((piece) => piece.kind === 'text').map((piece) => piece.text).join(''),
-    reasoning: pieces.filter((piece) => piece.kind === 'reasoning').map((piece) => piece.text).join(''),
-  };
-}
-
 /** How many characters at the end of `text` could be the start of `tag`. */
 function partialSuffixLength(text: string, tag: string): number {
   for (let length = Math.min(text.length, tag.length - 1); length > 0; length--) {

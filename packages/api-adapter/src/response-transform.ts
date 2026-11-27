@@ -10,7 +10,7 @@ import {
   type CanonicalLlmResponse,
   type NamespacedToolNames,
 } from './canonical.js';
-import { stripLeadingThinkMarkup } from './think-markup.js';
+import { createLeadingThinkMarkupFilter, type ThinkMarkupPiece } from './think-markup.js';
 import { encodeJson, encodeText, parseJsonObject, reasoningUsageFields, responsesEndTurn, type ReportedUsage } from './utils.js';
 
 export interface ServiceApiResponseTransformOptions {
@@ -96,32 +96,54 @@ export function transformResponse(
 }
 
 /**
- * The answer without think markup a seller leaked at the start of its text (see `think-markup.ts`). A leading
- * block's text is added to the reasoning; text left empty is dropped. A block that never closed is thinking
- * only when the answer was cut off or went on to call a tool: when the turn ended there, it is the answer.
+ * The answer without think markup a seller leaked at the start of its text (see `think-markup.ts`), read the way
+ * a stream reads it: one filter over the answer's items in order, so markup split across text blocks (as a
+ * Messages answer can have it) is found too, and held text settles before a tool call. A leading block's text
+ * joins the reasoning; text left empty is dropped. A block that never closed is thinking only when the answer
+ * was cut off or went on to call a tool: when the turn ended there, it is the answer.
  */
 function withoutLeadingThinkMarkup(response: CanonicalLlmResponse, requestedModel: string | null): CanonicalLlmResponse {
-  const first = response.output.findIndex((item) => item.type === 'text');
-  if (first < 0) return response;
-  const item = response.output[first] as Extract<CanonicalLlmResponse['output'][number], { type: 'text' }>;
-  const toolCalls = response.output.filter((other) => other.type === 'function_call').length;
-  const stripped = stripLeadingThinkMarkup(item.text, responsesEndTurn(toolCalls, response.stopReason));
-  if (stripped.text === item.text) return response;
-  const output = [...response.output];
-  if (stripped.text.length > 0) output[first] = { ...item, text: stripped.text };
-  else output.splice(first, 1);
+  type OutputItem = CanonicalLlmResponse['output'][number];
+  type TextItem = Extract<OutputItem, { type: 'text' }>;
+  if (!response.output.some((item) => item.type === 'text')) return response;
+  const filter = createLeadingThinkMarkupFilter();
+  const output: OutputItem[] = [];
+  let thoughts = '';
+  let phase: TextItem['phase'];
+  const place = (pieces: ThinkMarkupPiece[]): void => {
+    const text = pieces.filter((piece) => piece.kind === 'text').map((piece) => piece.text).join('');
+    thoughts += pieces.filter((piece) => piece.kind === 'reasoning').map((piece) => piece.text).join('');
+    if (text.length > 0) output.push({ type: 'text', text, ...(phase ? { phase } : {}) });
+  };
+  for (const item of response.output) {
+    if (item.type === 'text') {
+      phase = item.phase;
+      place(filter.push(item.text));
+      continue;
+    }
+    if (item.type === 'function_call') place(filter.release());
+    output.push(item);
+  }
+  const toolCalls = response.output.filter((item) => item.type === 'function_call').length;
+  place(filter.end(responsesEndTurn(toolCalls, response.stopReason)));
+
+  const unchanged = thoughts.length === 0
+    && output.length === response.output.length
+    && output.every((item, index) => item === response.output[index]
+      || (item.type === 'text' && (response.output[index] as TextItem).text === item.text));
+  if (unchanged) return response;
   // The block's thoughts join the answer's thoughts, as both kept forms: the output item (Messages thinking
   // blocks, Chat `reasoning_content`) and the reasoning Responses clients get.
-  if (stripped.reasoning.length > 0) {
-    const thoughts = output.findIndex((other) => other.type === 'reasoning');
-    if (thoughts >= 0) {
-      const existing = output[thoughts] as Extract<CanonicalLlmResponse['output'][number], { type: 'reasoning' }>;
-      output[thoughts] = { ...existing, text: existing.text + stripped.reasoning };
+  if (thoughts.length > 0) {
+    const index = output.findIndex((other) => other.type === 'reasoning');
+    if (index >= 0) {
+      const existing = output[index] as Extract<OutputItem, { type: 'reasoning' }>;
+      output[index] = { ...existing, text: existing.text + thoughts };
     } else {
-      output.unshift({ type: 'reasoning', text: stripped.reasoning });
+      output.unshift({ type: 'reasoning', text: thoughts });
     }
   }
-  const reasoning = (response.reasoning ?? '') + stripped.reasoning;
+  const reasoning = (response.reasoning ?? '') + thoughts;
   return {
     ...response,
     output,

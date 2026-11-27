@@ -265,3 +265,42 @@ describe('think markup on a passthrough answer', () => {
     expect(createStreamingAdapter({ from: 'openai-chat-completions', to: 'openai-chat-completions' })).toBeNull();
   });
 });
+
+describe('think markup split across the text blocks of a buffered Messages answer', () => {
+  const messagesAnswer = (texts: string[], withToolCall = false): Json => ({
+    id: 'msg_1',
+    type: 'message',
+    role: 'assistant',
+    model: 'example-model',
+    content: [
+      ...texts.map((text) => ({ type: 'text', text })),
+      ...(withToolCall ? [{ type: 'tool_use', id: 'toolu_1', name: 'exec_command', input: { cmd: 'ls' } }] : []),
+    ],
+    stop_reason: withToolCall ? 'tool_use' : 'end_turn',
+    usage: { input_tokens: 5, output_tokens: 5 },
+  });
+  const translate = (body: Json, streamRequested: boolean): Uint8Array => transformResponse(
+    { requestId: 'r', statusCode: 200, headers: { 'content-type': 'application/json' }, body: encoder.encode(JSON.stringify(body)) },
+    { from: 'anthropic-messages', to: 'openai-responses', streamRequested, fallbackModel: 'example-model', includeReasoning: true },
+  )!.body;
+
+  it('is stripped as one text, as the stream strips it, sent as JSON or as a stream', () => {
+    const answer = JSON.parse(decoder.decode(translate(messagesAnswer(['<think>Plan', ' it.</think>', 'Answer.']), false))) as Json;
+    expect(answer.output_text).toBe('Answer.');
+    expect(answer.output_text).not.toContain('think>');
+
+    const sse = decoder.decode(translate(messagesAnswer(['<think>Plan', ' it.</think>', 'Answer.']), true));
+    expect(sse).not.toContain('think>');
+    expect(sse).toContain('Answer.');
+  });
+
+  it('keeps a lone closing tag in a later block when the first block is real text', () => {
+    const answer = JSON.parse(decoder.decode(translate(messagesAnswer(['Hello. ', '</think>']), false))) as Json;
+    expect(answer.output_text).toBe('Hello. </think>');
+  });
+
+  it('strips a closing tag that follows leading whitespace in another block, as the stream does', () => {
+    const answer = JSON.parse(decoder.decode(translate(messagesAnswer(['\n', '</mm:think>'], true), false))) as Json;
+    expect(answer.output.map((item: Json) => item.type)).toEqual(['function_call']);
+  });
+});
