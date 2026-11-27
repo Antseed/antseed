@@ -828,11 +828,9 @@ export function createChatStreamParser(
           finishReason = firstChoice.finish_reason;
         }
 
-        const reasoningDelta = delta ? chatReasoningField(delta) : '';
-        if (reasoningDelta.length > 0) {
-          onReasoningDelta(delta!, reasoningDelta);
-        } else if (delta?.reasoning_encrypted === true) {
-          onReasoningDelta(delta, '');
+        if (delta) {
+          const reasoningDelta = chatReasoningField(delta);
+          if (reasoningDelta.length > 0 || delta.reasoning_encrypted === true) onReasoningDelta(delta, reasoningDelta);
         }
 
         const textDelta = typeof delta?.content === 'string' ? delta.content : '';

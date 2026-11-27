@@ -456,7 +456,7 @@ describe('encrypted reasoning from a chat seller', () => {
   };
 
   it('is caught when the marker itself is split across deltas, however it is cut', () => {
-    for (const cut of [5, 12, 22]) {
+    for (let cut = 1; cut <= '__ENCRYPTED_REASONING__'.length; cut++) {
       const frames = [frame({ reasoning_content: sealed.slice(0, cut) }), frame({ reasoning_content: sealed.slice(cut) }), frame({ reasoning_content: 'REVG' }), frame({ content: 'Done.' }), frame({}, 'stop')];
       expect(reasoningSent(frames), `cut at ${cut}`).toEqual({ kept: null, streamed: '' });
     }
