@@ -45,10 +45,9 @@ const MESSAGES_LOWEST_EFFORT = 'low';
 
 /**
  * The effort a Messages request that switches thinking on (`enabled` or `adaptive`) gets when it names none.
- * A client's own `output_config.effort` always wins over it. Known limit: some Claude models (seen with
- * several Opus, Sonnet and Fable releases) answer with empty thoughts below `high`, so for them a client
- * that wants thoughts must name `output_config.effort: "high"`. A thinking budget is never turned into a
- * level of its own.
+ * A client's own `output_config.effort` always wins over it. Known limit: some models answer with
+ * empty thoughts below `high`, so a client that wants thoughts from them must name
+ * `output_config.effort: "high"`. A thinking budget is never turned into a level of its own.
  */
 const THINKING_DEFAULT_EFFORT = 'medium';
 
