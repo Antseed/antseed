@@ -3,6 +3,7 @@
   --site-text: #f2f4ef;
   --site-text-muted: #7b827e;
   --site-dot: #363b3a;
+  --cta-mosaic-opacity: 1;   /* the shared dots are faint for a pale card by day; this ground is dark in both themes */
   isolation: isolate;
   align-items: center;
   justify-content: center;
@@ -19,8 +20,6 @@
   pointer-events: none;
   background: radial-gradient(circle at 4px 1px, var(--site-dot) .85px, #0000 1.25px) 50% 0 / 8px 2px repeat-x;
 }
-/* the shared dots are faint for a pale card by day; this ground is dark in both themes */
-.band canvas { opacity: 1; }
 .text { position: relative; z-index: 2; display: flex; flex-direction: column; align-items: center; padding: 0 16px; text-align: center; }
 .band .eyebrow { color: var(--site-lime); }
 .band .title { margin: 20px 0 32px; }
