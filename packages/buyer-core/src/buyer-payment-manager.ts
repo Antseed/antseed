@@ -240,8 +240,14 @@ interface PersistedOneOffRecord extends PersistedVideoJob {
  */
 const NO_PERSISTED_JOB = { protocol: '', jobId: '', createdAtMs: 0, entry: null } as unknown as PersistedVideoJob;
 
-/** A refused create whose channel is still open this long after the refusal is reported at its full fee. */
-const REFUSED_ONE_OFF_OPEN_GRACE_MS = 30 * 60_000;
+/**
+ * A confirmed one-off channel still open this long after it was opened, with
+ * its fee not yet reported, is reported at its fee: whatever ended its create
+ * (a refusal, an answer without a job, a create never sent), an honest seller
+ * has closed it by then (a refused one at once, an unclaimed one within 10
+ * minutes), and a gateway still counts a report inside the hour.
+ */
+const ONE_OFF_OPEN_GRACE_MS = 30 * 60_000;
 
 const ONE_OFF_RECORD_VERSION = 2;
 
@@ -265,8 +271,6 @@ interface OneOffChannelState {
   reported: bigint;
   confirmed: boolean;
   ackWaiters: Array<(confirmed: boolean) => void>;
-  /** Restored after a restart with its create's outcome unknown: reported in full at the next sweep that reads it open. */
-  outcomeUnknown?: boolean;
   /** When the create was refused, for a channel kept until its close is seen. */
   refusedAt?: number;
 }
@@ -474,8 +478,6 @@ export class BuyerPaymentManager {
         reported: record.reported,
         confirmed,
         ackWaiters: [],
-        // The create may have been sent and accepted before the restart; nothing will tell this buyer now.
-        ...(confirmed && !record.job && record.refusedAt === undefined ? { outcomeUnknown: true } : {}),
         ...(record.refusedAt !== undefined ? { refusedAt: record.refusedAt } : {}),
       };
       if (record.refusedAt !== undefined) {
@@ -2707,13 +2709,13 @@ export class BuyerPaymentManager {
   /**
    * After a reconcile: report and drop every one-off channel whose row another
    * process (`antseed buyer status`, say) retired meanwhile, with what the row
-   * says it settled. When the pass read every row (`chainRead`), also report in
-   * full what nothing else will: a restored channel whose create's outcome is
-   * unknown and that is still open, and a refused one its seller has left open
-   * past REFUSED_ONE_OFF_OPEN_GRACE_MS (an honest seller closes it at once), so
-   * the report still reaches a gateway, which drops one over an hour late.
+   * says it settled. Of the channels the pass read as still open
+   * (`openOnChain`), report in full each confirmed one whose fee is not
+   * reported yet and that was opened over ONE_OFF_OPEN_GRACE_MS ago: no answer
+   * is coming that would, and a gateway drops a report over an hour late.
    */
-  sweepOneOffChannels(chainRead = false): void {
+  sweepOneOffChannels(openOnChain: ReadonlyArray<string> = []): void {
+    const open = new Set(openOnChain);
     const now = Date.now();
     for (const map of [this._oneOffChannels, this._refusedOneOffs]) {
       for (const [channelId, state] of [...map]) {
@@ -2722,12 +2724,9 @@ export class BuyerPaymentManager {
           this.forgetOneOffChannel(channelId, row.settledAmount != null ? BigInt(row.settledAmount) : undefined);
           continue;
         }
-        if (!chainRead) continue;
-        const refusedLongAgo = state.refusedAt !== undefined && now - state.refusedAt >= REFUSED_ONE_OFF_OPEN_GRACE_MS;
-        if (state.outcomeUnknown || refusedLongAgo) {
-          state.outcomeUnknown = false;
-          this._reportOneOffSpendUpTo(channelId, state, state.cumulative);
-        }
+        if (!row || !open.has(channelId) || !state.confirmed || state.reported >= state.cumulative) continue;
+        if (now - row.createdAt < ONE_OFF_OPEN_GRACE_MS) continue;
+        this._reportOneOffSpendUpTo(channelId, state, state.cumulative);
       }
     }
   }

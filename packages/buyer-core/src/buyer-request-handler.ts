@@ -402,7 +402,6 @@ export class BuyerRequestHandler {
       };
 
       requestSent = true;
-      attemptSent = true;
       mux.sendProxyRequest(
         req,
         (response: SerializedHttpResponse, metadata) => {
@@ -507,6 +506,8 @@ export class BuyerRequestHandler {
           });
         },
       );
+      // Only once the send returned: one that throws (a closed connection) never left.
+      attemptSent = true;
     });
 
     // Paid work in flight sizes the buyer's reserve top-ups (see beginPaidRequest).
