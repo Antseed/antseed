@@ -21,8 +21,8 @@
 
 .head { --head-gap: 20px; display: flex; flex-direction: column; align-items: center; gap: var(--head-gap); }
 .head .eyebrow { color: var(--site-lime); }
-.head .title { font-weight: 400; }
-.head .sub { max-width: 600px; }
+.head .title { font-weight: 400; text-wrap: balance; }
+.head .sub { max-width: 600px; text-wrap: balance; }
 
 /* the four points beside one panel */
 .points {
@@ -39,7 +39,7 @@
 }
 .tab > * { transition: opacity .3s ease; }
 .tab[aria-selected='false'] > * { opacity: .4; }
-.tab[aria-selected='false']:hover > * { opacity: .6; }
+@media (hover: hover) { .tab[aria-selected='false']:hover > * { opacity: .6; } }
 .tab[aria-selected='true'] { grid-template-rows: auto 1fr; cursor: default; }
 .tab:focus-visible { outline: 2px solid var(--site-lime); outline-offset: 2px; }
 .tabLine { overflow: hidden; }
@@ -87,7 +87,7 @@
   .antSeat { width: 93px; }
 }
 @media (max-width: 760px) {
-  .body { padding-bottom: 72px; }
+  .body { padding-bottom: 104px; }
   .top { padding-top: 72px; }
   .head .sub { padding: 0 20px; }
   .points { margin-top: 40px; padding: 0 16px; }

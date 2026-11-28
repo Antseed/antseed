@@ -7,8 +7,8 @@
 /* the hairline drawn over the screenshot, so the image never covers it */
 .shot::after { content: ''; position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 0 0 1px var(--site-tile-line); pointer-events: none; }
 .shot img { width: 100%; height: 100%; object-fit: cover; object-position: top center; transition: scale .3s ease-out; }
-.card:hover .shot img { scale: 1.02; }
+@media (hover: hover) { .card:hover .shot img { scale: 1.02; } }
 
 .caption { font: 400 16px/24px var(--site-font); color: var(--site-text-body); text-wrap: pretty; }
 .caption b { font-weight: 500; color: var(--site-text); }
-.card:hover .caption b { text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 1px; }
+@media (hover: hover) { .card:hover .caption b { text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 1px; } }

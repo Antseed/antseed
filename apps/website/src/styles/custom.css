@@ -108,6 +108,7 @@
 :root[data-theme='dark'] {
   --ifm-link-hover-color: color-mix(in srgb, var(--site-accent) 75%, #ffffff);
   --as-risk: #e0766c;
+  --ifm-table-stripe-background: transparent;   /* Infima's dark theme sets its own stripes; the tables stay plain as in light */
 }
 
 /* =============================================
@@ -134,7 +135,9 @@ h1, h2, h3 {
 
 /* Page transition: each route renders its own Layout, so .main-wrapper remounts and this entrance replays. */
 @media (prefers-reduced-motion: no-preference) {
-  html {
+  /* smooth only once the visitor has pressed or typed (Root.tsx): landing on a #hash jumps straight there instead of gliding
+     through the page and setting off every reveal on the way */
+  html[data-smooth] {
     scroll-behavior: smooth;
   }
   #__docusaurus .main-wrapper {
@@ -185,6 +188,11 @@ h1, h2, h3 {
   text-decoration: none;
 }
 
+.theme-announcement-bar .funding-announcement strong {
+  /* two even lines on a phone, never a lone last word */
+  text-wrap: balance;
+}
+
 .funding-announcement > span {
   white-space: nowrap;
   text-decoration: underline;
@@ -202,6 +210,17 @@ h1, h2, h3 {
 
 .theme-announcement-bar .close:hover {
   opacity: 1;
+}
+
+/* Docusaurus narrows the close button to 30px on phones; keep it a full tap target */
+@media (max-width: 996px) {
+  .theme-announcement-bar .close {
+    flex: 0 0 44px;
+  }
+  /* the left placeholder matches it, so the message stays centred */
+  .theme-announcement-bar > [class*='announcementBarPlaceholder'] {
+    flex: 0 0 44px;
+  }
 }
 
 .funding-announcement:focus-visible {
@@ -244,7 +263,18 @@ h1, h2, h3 {
   color: var(--as-text);
 }
 
+/* the docs menu on a phone: rows a finger can hit, not the desktop sidebar's density */
+.navbar-sidebar__items .theme-doc-sidebar-menu .menu__link {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  font-size: 15px;
+}
+
 .navbar-sidebar__back {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
   font-family: var(--as-font-nav);
   color: var(--as-text-2);
   background: var(--as-soil-0);
@@ -410,6 +440,22 @@ aside.theme-doc-sidebar-container {
   padding: 40px 24px 64px;
 }
 
+/* Without the sidebar the container's 16px is the only gutter, shared with the nav, the TOC box and the Next card */
+@media (max-width: 996px) {
+  .theme-doc-markdown {
+    padding-inline: 0;
+  }
+}
+
+/* Beside the sidebar, "Last updated" and the Next/Previous cards end where the text does */
+@media (min-width: 997px) {
+  .theme-doc-footer,
+  [class*='docItemContainer'] .pagination-nav {
+    max-width: 752px;
+    margin-inline: 24px;
+  }
+}
+
 /* Breadcrumbs stay hidden (the sidebar shows the place) */
 .theme-doc-breadcrumbs {
   display: none;
@@ -444,6 +490,12 @@ aside.theme-doc-sidebar-container {
 .theme-doc-toc-mobile {
   background: var(--as-soil-0);
   border: 1px solid var(--as-line);
+}
+/* touch screens: the 'On this page' toggle 44px tall */
+@media (max-width: 1079px) {
+  .theme-doc-toc-mobile > .clean-btn {
+    min-height: 44px;
+  }
 }
 
 /* "Last updated" + edit row */
@@ -593,14 +645,14 @@ aside.theme-doc-sidebar-container {
   color: inherit;
 }
 
-/* Inline chips move to the next line whole instead of splitting mid-token (e.g. `--` / `output`). Only a chip wider than the
-   column wraps, inside its own box. */
+/* Inline chips stay inline, so a bracket or full stop written against one stays on its line; CodeInline keeps each word
+   whole, so a chip breaks only at its spaces. A word wider than the column still wraps, and each line of a chip keeps
+   its own padding and corners. */
 .markdown :not(pre) > code {
-  display: inline-block;
-  max-width: 100%;
   line-height: 1.45;
-  vertical-align: baseline;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
 }
 
 /* =============================================
@@ -625,6 +677,7 @@ aside.theme-doc-sidebar-container {
 .markdown table th {
   color: var(--as-text-2);
   font-weight: 500;
+  text-align: start;   /* over the cells, not Infima's centre; a column aligned in markdown sets its own inline */
   background: var(--as-soil-0);
 }
 
@@ -937,6 +990,14 @@ details.alert {
   max-width: 800px;
 }
 
+/* a phone: the text on the marketing nav's line (the rail's edge + 20), not Infima's 16px.
+   The row spans the full width, so the column's padding resolves like the nav's. */
+@media (max-width: 760px) {
+  [class*='mdxPageWrapper'] > .col {
+    padding-inline: calc((100% - var(--site-rail)) / 2 + 20px);
+  }
+}
+
 [class*='mdxPageWrapper'] article h1 {
   font-family: var(--as-font-display);
   font-size: clamp(32px, 3.4vw, 40px);
@@ -954,6 +1015,13 @@ details.alert {
   letter-spacing: -0.02em;
   margin-top: 48px;
   margin-bottom: 12px;
+}
+
+/* a phone: a legal title that wraps never leaves one word alone */
+@media (max-width: 760px) {
+  [class*='mdxPageWrapper'] article :is(h1, h2) {
+    text-wrap: balance;
+  }
 }
 
 [class*='mdxPageWrapper'] article h3 {
@@ -1193,6 +1261,17 @@ details.alert {
   color: var(--as-heading) !important;
   text-decoration: none;
 }
+/* touch screens: a 44px tall touch area, the name where it was */
+@media (max-width: 1079px) {
+  .blog-wrapper .avatar__name a {
+    position: relative;
+  }
+  .blog-wrapper .avatar__name a::after {
+    content: '';
+    position: absolute;
+    inset: -12px 0;
+  }
+}
 .blog-wrapper .avatar__subtitle,
 .blog-wrapper [class*='authorTitle'] {
   font-family: var(--as-font-ui);
@@ -1245,7 +1324,22 @@ details.alert {
 }
 
 .blog-wrapper .pagination-nav {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
+}
+
+/* the docs' reading measure: lines no longer than in the docs column */
+.blog-post-page article header,
+.blog-post-page article .markdown,
+.blog-post-page article footer {
+  max-width: 752px;
+}
+/* beside the sidebars, the Newer/Older cards end where the post's text does (the article's padding is their inset) */
+@media (min-width: 997px) {
+  .blog-post-page .pagination-nav {
+    max-width: calc(752px + 2 * clamp(24px, 3vw, 36px));
+    padding-inline: clamp(24px, 3vw, 36px);
+  }
 }
 .blog-wrapper hr {
   border-color: var(--as-line);
@@ -1276,15 +1370,20 @@ details.alert {
   }
   .blog-wrapper article {
     margin-bottom: 20px;
+    padding-inline: 0;   /* the container's 16px is the gutter, as in the docs */
   }
   .blog-wrapper .pagination-nav {
     display: grid;
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  /* Infima pins the Next card to a second column, which would come back as an implicit one */
+  .blog-wrapper .pagination-nav__link--next {
+    grid-column: 1 / -1;
   }
 }
 @media (max-width: 640px) {
   .blog-wrapper article {
-    padding: 20px 4px;
+    padding: 20px 0;
   }
   .blog-wrapper article header h1,
   .blog-wrapper .markdown h1 { font-size: 32px; }

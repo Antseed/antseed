@@ -1,6 +1,7 @@
 import type {JSX, MouseEventHandler, ReactNode} from 'react';
 import clsx from 'clsx';
 import Link from '@docusaurus/Link';
+import type {Reveal} from './Heading';
 import styles from './Button.module.css';
 
 /**
@@ -50,12 +51,12 @@ export function Button({variant = 'primary', size = 'default', className, childr
 type ActionsProps = {
   /** On phones, the row takes the full width and its buttons share it. */
   fill?: boolean;
-  /** Reveal on scroll. */
-  reveal?: boolean;
+  /** Reveal on scroll, or `'lead'`: in a first screen's offer, fading up after its sub line. */
+  reveal?: Reveal;
   className?: string;
   children: ReactNode;
 };
 
 export function Actions({fill, reveal, className, children}: ActionsProps): JSX.Element {
-  return <div className={clsx(styles.actions, fill && styles.fill, className)} data-rv={reveal ? '' : undefined}>{children}</div>;
+  return <div className={clsx(styles.actions, fill && styles.fill, className)} data-rv={reveal === 'lead' ? 'lead' : reveal ? '' : undefined}>{children}</div>;
 }

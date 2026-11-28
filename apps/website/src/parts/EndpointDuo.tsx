@@ -20,6 +20,8 @@ type Props = {
   title: readonly [string, string];
   lead: ReactNode;
   points: readonly Feature[];
+  /** Points that wrap at every width: their icons on the first line. */
+  pointsAlign?: 'center' | 'first-line';
   action: {label: string; href: string};
   code: EndpointCode;
 };
@@ -27,7 +29,7 @@ type Props = {
 const TAGLINE = 'ONE ENDPOINT · EVERY TOOL';
 
 /** How a tool connects: the pitch and its points beside a terminal on a painting. */
-export function EndpointDuo({cmp, id, title, lead, points, action, code}: Props): JSX.Element {
+export function EndpointDuo({cmp, id, title, lead, points, pointsAlign, action, code}: Props): JSX.Element {
   const titleId = sectionTitleId(cmp);
   return (
     <Duo
@@ -43,7 +45,7 @@ export function EndpointDuo({cmp, id, title, lead, points, action, code}: Props)
               <Sub className={styles.lead}>{lead}</Sub>
             </div>
           </div>
-          <FeatureList items={points} />
+          <FeatureList items={points} align={pointsAlign} />
           <Actions reveal><Button href={action.href}>{action.label}</Button></Actions>
         </>
       }

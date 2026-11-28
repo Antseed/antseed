@@ -1,6 +1,7 @@
 .rail { display: flex; flex-direction: column; gap: 56px; }
 .note { max-width: 720px; margin-top: -24px; font: 400 16px/25px var(--site-font); color: var(--site-text-body); text-wrap: pretty; }
-.link { font-weight: 500; color: var(--site-accent); white-space: nowrap; }
+/* inline in the paragraph: the padding widens the tap target without moving the lines */
+.link { padding-block: 10px; font-weight: 500; color: var(--site-accent); white-space: nowrap; }
 
 @media (max-width: 760px) {
   .rail { gap: 40px; }

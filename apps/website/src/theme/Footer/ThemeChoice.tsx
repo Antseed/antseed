@@ -20,7 +20,7 @@ export default function ThemeChoice(): JSX.Element {
   return (
     <div className={styles.choice} role="group" aria-label="Theme">
       {MODES.map(({mode, label, icon}) => (
-        <button key={mode} type="button" className={styles.option} aria-label={label} aria-pressed={mode === current}
+        <button key={mode} type="button" className={styles.option} data-mode={mode} aria-label={label} aria-pressed={mode === current}
           onClick={() => setThemeAnimated(setColorMode, mode)}>
           <svg viewBox="0 0 16 16" aria-hidden="true">{icon}</svg>
         </button>

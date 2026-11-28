@@ -60,8 +60,10 @@
 @media (max-width: 1023px) {
   .screen { --in: 24px; }
 }
+/* stacked, the offer starts on the rail's text edge, in line with the sections under it */
 @media (max-width: 899px) {
   .screen {
+    --in: var(--site-pad);
     --gap-title: var(--stacked-title, var(--side-title, 16px));
     --gap-sub: var(--stacked-sub, var(--side-sub, 12px));
     --gap-actions: var(--stacked-actions, var(--side-actions, 36px));
@@ -71,6 +73,8 @@
   .panel { aspect-ratio: 1; }
 }
 @media (min-width: 761px) and (max-width: 899px) {
+  /* the text may run to the rail's edge on the right, so the titles hold their two lines */
+  .text { padding-right: calc(var(--edge) - var(--in)); }
   .panel { aspect-ratio: var(--tablet-ratio, 1); }
 }
 
@@ -105,7 +109,6 @@
 
 @media (max-width: 760px) {
   .screen {
-    --in: 20px;
     --gap-title: var(--phone-title, 16px);
     --gap-sub: var(--phone-sub, 16px);
     --gap-actions: var(--phone-actions, 28px);

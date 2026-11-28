@@ -12,10 +12,17 @@
 .chapter { position: relative; flex: 1; padding: 11px 4px 10px; border: 0; background: none; cursor: pointer; white-space: nowrap;
   font: 500 12px/16px var(--site-font); color: var(--site-ink-muted); transition: color .2s; }
 .chapter::after { content: ''; position: absolute; left: 0; top: 0; height: 2px; width: calc(var(--progress, 0) * 100%); background: var(--site-fill); }
-.chapter[aria-pressed='true'], .chapter:hover { color: var(--site-ink); }
+.chapter[aria-pressed='true'] { color: var(--site-ink); }
+/* hover only where there is one: a touch screen keeps :hover on the last tapped chapter, which would read as a second active one */
+@media (hover: hover) { .chapter:hover { color: var(--site-ink); } }
 .chapter:focus-visible { outline: 2px solid #789f00; outline-offset: -2px; border-radius: 4px; }
 :global(:root[data-theme='dark']) .window { background: rgba(16, 38, 26, .94); box-shadow: inset 0 0 0 .5px rgba(150, 200, 145, .34), 0 18px 48px rgba(0, 0, 0, .34); }
 :global(:root[data-theme='dark']) .lights i { background: rgba(255, 255, 255, .16); }
 :global(:root[data-theme='dark']) .chapter::after { background: var(--site-accent); }
+/* the recording is the light console: dimmed at night so it reads as a lit screen, not a white hole; until its poster comes, the
+   window's own glass rather than a white frame */
+:global(:root[data-theme='dark']) .video { background: transparent; filter: brightness(.86); }
 @media (max-width: 760px) { .chapter { padding-inline: 1px; } }
+/* 44px rows on a touch screen: the chapters are the film's only control */
+@media (pointer: coarse), (max-width: 760px) { .chapter { padding-block: 14px; } }
 @media (max-width: 520px) { .address { display: none; } }

@@ -1,4 +1,4 @@
-import {useRef, useState, type CSSProperties, type JSX} from 'react';
+import {useRef, useState, type JSX} from 'react';
 import {Heading, Section} from '../../components';
 import {mediumWithModels, useMarket} from '../../lib/antscan';
 import {MediaTabs} from './prices/MediaTabs';
@@ -12,6 +12,7 @@ import styles from './prices/Prices.module.css';
 /** The model count the rest of the site states (hero figures, page descriptions), fixed so the two never disagree. */
 const MODEL_COUNT = '700+';
 
+/** Card sides in px; Prices.module.css sets the same as --card-size, so the first paint already has the phone's size. */
 const CARD_SIZE = 176;
 const CARD_SIZE_PHONE = 152;
 const PANEL_ID = 'models';
@@ -48,8 +49,7 @@ export default function Prices(): JSX.Element {
       <div className={styles.models}>
         <MediaTabs tabs={media} selected={selected} onSelect={select} panelId={PANEL_ID} label="Media" className={styles.tabs} />
         <div ref={flowRef} id={PANEL_ID} role="tabpanel" aria-labelledby={`${PANEL_ID}-${selected}`}
-          className={motion.carried ? styles.carriedFlow : styles.flow} data-moving={motion.moving || undefined}
-          style={{'--card-size': `${side}px`} as CSSProperties}>
+          className={motion.carried ? styles.carriedFlow : styles.flow} data-moving={motion.moving || undefined}>
           <ModelLanes key={build} medium={onShow} models={lanes[onShow]} carried={motion.carried} side={side} width={motion.width} />
         </div>
       </div>

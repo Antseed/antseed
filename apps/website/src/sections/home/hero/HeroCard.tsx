@@ -24,7 +24,8 @@ export function HeroCard(): JSX.Element {
   const groundSeed = useRef<HTMLButtonElement>(null);
   const cursor = useRef<HTMLDivElement>(null);
   const install = useRef<HTMLDivElement>(null);
-  const refs = useMemo(() => ({card, paint, night, film, puppet, fore, groundSeed, cursor, install}), []);
+  const title = useRef<HTMLHeadingElement>(null);
+  const refs = useMemo(() => ({card, paint, night, film, puppet, fore, groundSeed, cursor, install, title}), []);
   const hand = useMemo(newHand, []);
 
   const still = useStill();
@@ -43,7 +44,7 @@ export function HeroCard(): JSX.Element {
       <button ref={groundSeed} className={styles.groundSeed} type="button" aria-label="Pick up the seed" {...{[UI_ATTR]: ''}}>
         <img src={seed} alt="" />
       </button>
-      <HeroText installRef={install} />
+      <HeroText installRef={install} titleRef={title} />
       <div ref={cursor} className={styles.cursor} aria-hidden="true"><img src={seed} alt="" /></div>
     </section>
   );

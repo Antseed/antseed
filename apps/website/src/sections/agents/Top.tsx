@@ -10,12 +10,13 @@ export default function Top(): JSX.Element {
       cmp="agents/top"
       titleId="agents-title"
       {...AUDIENCE_OFFER}
+      fluidPhoneTitle
       eyebrow="For agents"
       title={['Run agents freely,', 'for way less.']}
       sub="Hermes, OpenClaw, Codex, OpenCode, or your own. Your agent installs Antseed itself from one skill and runs on the open market."
       actions={<>
         <CommandChip command={JOIN_BUYER_SKILL_COMMAND} />
-        <Button href="/docs/install/" variant="ghost">Install the CLI</Button>
+        <Button href="/docs/install/" variant="ghost" size="page">Install the CLI</Button>
       </>}
       note="Give your agent the skill. Free models to start, no account, no API key."
       painting={{

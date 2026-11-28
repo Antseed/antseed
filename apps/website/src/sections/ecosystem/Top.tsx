@@ -2,6 +2,7 @@ import type {JSX} from 'react';
 import {Button} from '../../components';
 import {FirstScreen} from '../../parts/FirstScreen';
 import {painting} from '../../lib/paintings';
+import styles from './Ecosystem.module.css';
 
 /** The offer beside the painted village of projects round the anthill. */
 export default function Top(): JSX.Element {
@@ -12,7 +13,7 @@ export default function Top(): JSX.Element {
       eyebrow="Ecosystem"
       title={['Explore the', 'Antseed ecosystem.']}
       titleSize="tight"
-      sub="Connect with builders, providers, explorers, and AI-focused projects growing around peer-to-peer AI infrastructure."
+      sub={<>Connect with builders, providers, explorers, and <span className={styles.nowrap}>AI-focused</span> projects growing around peer-to-peer AI infrastructure.</>}
       subGap={24}
       subWidth={440}
       actions={<>

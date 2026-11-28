@@ -1,4 +1,17 @@
 .panel { aspect-ratio: 4 / 3; }
-:global(#foundation-staking) .panel { background-position: right bottom; }
+:global(#foundation-staking) .panel { background-position: var(--ferry-x, right) bottom; }
 .panel .card { top: 12%; left: 6%; translate: 0 0; width: min(260px, 58%); }
-@media (min-width: 900px) { .panel { align-self: center; } }
+@media (min-width: 1200px) { .panel { align-self: center; } }
+/* 900–1199px: one column, as under 900px; side by side the 48px title would run to four or five lines */
+@media (min-width: 900px) and (max-width: 1199px) {
+  .staking .rail { grid-template-columns: minmax(0, 1fr); min-height: 0; }
+  .staking .text { gap: 28px; padding: 72px var(--site-pad) 56px; }
+  /* the ferry file is 659px wide: kept near that size, under the text, so it is not blown up to the rail's width */
+  .staking .panel { width: min(100% - var(--site-pad), 720px); justify-self: start; margin-inline-start: var(--site-pad); aspect-ratio: 16 / 9; }
+}
+@media (max-width: 760px) {
+  /* the ferry ant and its coin slide right, so the card sits over the sky and water on their left, clear of the ant's antennae */
+  .panel { --ferry-x: 46%; }
+  .staking .panel .card { top: 5%; left: 5%; width: 52%; }
+}
+@media (max-width: 360px) { .staking .panel { --ferry-x: 38%; } }

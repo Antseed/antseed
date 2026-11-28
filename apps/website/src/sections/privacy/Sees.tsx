@@ -21,7 +21,7 @@ export default function Sees(): JSX.Element {
         title="What a provider sees."
         sub="Who you are and what you asked are handled separately. Pick the provider that fits how sensitive the work is."
       />
-      <CompareTable columns={COLUMNS} rows={ROWS} rowsLabel="What" />
+      <CompareTable columns={COLUMNS} rows={ROWS} rowsLabel="What" stack="phone" />
       <p className={styles.note} data-rv="">
         Your device checks a provider&apos;s TEE against Intel&apos;s own certificate chain before any payment, with no third party in
         between.{' '}

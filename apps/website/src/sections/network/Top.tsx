@@ -17,7 +17,8 @@ export default function Top(): JSX.Element {
       subWidth={340}
       actions={<Button href="/docs/overview/" size="page">Read the protocol</Button>}
       fillActions
-      railStack={{fluidPhoneTitle: true}}
+      railStack={{}}
+      fluidPhoneTitle
       gaps={{stacked: [16, 24, 28]}}
       painting={{
         ...painting('/site/assets/network/hero', true),

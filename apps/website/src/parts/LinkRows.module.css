@@ -28,6 +28,7 @@
   color: var(--site-text);
 }
 .mark svg { width: 22px; height: 22px; }
+.mark:empty { border-color: transparent; background: none; }
 
 .words { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1; }
 .name { font: 500 18px/26px var(--site-font); color: var(--site-text); transition: color .15s; }

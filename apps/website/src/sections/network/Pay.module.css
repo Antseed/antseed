@@ -74,6 +74,14 @@
   .link { position: relative; }
   .link::after { content: ''; position: absolute; inset: -10px 0; }
 }
+/* both cards break their pair alike: on a phone two equal halves; where a column can't fit 'How payments work' beside its
+   partner, both stack */
+@media (min-width: 480px) and (max-width: 760px) {
+  .pay .path .actions { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+}
+@media (max-width: 479px), (min-width: 761px) and (max-width: 899px) {
+  .pay .path .actions { display: grid; grid-template-columns: minmax(0, 1fr); align-self: stretch; }
+}
 @media (prefers-reduced-motion: reduce) {
   .coin { animation: none; }
 }

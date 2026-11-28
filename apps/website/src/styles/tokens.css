@@ -1,7 +1,16 @@
 /* Site design tokens: the one source for colour, type and layout across marketing pages, docs and blog.
    Components never hard-code these values; they read the variables. Dark mode follows Docusaurus' <html data-theme>. */
 
-/* Geist Pixel's face is declared in the head, beside its preload (src/lib/pixelFont.ts). */
+/* Geist Pixel's face is declared in the head, beside its preload (src/lib/pixelFont.ts). Until it arrives, titles draw in Arial scaled
+   close to its width and height, so most keep their lines and little under them moves when it swaps in. */
+@font-face {
+  font-family: 'Geist Pixel Fallback';
+  src: local('Arial'), local('Helvetica');
+  size-adjust: 104%;
+  ascent-override: 97.1%;
+  descent-override: 27.9%;
+  line-gap-override: 0%;
+}
 
 /* The arrows (→ ↗) as Google's Geist draws them: the variable fontsource Geist draws both 2px wider, enough to wrap paired buttons on a
    phone. Two glyphs, 1.2 KB, used ahead of Geist for those code points only. */
@@ -17,7 +26,7 @@
   --site-font: 'Geist Arrows', 'Geist Variable', system-ui, sans-serif;
   --site-font-ui: 'Instrument Sans', 'Geist Variable', system-ui, sans-serif;
   --site-font-mono: 'Geist Mono Variable', ui-monospace, monospace;
-  --site-font-pixel: 'Geist Pixel', 'Geist Variable', system-ui, sans-serif;
+  --site-font-pixel: 'Geist Pixel', 'Geist Pixel Fallback', 'Geist Variable', system-ui, sans-serif;
 
   /* surfaces */
   --site-bg: #fcfcfc;               /* page, behind the dotted margins */
@@ -56,9 +65,10 @@
   --site-radius-control: 10px;
 }
 
-/* a phone: the dotted margins one dot column wide (8 to 15px a side as the rail rounds to 16) */
+/* a phone: the dotted margins one dot column wide (8 to 15px a side as the rail rounds to 16), and every text and card 20px inside
+   the rail, on the first screen's line */
 @media (max-width: 760px) {
-  :root { --site-gutter: 8px; }
+  :root { --site-gutter: 8px; --site-pad: 20px; }
 }
 
 /* the rail snaps to a multiple of 16 so its edges land on the 8px dot matrix */
@@ -104,6 +114,8 @@
   }
   [data-rv='lead']:nth-child(2) { --rv-i: 1; }
   [data-rv='lead']:nth-child(3) { --rv-i: 2; }
+  [data-rv='lead']:nth-child(4) { --rv-i: 3; }
+  [data-rv='lead']:nth-child(5) { --rv-i: 4; }
 }
 @keyframes rv-fade { from { opacity: 0; } }
 @keyframes rv-rise { from { transform: translateY(20px); } }

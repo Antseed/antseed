@@ -5,6 +5,17 @@
 @media (max-width: 899px) {
   .section .panel { height: 480px; }
 }
+/* side by side under 1200 the text runs tall: the painting stays whole and square beside it instead of a cropped portrait */
+@media (min-width: 900px) and (max-width: 1199px) {
+  .section .panel { align-self: center; height: auto; aspect-ratio: 1; }
+}
+/* a painting that runs to its sides fades out at its four edges by day, as the others do (at night all the paintings read as framed) */
+@media (min-width: 900px) {
+  :global(:root:not([data-theme='dark'])) .section .soft {
+    mask-image: linear-gradient(90deg, transparent, #000 6%, #000 94%, transparent), linear-gradient(transparent, #000 6%, #000 94%, transparent);
+    mask-composite: intersect;
+  }
+}
 /* a phone: the text 20 inside the rail, on the first screen's line; eyebrow 16 over the title, 24 between the blocks, 32 over the
    buttons; the painting whole and square, 24 over the next section */
 @media (max-width: 760px) {
@@ -15,6 +26,17 @@
   .section .panel { height: auto; aspect-ratio: 1; }
   .section .head { max-width: 480px; }
   .head .sub { max-width: none; }
+  /* its one button spans the column, as the other phone CTAs do */
+  .section .offer { justify-items: stretch; }
+  /* both point sections lay their pair out alike: two equal halves, or stacked where '$ANTS on Basescan ↗' can't fit a half
+     (the two never overlap: the minifier may reorder them) */
+  .section .actions { display: grid; }
+}
+@media (min-width: 480px) and (max-width: 760px) {
+  .section .actions { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+}
+@media (max-width: 479px) {
+  .section .actions { grid-template-columns: minmax(0, 1fr); }
 }
 @media (min-width: 1200px) {
   .section .rail { box-sizing: border-box; min-height: 0; padding-block: 124px; }

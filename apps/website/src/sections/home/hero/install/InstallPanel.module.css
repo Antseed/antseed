@@ -92,6 +92,10 @@
   .tabs button::after { inset: -8px 0; }
   .get::after { inset: -4px 0; }
   .get, .foot button { position: relative; }
+  /* the versions dialog: the 28px close and the one-line link to older builds, each in a 44px touch area */
+  .close, .older { position: relative; }
+  .close::after, .older::after { content: ''; position: absolute; inset: -8px; }
+  .older::after { inset: -12px 0 -14px; }
 }
 /* no downloads on a phone: the block is left out, nothing in its place */
 @media (max-width: 760px) { .install { display: none; } }

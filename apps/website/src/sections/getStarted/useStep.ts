@@ -1,5 +1,6 @@
 import {useCallback, useEffect, useRef, useState} from 'react';
 import useBrokenLinks from '@docusaurus/useBrokenLinks';
+import {scrollToTop} from './scrollToTop';
 
 export const INSTRUCTIONS_HASH = '#instructions';
 
@@ -24,7 +25,7 @@ export function useStep(): {step: 1 | 2; back: () => void} {
     return () => window.removeEventListener('hashchange', sync);
   }, []);
 
-  useEffect(() => window.scrollTo(0, 0), [step]);
+  useEffect(scrollToTop, [step]);
 
   const back = useCallback(() => {
     if (pushed.current) {

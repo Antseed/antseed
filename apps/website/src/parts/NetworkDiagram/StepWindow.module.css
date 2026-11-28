@@ -72,6 +72,11 @@
 .legendItem { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
 .legendItem svg { flex: none; }
 
+/* tablets: the window sits under the drawing, a card as tall as the longest step; a block still to come shows faint, so the card is
+   never empty */
+@media (min-width: 761px) and (max-width: 1199px) {
+  .window .block[data-state='hidden'] { opacity: .3; }
+}
 @media (prefers-reduced-motion: reduce) {
   .window, .window.active, .block, .block::before, .block span { transition: none; }
 }

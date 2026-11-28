@@ -28,7 +28,10 @@
   font-size: .88em;
   color: var(--site-text);
   overflow-wrap: anywhere;
+  -webkit-box-decoration-break: clone;   /* a chip that must break keeps its ends on both lines */
+  box-decoration-break: clone;
 }
+.part :is(p, li, dd, dt) code[data-whole] { white-space: nowrap; }   /* a short token (Code) never splits */
 :global(:root[data-theme='dark']) .part :is(p, li, dd, dt) code { background: rgba(190, 228, 170, .08); }
 .part :is(p, li) a { color: var(--site-accent); text-decoration: underline; text-decoration-color: color-mix(in srgb, currentColor 35%, transparent); text-underline-offset: 3px; }
 .part :is(p, li) a:hover { color: var(--site-accent); text-decoration-color: currentColor; }
@@ -46,6 +49,7 @@
 .envRow + .envRow { border-top: 1px solid var(--site-tile-line); }
 .envRow dt { font: 400 13px/20px var(--site-font-mono); color: var(--site-text); overflow-wrap: anywhere; }
 .envRow dd { margin: 0; font: 400 13px/20px var(--site-font-mono); color: var(--site-text-body); overflow-wrap: anywhere; }
+.envRow.wireRow dd { font: 400 15px/24px var(--site-font); }   /* a sentence, with its ids as chips */
 .exports summary { width: fit-content; font: 500 14px/20px var(--site-font-ui); color: var(--site-accent); cursor: pointer; }
 .exports summary:focus-visible { outline: 2px solid var(--site-accent); outline-offset: 2px; }
 .exports[open] summary { margin-bottom: 12px; }
@@ -76,6 +80,12 @@
 @media (max-width: 760px) {
   .column { gap: 48px; }
   .part { padding-top: 36px; }
-  .partTitle { font-size: 26px; line-height: 30px; }
+  .partTitle { font-size: 26px; line-height: 30px; text-wrap: balance; }
   .envRow { grid-template-columns: 1fr; gap: 2px; }
+}
+/* touch: 44px hit areas, the text where it was */
+@media (max-width: 760px), (pointer: coarse) {
+  .exports summary { padding-block: 12px; margin-block: -12px; }
+  .exports[open] summary { margin-bottom: 0; }
+  .links a { padding-block: 10px; margin-block: -10px; }
 }

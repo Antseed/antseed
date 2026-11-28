@@ -171,6 +171,16 @@
   .grid {
     grid-template-columns: repeat(2, 1fr);
   }
+  /* a tablet: beside a 360px cover the title would get about 110px, so the featured card stacks, cover on top */
+  .grid .card.cardFeatured {
+    display: flex;
+    flex-direction: column;
+  }
+  .grid .cardFeatured .cover {
+    min-height: 0;
+    height: 220px;
+    order: -1;
+  }
 }
 
 @media (max-width: 640px) {
@@ -179,13 +189,9 @@
   }
   .card.cardFeatured {
     padding: 16px;
-    display: flex;
-    flex-direction: column;
   }
-  .cardFeatured .cover {
-    min-height: 0;
+  .grid .cardFeatured .cover {
     height: 150px;
-    order: -1;
   }
   .cardFeatured .cardTitle {
     font-size: 22px;

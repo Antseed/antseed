@@ -18,6 +18,14 @@
 @media (max-width: 1023px) {
   .figure { padding: 24px 24px 28px; }
 }
+/* under the stacked first screen the figures' text starts on the title's edge: the rail's inner margin, 64 from 900 */
+@media (min-width: 761px) and (max-width: 1199px) {
+  .figures { padding-inline: calc(var(--site-pad) - 24px); }
+  .figures .figure { padding-inline: 24px; }
+}
+@media (min-width: 900px) and (max-width: 1199px) {
+  .figures.figures { padding-inline: 40px; }
+}
 @media (max-width: 760px) {
   .figures { grid-template-columns: 1fr; }
   .figure { padding: 24px 20px 28px; }
