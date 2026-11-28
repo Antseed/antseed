@@ -9,7 +9,6 @@ import { buildRoutingServices, findPinnedRoutingService } from './routing-servic
 import { readFileSync, watchFile, unwatchFile } from 'node:fs'
 import { TELEMETRY_TRAFFIC_HEADER, telemetryClientTool, telemetryProtocol, traceFor, trafficTag, type BuyerTelemetry, type ConversationKeySource, type SwitchReason } from '../telemetry/buyer.js'
 import { finishReasonFromBody } from '../telemetry/finish-reason.js'
-import { reasoningReplayed, requestReasoningTexts } from '../telemetry/reply-facts.js'
 import { readFile, writeFile, rename, mkdir, readdir, stat, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
@@ -5830,18 +5829,13 @@ export class BuyerProxy {
       attemptTrace.useRequestId(requestForPeer.requestId)
       // Translation happens only between the three chat APIs; other requests always pass through.
       if (requestProtocol && TRANSLATABLE_PROTOCOLS.has(requestProtocol)) {
-        let reasoningItems: { received: number; replayed: number } | null = null
-        if (requestProtocol === 'openai-responses') {
-          if (attemptTrace.clientReasoningTexts === undefined) attemptTrace.clientReasoningTexts = requestReasoningTexts(serializedReq.body)
-          const texts = attemptTrace.clientReasoningTexts
-          const replayed = texts && texts.length > 0 ? reasoningReplayed(texts, requestForPeer.body) : 0
-          reasoningItems = texts && replayed !== null ? { received: texts.length, replayed } : null
-        }
-        attemptTrace.route = {
+        attemptTrace.noteRoute({
           translated: selectedRoutePlan.selection?.requiresTransform === true,
           sellerProtocol: selectedRoutePlan.selection?.targetProtocol ?? requestProtocol,
-          reasoningItems,
-        }
+          clientProtocol: requestProtocol,
+          clientBody: serializedReq.body,
+          sellerBody: requestForPeer.body,
+        })
       }
     }
 

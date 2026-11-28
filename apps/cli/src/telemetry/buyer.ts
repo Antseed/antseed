@@ -34,7 +34,7 @@ import {
   type TelemetryClient,
 } from '@antseed/telemetry'
 import { CLI_EVENT_CATALOG, CLIENT_TOOLS, CONNECTED_APP_TOOLS, REQUEST_PROTOCOLS, ROUTING_VERSION, SELLER_ID_PATTERN, TRAFFIC_TAGS } from './catalog.js'
-import { replyFacts, type ReplyFacts } from './reply-facts.js'
+import { reasoningReplayed, replyFacts, requestReasoningTexts, type ReplyFacts } from './reply-facts.js'
 import { posthogConfig, resolveCliConsent } from './settings.js'
 import { detectInstallMethod } from '../update/install-method.js'
 import pkg from '../../package.json' with { type: 'json' }
@@ -217,7 +217,7 @@ export class RequestTrace {
    * In-memory only, never sent: the reasoning texts of the client's request
    * (null when not read), read once for all its attempts.
    */
-  clientReasoningTexts: string[] | null | undefined = undefined
+  private clientReasoningTexts: string[] | null | undefined = undefined
   /** The final attempt's answer as the seller sent it, read only when the request finishes. */
   private replySource: { contentType: string | undefined; body: Uint8Array; protocol: string | null } | null = null
   /** The final attempt's last write of a streamed answer, and its longest silence between two writes. */
@@ -226,6 +226,28 @@ export class RequestTrace {
 
   constructor(readonly startedAtMs: number, readonly peersKnownAtSend: boolean) {
     this.attemptStartedAtMs = startedAtMs
+  }
+
+  /**
+   * How this attempt reaches its seller. `clientBody` is the client's request
+   * and `sellerBody` the one this attempt sends; for a Responses client they
+   * give how many of its reasoning items went on to the seller.
+   */
+  noteRoute(route: {
+    translated: boolean
+    sellerProtocol: string | null
+    clientProtocol: string
+    clientBody: Uint8Array
+    sellerBody: Uint8Array
+  }): void {
+    let reasoningItems: AttemptRoute['reasoningItems'] = null
+    if (route.clientProtocol === 'openai-responses') {
+      if (this.clientReasoningTexts === undefined) this.clientReasoningTexts = requestReasoningTexts(route.clientBody)
+      const texts = this.clientReasoningTexts
+      const replayed = texts && texts.length > 0 ? reasoningReplayed(texts, route.sellerBody) : 0
+      reasoningItems = texts && replayed !== null ? { received: texts.length, replayed } : null
+    }
+    this.route = { translated: route.translated, sellerProtocol: route.sellerProtocol, reasoningItems }
   }
 
   noteAttempt(peerId: string, atMs: number = this.startedAtMs): void {
