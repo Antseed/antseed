@@ -6,6 +6,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Added
+
+- Gateway alerts: each workspace can get a signed webhook, a Telegram message (through its own bot) or an email (through the host's SMTP server, `ANTSEED_GATEWAY_SMTP_URL` and `ANTSEED_GATEWAY_SMTP_FROM`) when its credits drop below a threshold or run out, when a key, member or workspace spend limit is near or reached, or when spend tracking stops. Low-credit alerts carry the wallet address and a suggested top-up amount, so a webhook can automate deposits. Set them up under **Alerts** in the Gateway Console; see the Alerts guide.
+
 ### Changed
 
 - Website: the `/brand/` page is rebuilt in the site's design, with sections for the logo, colour, type, the ant (its full spec and the $ANTS coin), example pieces, backgrounds and the watercolour prompt, and new downloads (ant examples, a profile picture, the pixel font and a one-file brand summary). The repo gains a brand kit for agents making Antseed pages and pictures outside the site: `apps/website/brand-kit/`, starting at `DESIGN.md`, with a starter page that renders whole on its own.

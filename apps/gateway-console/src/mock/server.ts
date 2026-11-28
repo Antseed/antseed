@@ -24,6 +24,7 @@ import { fakeAddress, mockNetworkModels, mockNetworkRouters, mockRouteSelection,
 // The card renderer is the seller service's own (no copy in the console).
 import { sellerCardSvg } from '../../../cli/src/seller-monitor/card'
 import { mockCheckVerifications, mockResetSellerOverrides, mockRestartSeller, mockSaveVerifications, mockSellerEvents, mockSellerLogDetail, mockSellerLogs, mockSellerMarket, mockSellerPromote, mockSellerReputation, mockSellerSettingsState, mockSellerStatus, mockSellerUsage, mockTelegramChats, mockTestAlert, mockUpdateSellerAlerts, mockUpdateSellerSettings } from './seller'
+import { mockAlertDeliveries, mockAlerts, mockCreateAlertDestination, mockDeleteAlertDestination, mockRotateAlertSecret, mockSaveAlertSettings, mockTestAlertDestination, mockUpdateAlertDestination } from './alerts'
 import { mockChatModels, mockChatStream, mockChatThread, mockChatThreads, mockDeleteChatThread } from './chat'
 import { mockOperatorState, OPERATOR_SCENARIOS, scenarioOperator, type OperatorScenario } from './operator'
 
@@ -923,6 +924,14 @@ const routes: Array<[string, string, Handler]> = [
     deposit.approval = null
     return deposit
   }],
+  ['GET', '/workspaces/:id/alerts', ({ params }) => { requireWorkspace(params['id']!, 'admin'); return mockAlerts(params['id']!) }],
+  ['PUT', '/workspaces/:id/alerts/settings', ({ params, body }) => { requireWorkspace(params['id']!, 'admin'); return mockSaveAlertSettings(params['id']!, body ?? {}) }],
+  ['POST', '/workspaces/:id/alerts/destinations', ({ params, body }) => { requireWorkspace(params['id']!, 'admin'); return mockCreateAlertDestination(params['id']!, body ?? {}) }],
+  ['PATCH', '/workspaces/:id/alerts/destinations/:dest', ({ params, body }) => { requireWorkspace(params['id']!, 'admin'); return mockUpdateAlertDestination(params['id']!, params['dest']!, body ?? {}) }],
+  ['POST', '/workspaces/:id/alerts/destinations/:dest/rotate-secret', ({ params }) => { requireWorkspace(params['id']!, 'admin'); return mockRotateAlertSecret(params['id']!, params['dest']!) }],
+  ['POST', '/workspaces/:id/alerts/destinations/:dest/test', ({ params }) => { requireWorkspace(params['id']!, 'admin'); return mockTestAlertDestination(params['id']!, params['dest']!) }],
+  ['DELETE', '/workspaces/:id/alerts/destinations/:dest', ({ params }) => { requireWorkspace(params['id']!, 'admin'); return mockDeleteAlertDestination(params['id']!, params['dest']!) }],
+  ['GET', '/workspaces/:id/alerts/deliveries', ({ params }) => { requireWorkspace(params['id']!, 'admin'); return mockAlertDeliveries(params['id']!) }],
   ['GET', '/workspaces/:id/billing-profile', ({ params }) => {
     requireWorkspace(params['id']!, 'admin')
     return mockBillingProfiles.get(params['id']!) ?? null

@@ -2294,3 +2294,31 @@ test('gateway leaves the wallet out of an out-of-credits 402 when the buyer cann
     cleanup()
   }
 })
+
+test('a cap refusing a request and the buyer running out of credits are both told to the alerts', async () => {
+  const { store, cleanup } = tempDataDir()
+  const told: string[] = []
+  const alerts = {
+    limitRefused: (key: { label: string }, breach: { period: string }) => { told.push(`limit:${key.label}:${breach.period}`) },
+    outOfCredits: (key: { label: string }) => { told.push(`credits:${key.label}`) },
+  }
+  const capped = await fakeBuyer({ costUsdc: 600_000 })
+  const limited = store.createKey({ label: 'Capped', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: { daily: 500_000, monthly: null, total: null }, expiresAt: null })
+  const gateway = await startGateway(store, capped.port, 300_000, null, 50, TEST_IDENTITY_ADDRESS, { alerts })
+  const broke = await fakeBuyer({ outOfCredits: true })
+  const team = store.createKey({ label: 'Team', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
+  const brokeGateway = await startGateway(store, broke.port, 300_000, null, 50, TEST_IDENTITY_ADDRESS, { alerts })
+  try {
+    assert.equal((await request(gateway.port, '/v1/chat/completions', { method: 'POST', key: limited.secret, body: '{"model":"m"}' })).status, 200)
+    await gateway.feed.pollOnce()
+    assert.equal((await request(gateway.port, '/v1/chat/completions', { method: 'POST', key: limited.secret, body: '{"model":"m"}' })).status, 402)
+    assert.equal((await request(brokeGateway.port, '/v1/chat/completions', { method: 'POST', key: team.secret, body: '{"model":"m"}' })).status, 402)
+    assert.deepEqual(told, ['limit:Capped:daily', 'credits:Team'])
+  } finally {
+    await gateway.stop()
+    await brokeGateway.stop()
+    await capped.close()
+    await broke.close()
+    cleanup()
+  }
+})

@@ -2532,6 +2532,122 @@ export class GatewayStore {
     return this.getStatement(workspaceId, period)!
   }
 
+  // ── Alerts ──────────────────────────────────────────────────────────────
+
+  /** A workspace's alert thresholds; every one off until an admin sets it. */
+  getAlertSettings(workspaceId: string): AlertSettingsRecord {
+    const row = this._stmt('SELECT * FROM alert_settings WHERE workspace_id = ?').get(workspaceId) as AlertSettingsRow | undefined
+    return row ? alertSettingsRecord(row) : { workspaceId, ...DEFAULT_ALERT_SETTINGS, updatedAt: null }
+  }
+
+  setAlertSettings(workspaceId: string, settings: Omit<AlertSettingsRecord, 'workspaceId' | 'updatedAt'>): AlertSettingsRecord {
+    this._stmt(`
+      INSERT INTO alert_settings (workspace_id, low_balance_usdc, topup_target_usdc, limit_warn_percent, repeat_minutes, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT (workspace_id) DO UPDATE SET low_balance_usdc = excluded.low_balance_usdc, topup_target_usdc = excluded.topup_target_usdc,
+        limit_warn_percent = excluded.limit_warn_percent, repeat_minutes = excluded.repeat_minutes, updated_at = excluded.updated_at
+    `).run(workspaceId, settings.lowBalanceUsdc, settings.topupTargetUsdc, settings.limitWarnPercent, settings.repeatMinutes, this._now())
+    return this.getAlertSettings(workspaceId)
+  }
+
+  listAlertDestinations(workspaceId?: string): AlertDestinationRecord[] {
+    const rows = workspaceId === undefined
+      ? this._stmt('SELECT * FROM alert_destinations ORDER BY created_at').all()
+      : this._stmt('SELECT * FROM alert_destinations WHERE workspace_id = ? ORDER BY created_at').all(workspaceId)
+    return (rows as AlertDestinationRow[]).map(alertDestinationRecord)
+  }
+
+  getAlertDestination(id: string): AlertDestinationRecord | null {
+    const row = this._stmt('SELECT * FROM alert_destinations WHERE id = ?').get(id) as AlertDestinationRow | undefined
+    return row ? alertDestinationRecord(row) : null
+  }
+
+  countAlertDestinations(workspaceId: string): number {
+    return this._count('SELECT COUNT(*) AS count FROM alert_destinations WHERE workspace_id = ?', workspaceId)
+  }
+
+  createAlertDestination(input: Pick<AlertDestinationRecord, 'workspaceId' | 'kind' | 'label' | 'target' | 'secret' | 'events' | 'enabled'>): AlertDestinationRecord {
+    const id = newId('ad')
+    this._stmt(`
+      INSERT INTO alert_destinations (id, workspace_id, kind, label, target, secret, events, enabled, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, input.workspaceId, input.kind, input.label, input.target, input.secret, JSON.stringify(input.events), input.enabled ? 1 : 0, this._now())
+    return this.getAlertDestination(id)!
+  }
+
+  updateAlertDestination(id: string, patch: Partial<Pick<AlertDestinationRecord, 'label' | 'target' | 'secret' | 'events' | 'enabled'>>): AlertDestinationRecord {
+    const current = this.getAlertDestination(id)
+    if (!current) throw new Error(`Alert destination ${id} not found`)
+    const next = { ...current, ...Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined)) }
+    this._stmt('UPDATE alert_destinations SET label = ?, target = ?, secret = ?, events = ?, enabled = ? WHERE id = ?')
+      .run(next.label, next.target, next.secret, JSON.stringify(next.events), next.enabled ? 1 : 0, id)
+    return this.getAlertDestination(id)!
+  }
+
+  deleteAlertDestination(id: string): boolean {
+    return this._stmt('DELETE FROM alert_destinations WHERE id = ?').run(id).changes > 0
+  }
+
+  /** The outcome of the latest delivery to a destination, shown next to it. */
+  markAlertDestination(id: string, result: { ok: boolean; error: string | null }): void {
+    if (result.ok) this._stmt('UPDATE alert_destinations SET last_sent_at = ?, last_error = NULL WHERE id = ?').run(this._now(), id)
+    else this._stmt('UPDATE alert_destinations SET last_error = ? WHERE id = ?').run(result.error, id)
+  }
+
+  getAlertIncident(workspaceId: string, incident: string): AlertIncidentRecord | null {
+    const row = this._stmt('SELECT * FROM alert_incidents WHERE workspace_id = ? AND incident = ?').get(workspaceId, incident) as AlertIncidentRow | undefined
+    return row ? alertIncidentRecord(row) : null
+  }
+
+  /** Opens an incident (kept as it is when already open); true when it was not open. */
+  openAlertIncident(workspaceId: string, incident: string): boolean {
+    return this._stmt('INSERT INTO alert_incidents (workspace_id, incident, opened_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING')
+      .run(workspaceId, incident, this._now()).changes > 0
+  }
+
+  touchAlertIncident(workspaceId: string, incident: string): void {
+    this._stmt('UPDATE alert_incidents SET last_sent_at = ? WHERE workspace_id = ? AND incident = ?').run(this._now(), workspaceId, incident)
+  }
+
+  /** Closes an incident; the closed record, or null when it was not open. */
+  closeAlertIncident(workspaceId: string, incident: string): AlertIncidentRecord | null {
+    const open = this.getAlertIncident(workspaceId, incident)
+    if (open) this._stmt('DELETE FROM alert_incidents WHERE workspace_id = ? AND incident = ?').run(workspaceId, incident)
+    return open
+  }
+
+  listAlertIncidents(workspaceId: string): AlertIncidentRecord[] {
+    return (this._stmt('SELECT * FROM alert_incidents WHERE workspace_id = ?').all(workspaceId) as AlertIncidentRow[])
+      .map(alertIncidentRecord)
+  }
+
+  recordAlertDelivery(input: Omit<AlertDeliveryRecord, 'id' | 'at'>): void {
+    this._stmt(`
+      INSERT INTO alert_deliveries (workspace_id, destination_id, event_id, event_type, summary, ok, error, at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(input.workspaceId, input.destinationId, input.eventId, input.eventType, input.summary, input.ok ? 1 : 0, input.error, this._now())
+    // Only the latest deliveries are kept per workspace.
+    this._stmt(`
+      DELETE FROM alert_deliveries WHERE workspace_id = ? AND id NOT IN (
+        SELECT id FROM alert_deliveries WHERE workspace_id = ? ORDER BY id DESC LIMIT ?
+      )
+    `).run(input.workspaceId, input.workspaceId, ALERT_DELIVERIES_KEPT)
+  }
+
+  listAlertDeliveries(workspaceId: string, limit = 100): AlertDeliveryRecord[] {
+    return (this._stmt('SELECT * FROM alert_deliveries WHERE workspace_id = ? ORDER BY id DESC LIMIT ?').all(workspaceId, limit) as AlertDeliveryRow[]).map((row) => ({
+      id: row.id,
+      workspaceId: row.workspace_id,
+      destinationId: row.destination_id,
+      eventId: row.event_id,
+      eventType: row.event_type,
+      summary: row.summary,
+      ok: row.ok === 1,
+      error: row.error,
+      at: row.at,
+    }))
+  }
+
   // ── Settings ────────────────────────────────────────────────────────────
 
   /**
@@ -2943,4 +3059,142 @@ function storedRouteSelection(value: unknown): ServedSelection | null {
   } catch {
     return null
   }
+}
+
+/** Deliveries kept per workspace in the alert log. */
+export const ALERT_DELIVERIES_KEPT = 500
+
+export type AlertDestinationKind = 'webhook' | 'telegram' | 'email'
+/** What a destination subscribes to: the workspace's balance, its spend limits, the gateway's spend tracking. */
+export type AlertEventGroup = 'balance' | 'limits' | 'gateway'
+
+/** A workspace's alert thresholds, in USDC base units; null turns one off. */
+export interface AlertSettingsRecord {
+  workspaceId: string
+  /** `balance.low` once the credits available drop below this. */
+  lowBalanceUsdc: number | null
+  /** The balance a top-up should bring the credits back to; the alert suggests the difference. */
+  topupTargetUsdc: number | null
+  /** `limit.near` once a cap is this percent spent. */
+  limitWarnPercent: number | null
+  /** Repeat an alert that stays open every this many minutes; null sends it once. */
+  repeatMinutes: number | null
+  updatedAt: number | null
+}
+
+export const DEFAULT_ALERT_SETTINGS: Readonly<Omit<AlertSettingsRecord, 'workspaceId' | 'updatedAt'>> = Object.freeze({
+  lowBalanceUsdc: null,
+  topupTargetUsdc: null,
+  limitWarnPercent: null,
+  repeatMinutes: null,
+})
+
+interface AlertSettingsRow {
+  workspace_id: string
+  low_balance_usdc: number | null
+  topup_target_usdc: number | null
+  limit_warn_percent: number | null
+  repeat_minutes: number | null
+  updated_at: number
+}
+
+function alertSettingsRecord(row: AlertSettingsRow): AlertSettingsRecord {
+  return {
+    workspaceId: row.workspace_id,
+    lowBalanceUsdc: row.low_balance_usdc,
+    topupTargetUsdc: row.topup_target_usdc,
+    limitWarnPercent: row.limit_warn_percent,
+    repeatMinutes: row.repeat_minutes,
+    updatedAt: row.updated_at,
+  }
+}
+
+/** Where a workspace's alerts go. */
+export interface AlertDestinationRecord {
+  id: string
+  workspaceId: string
+  kind: AlertDestinationKind
+  label: string
+  /** The webhook URL, the Telegram chat id, or the email addresses (comma-separated). */
+  target: string
+  /** The webhook's signing secret or the Telegram bot token; never sent to the console in full. */
+  secret: string | null
+  events: AlertEventGroup[]
+  enabled: boolean
+  createdAt: number
+  lastSentAt: number | null
+  lastError: string | null
+}
+
+interface AlertDestinationRow {
+  id: string
+  workspace_id: string
+  kind: AlertDestinationKind
+  label: string
+  target: string
+  secret: string | null
+  events: string
+  enabled: number
+  created_at: number
+  last_sent_at: number | null
+  last_error: string | null
+}
+
+function alertDestinationRecord(row: AlertDestinationRow): AlertDestinationRecord {
+  return {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    kind: row.kind,
+    label: row.label,
+    target: row.target,
+    secret: row.secret,
+    events: parseJson<AlertEventGroup[]>(row.events, []),
+    enabled: row.enabled === 1,
+    createdAt: row.created_at,
+    lastSentAt: row.last_sent_at,
+    lastError: row.last_error,
+  }
+}
+
+/** An alert condition that is open: alerted once (and repeated per `repeatMinutes`) until it closes. */
+export interface AlertIncidentRecord {
+  workspaceId: string
+  incident: string
+  openedAt: number
+  lastSentAt: number | null
+}
+
+interface AlertIncidentRow {
+  workspace_id: string
+  incident: string
+  opened_at: number
+  last_sent_at: number | null
+}
+
+function alertIncidentRecord(row: AlertIncidentRow): AlertIncidentRecord {
+  return { workspaceId: row.workspace_id, incident: row.incident, openedAt: row.opened_at, lastSentAt: row.last_sent_at }
+}
+
+export interface AlertDeliveryRecord {
+  id: number
+  workspaceId: string
+  destinationId: string
+  eventId: string
+  eventType: string
+  summary: string
+  ok: boolean
+  error: string | null
+  at: number
+}
+
+interface AlertDeliveryRow {
+  id: number
+  workspace_id: string
+  destination_id: string
+  event_id: string
+  event_type: string
+  summary: string
+  ok: number
+  error: string | null
+  at: number
 }

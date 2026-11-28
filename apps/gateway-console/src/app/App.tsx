@@ -21,6 +21,7 @@ const loaders: Record<PageId, () => Promise<{ default: ComponentType }>> = {
   members: () => import('../pages/Members'),
   workspaces: () => import('../pages/Workspaces'),
   wallet: () => import('../pages/Wallet'),
+  alerts: () => import('../pages/Alerts'),
   rewards: () => import('../pages/Rewards'),
   staking: () => import('../pages/Staking'),
   providers: () => import('../pages/Providers'),

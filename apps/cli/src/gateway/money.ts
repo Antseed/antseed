@@ -14,6 +14,19 @@ export function parseUsdToUsdc(value: string): number {
   return amount
 }
 
+/** A signed decimal USD string, as the buyer reports balances ("12.500000", "-0.100000"), in base units; null when it is not one. */
+export function decimalToUsdc(value: string | null): number | null {
+  if (value === null) return null
+  const trimmed = value.trim()
+  const negative = trimmed.startsWith('-')
+  try {
+    const amount = parseUsdToUsdc(negative ? trimmed.slice(1) : trimmed)
+    return negative ? -amount : amount
+  } catch {
+    return null
+  }
+}
+
 /** Exact decimal string for API responses, e.g. 1500000 -> "1.500000". */
 export function usdcToDecimalString(amount: number): string {
   const sign = amount < 0 ? '-' : ''

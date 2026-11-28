@@ -54,6 +54,7 @@
     "ethers": "~6.16.0",
     "geoip-country": "^5",
     "jose": "^6.0.0",
+    "nodemailer": "10.5.0",
     "open": "^11.0.0",
     "ora": "^9.3.0",
     "qrcode": "^1.5.4",
@@ -65,6 +66,7 @@
     "@types/better-sqlite3": "^7.6.13",
     "@types/geoip-country": "^5",
     "@types/node": "^20.11.0",
+    "@types/nodemailer": "^8.0.2",
     "tsx": "^4.7.0",
     "typescript": "catalog:"
   }

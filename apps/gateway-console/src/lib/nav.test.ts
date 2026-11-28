@@ -6,7 +6,7 @@ const ids = (orgRole: 'owner' | 'admin' | 'member', workspaceRole: 'admin' | 'me
 
 describe('role-based navigation', () => {
   it('shows everything to owners and org admins', () => {
-    const all = ['overview', 'chat', 'activity', 'logs', 'keys', 'presets', 'wallet', 'rewards', 'staking', 'providers', 'models', 'routing', 'members', 'workspaces', 'audit', 'settings']
+    const all = ['overview', 'chat', 'activity', 'logs', 'keys', 'presets', 'wallet', 'rewards', 'staking', 'alerts', 'providers', 'models', 'routing', 'members', 'workspaces', 'audit', 'settings']
     expect(ids('owner', null)).toEqual(all)
     expect(ids('admin', 'member')).toEqual(all)
   })
@@ -14,6 +14,7 @@ describe('role-based navigation', () => {
     const nav = ids('member', 'admin')
     expect(nav).toContain('members')
     expect(nav).toContain('wallet')
+    expect(nav).toContain('alerts')
     expect(nav).toContain('routing')
     expect(nav).not.toContain('settings')
   })
@@ -23,6 +24,7 @@ describe('role-based navigation', () => {
   it('blocks direct navigation to hidden pages', () => {
     expect(canOpen('settings', { orgRole: 'member', workspaceRole: 'admin' })).toBe(false)
     expect(canOpen('wallet', { orgRole: 'member', workspaceRole: 'member' })).toBe(false)
+    expect(canOpen('alerts', { orgRole: 'member', workspaceRole: 'member' })).toBe(false)
   })
 
   it('derives the viewer from /auth/me', () => {

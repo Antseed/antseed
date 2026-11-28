@@ -3,11 +3,13 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
+import Database from 'better-sqlite3'
 import { GatewayAccounting } from './accounting.js'
 import { OBSERVABILITY_SETTING } from './observability.js'
 import { GatewayServer } from './server.js'
 import { MIGRATIONS } from './store-migrations.js'
 import { GatewayStore, type UsageFilter, type UsageGroupBy } from './store.js'
+import { usageRollupMigrationSql } from './usage-rollup-sql.js'
 
 const NO_LIMITS = { daily: null, weekly: null, monthly: null, total: null }
 const HOUR = 3_600_000
@@ -215,14 +217,23 @@ test('usage reports read the rollup: they keep their totals without the rows the
   }
 })
 
-/** Takes the rollup out of a database (its triggers, tables and version), as a gateway from before it left one. */
+/**
+ * Takes the rollup and every later migration out of a database (what they created, and the version), as a
+ * gateway from before the rollup left one. What they created is found by running the migrations on a scratch database.
+ */
 function beforeTheRollup(store: GatewayStore): void {
-  store.database.exec(`
-    DROP TRIGGER usage_hourly_request_insert; DROP TRIGGER usage_hourly_request_update;
-    DROP TRIGGER usage_hourly_ledger_insert; DROP TRIGGER usage_hourly_ledger_update;
-    DROP TABLE usage_hourly; DROP TABLE usage_rollup_state;
-  `)
-  store.database.pragma(`user_version = ${MIGRATIONS.length - 1}`)
+  const rollup = MIGRATIONS.indexOf(usageRollupMigrationSql())
+  const scratch = new Database(':memory:')
+  const created = () => scratch.prepare("SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").all() as Array<{ type: string; name: string }>
+  for (const sql of MIGRATIONS.slice(0, rollup)) scratch.exec(sql)
+  const older = new Set(created().map((object) => object.name))
+  for (const sql of MIGRATIONS.slice(rollup)) scratch.exec(sql)
+  const added = created().filter((object) => !older.has(object.name))
+  scratch.close()
+  for (const type of ['trigger', 'index', 'table']) {
+    for (const object of added.filter((candidate) => candidate.type === type)) store.database.exec(`DROP ${type} IF EXISTS "${object.name}"`)
+  }
+  store.database.pragma(`user_version = ${rollup}`)
 }
 
 /** Puts a rolled-up database back to how migration 18 finds an older one: every row so far waits for the backfill. */

@@ -95,6 +95,7 @@ export function gatewayConsole(options: GatewayConsoleOptions): (context: Gatewa
       spendFeedState: context.spendFeedState,
       x402Enabled: context.x402Enabled,
       trustCloudflareHeaders: options.trustCloudflareHeaders === true,
+      ...(context.alerts ? { alerts: context.alerts } : {}),
       ...(options.updates ? { updates: options.updates } : {}),
     }
     const deps: ConsoleDeps = { ...base, listenHost: context.listenHost }

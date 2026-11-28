@@ -1,7 +1,7 @@
 import type { MeResponse, OrgRole, WorkspaceRole } from '../api/types'
 
 export type PageId =
-  | 'overview' | 'chat' | 'activity' | 'logs' | 'keys' | 'members' | 'workspaces' | 'wallet'
+  | 'overview' | 'chat' | 'activity' | 'logs' | 'keys' | 'members' | 'workspaces' | 'wallet' | 'alerts'
   | 'rewards' | 'staking' | 'providers' | 'models' | 'routing' | 'presets' | 'audit' | 'settings'
   | 'seller' | 'seller-logs' | 'seller-market' | 'seller-reputation' | 'seller-promote' | 'seller-settings'
 
@@ -31,6 +31,7 @@ export const NAV_ITEMS: Array<{ id: PageId; label: string; group: string; access
   { id: 'wallet', label: 'Wallet & Funding', group: 'Money', access: 'workspaceAdmin' },
   { id: 'rewards', label: 'Rewards', group: 'Money', access: 'workspaceAdmin' },
   { id: 'staking', label: 'Staking', group: 'Money', access: 'workspaceAdmin' },
+  { id: 'alerts', label: 'Alerts', group: 'Money', access: 'workspaceAdmin' },
   { id: 'providers', label: 'Providers', group: 'Routing', access: 'member' },
   { id: 'models', label: 'Models', group: 'Routing', access: 'member' },
   { id: 'routing', label: 'Routing', group: 'Routing', access: 'workspaceAdmin' },

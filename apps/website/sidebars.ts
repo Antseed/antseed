@@ -29,6 +29,7 @@ const sidebars: SidebarsConfig = {
         'gateway/chat',
         'gateway/funding',
         'gateway/budgets',
+        'gateway/alerts',
         'gateway/routing',
         'gateway/api',
         'gateway/activity',
