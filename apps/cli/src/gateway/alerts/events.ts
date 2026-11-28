@@ -34,12 +34,6 @@ export interface AlertEvent {
   data: Record<string, unknown>
 }
 
-export const ALERT_EVENT_GROUPS: Record<AlertEventGroup, AlertEventType[]> = {
-  balance: ['balance.low', 'balance.empty', 'balance.ok'],
-  limits: ['limit.near', 'limit.reached'],
-  gateway: ['spend_tracking.down', 'spend_tracking.ok'],
-}
-
 type Workspace = { id: string; name: string }
 
 function base(type: AlertEventType, group: AlertEventGroup | null, severity: AlertSeverity, workspace: Workspace, now: number): Omit<AlertEvent, 'title' | 'message' | 'data'> {

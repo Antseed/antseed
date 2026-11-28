@@ -2563,7 +2563,7 @@ export class GatewayStore {
   }
 
   countAlertDestinations(workspaceId: string): number {
-    return this._count('SELECT COUNT(*) AS n FROM alert_destinations WHERE workspace_id = ?', workspaceId)
+    return this._count('SELECT COUNT(*) AS count FROM alert_destinations WHERE workspace_id = ?', workspaceId)
   }
 
   createAlertDestination(input: Pick<AlertDestinationRecord, 'workspaceId' | 'kind' | 'label' | 'target' | 'secret' | 'events' | 'enabled'>): AlertDestinationRecord {

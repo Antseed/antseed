@@ -7,6 +7,7 @@
  * A failed delivery is retried a few times; every attempt is logged.
  */
 import { effectiveKeyLimits } from '../accounting.js'
+import { errorMessage } from '../errors.js'
 import { cappedPeriods, periodResetsAt, periodStart, type BudgetLevel, type BudgetLimits, type BudgetPeriod, type LimitBreach } from '../limits.js'
 import type { SpendFeedState } from '../spend-feed.js'
 import type { AlertDestinationRecord, AlertEventGroup, AlertSettingsRecord, ApiKeyRecord, BudgetScope, GatewayStore, WorkspaceRecord } from '../store.js'
@@ -112,7 +113,7 @@ export class GatewayAlerts {
   tick(): Promise<void> {
     if (!this._ticking) {
       this._ticking = this._tick().catch((error) => {
-        this._log(`gateway alerts: check failed: ${error instanceof Error ? error.message : String(error)}`)
+        this._log(`gateway alerts: check failed: ${errorMessage(error)}`)
       }).finally(() => { this._ticking = null })
     }
     return this._ticking
@@ -341,7 +342,7 @@ export class GatewayAlerts {
     try {
       await this._options.transport.send(destination, event)
     } catch (failure) {
-      error = failure instanceof Error ? failure.message : String(failure)
+      error = errorMessage(failure)
       this._log(`gateway alerts: ${event.type} to ${destination.kind} ${destination.id} failed: ${error}`)
     }
     try {
@@ -351,7 +352,7 @@ export class GatewayAlerts {
       })
       this._store.markAlertDestination(destination.id, { ok: error === null, error })
     } catch (failure) {
-      this._log(`gateway alerts: could not log a delivery: ${failure instanceof Error ? failure.message : String(failure)}`)
+      this._log(`gateway alerts: could not log a delivery: ${errorMessage(failure)}`)
     }
     return { ok: error === null, error }
   }
@@ -365,7 +366,7 @@ export class GatewayAlerts {
     try {
       await work()
     } catch (error) {
-      this._log(`gateway alerts: ${error instanceof Error ? error.message : String(error)}`)
+      this._log(`gateway alerts: ${errorMessage(error)}`)
     }
   }
 }

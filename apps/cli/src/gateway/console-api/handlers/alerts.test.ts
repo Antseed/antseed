@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { after, before, test } from 'node:test'
+import { MAX_ALERT_DESTINATIONS } from '../../services/alerts.js'
 import type { AlertDestinationRecord } from '../../store.js'
 import { FakeConsoleAuth, addActiveMember, call, memberPrincipal, startConsole, tempDataDir, testDeps } from '../test-support.js'
 import type { AlertDelivery, AlertDestination, AlertDestinationCreated, AlertsConfig, AlertSettings } from '../types.js'
@@ -119,4 +120,18 @@ test('email validates addresses; the delivery log lists newest first', async () 
   store.recordAlertDelivery({ workspaceId, destinationId: created.destination.id, eventId: 'evt_1', eventType: 'balance.low', summary: 'low', ok: true, error: null })
   const log = (await call(server.port, 'GET', `${base}/deliveries`, { who: 'owner' })).body as AlertDelivery[]
   assert.deepEqual(log.map((entry) => entry.ok), [true, false])
+})
+
+test('a workspace has at most twenty alert destinations', async () => {
+  const workspaceId = store.defaultWorkspace().id
+  const create = (index: number) => call(server.port, 'POST', `${base}/destinations`, {
+    who: 'owner', body: { kind: 'email', label: `Mail ${index}`, target: `ops${index}@example.com`, events: ['balance'] },
+  })
+  for (let index = store.countAlertDestinations(workspaceId); index < MAX_ALERT_DESTINATIONS; index += 1) {
+    assert.equal((await create(index)).status, 201)
+  }
+  assert.equal(store.countAlertDestinations(workspaceId), MAX_ALERT_DESTINATIONS)
+  const over = await create(MAX_ALERT_DESTINATIONS)
+  assert.equal(over.status, 400)
+  assert.equal(store.countAlertDestinations(workspaceId), MAX_ALERT_DESTINATIONS)
 })

@@ -9,6 +9,7 @@ import { lookup as dnsLookup } from 'node:dns/promises'
 import http from 'node:http'
 import https from 'node:https'
 import { isIP, type LookupFunction } from 'node:net'
+import { errorMessage } from '../errors.js'
 import type { AlertDestinationRecord } from '../store.js'
 import type { AlertEvent } from './events.js'
 
@@ -190,7 +191,7 @@ export function createAlertTransport(options: AlertTransportOptions = {}): Alert
       status = await post(url, headers, body)
     } catch (error) {
       if (error instanceof ForbiddenWebhookError) throw error
-      throw new Error(`The webhook could not be reached: ${error instanceof Error ? error.message : String(error)}`)
+      throw new Error(`The webhook could not be reached: ${errorMessage(error)}`)
     }
     if (status < 200 || status >= 300) throw new Error(`The webhook answered HTTP ${status}.`)
   }
@@ -207,7 +208,7 @@ export function createAlertTransport(options: AlertTransportOptions = {}): Alert
       })
     } catch (error) {
       // fetch errors can quote the URL, which carries the bot token.
-      const message = error instanceof Error ? error.message : String(error)
+      const message = errorMessage(error)
       throw new Error(`Telegram could not be reached: ${message.split(destination.secret).join('<token>')}`)
     }
     const body = await response.json().catch(() => null) as { ok?: boolean; description?: string } | null
@@ -233,7 +234,7 @@ export function createAlertTransport(options: AlertTransportOptions = {}): Alert
     try {
       await sendMail({ from: env[SMTP_FROM_ENV]!.trim(), to, subject: `[Antseed] ${event.title}`, text: alertText(event) })
     } catch (error) {
-      throw new Error(`The email could not be sent: ${error instanceof Error ? error.message : String(error)}`)
+      throw new Error(`The email could not be sent: ${errorMessage(error)}`)
     }
   }
 
@@ -244,7 +245,7 @@ export function createAlertTransport(options: AlertTransportOptions = {}): Alert
         else if (destination.kind === 'telegram') await telegram(destination, event)
         else await email(destination, event)
       } catch (error) {
-        throw new Error(clip(error instanceof Error ? error.message : String(error)))
+        throw new Error(clip(errorMessage(error)))
       }
     },
     emailConfigured: () => emailConfigured(env),

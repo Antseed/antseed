@@ -11,6 +11,7 @@ import { badRequest, notFound } from '../console-api/serialize.js'
 import type {
   AlertDelivery, AlertDestination, AlertDestinationCreated, AlertDestinationInput, AlertSettings, AlertSettingsInput,
 } from '../console-api/types.js'
+import { errorMessage } from '../errors.js'
 import { optionalUsdcToDecimalString, parseUsdToUsdc } from '../money.js'
 import type { AlertDestinationKind, AlertDestinationRecord, AlertEventGroup, AlertSettingsRecord, WorkspaceRecord } from '../store.js'
 import { recordAudit, requiredText, type Actor, type ServiceContext } from './context.js'
@@ -55,7 +56,7 @@ function usdOrNull(value: unknown, field: string): number | null {
   try {
     return parseUsdToUsdc(String(value))
   } catch (error) {
-    throw badRequest(`${field}: ${error instanceof Error ? error.message : String(error)}`)
+    throw badRequest(`${field}: ${errorMessage(error)}`)
   }
 }
 
