@@ -109,11 +109,15 @@ export class ProxyMux {
   private readonly _chunkHandlers = new Map<string, ChunkHandler>();
   private readonly _downloads = new Set<string>();
   private readonly _consumingDownloads = new Set<string>();
-  private readonly _downloadControllers = new Map<string, AbortController>();
   private readonly _downloadAcks = new Map<string, { messageId: number; resolve: () => void }>();
 
   // Seller side: handler for incoming proxy requests
   private _requestHandler: RequestHandler | null = null;
+  // Seller side: one controller per request being served, aborted when the buyer cancels it
+  // (HttpRequestCancel), so the provider can stop generating.
+  private readonly _requestControllers = new Map<string, AbortController>();
+  // Seller side: the requests among them that are video downloads.
+  private readonly _servedDownloads = new Set<string>();
 
   // Seller side: in-progress chunked uploads with size tracking and timeouts
   private readonly _pendingUploads = new Map<string, PendingUpload>();
@@ -194,12 +198,16 @@ export class ProxyMux {
     }
   }
 
-  /** Buyer side: cancel handlers for an in-flight request. */
+  /**
+   * Buyer side: drop an in-flight request's handlers and tell the seller, so it stops generating
+   * an answer no one will read. A seller that predates cancelling ignores the frame.
+   */
   cancelProxyRequest(requestId: string): void {
     debugLog(`[ProxyMux] cancel request reqId=${requestId.slice(0, 8)}`);
-    this._responseHandlers.delete(requestId);
-    this._chunkHandlers.delete(requestId);
-    if (this._downloads.delete(requestId)) {
+    const awaitingResponse = this._responseHandlers.delete(requestId);
+    const awaitingChunks = this._chunkHandlers.delete(requestId);
+    const download = this._downloads.delete(requestId);
+    if (awaitingResponse || awaitingChunks || download) {
       this._safeSendFrame(encodeFrame({
         type: MessageType.HttpRequestCancel,
         messageId: this._nextMessageId(),
@@ -208,14 +216,55 @@ export class ProxyMux {
     }
   }
 
+  /** Seller side: aborted when the buyer cancels this request. */
+  requestSignal(requestId: string): AbortSignal | undefined {
+    return this._requestControllers.get(requestId)?.signal;
+  }
+
   downloadSignal(requestId: string): AbortSignal | undefined {
-    return this._downloadControllers.get(requestId)?.signal;
+    return this._servedDownloads.has(requestId) ? this.requestSignal(requestId) : undefined;
+  }
+
+  /**
+   * Seller side: the request is cancelled. An upload whose body is still arriving is dropped, never
+   * handled. A request already handed to the handler is aborted, and its controller stays until the
+   * handler ends, so a handler still in admission checks reads the cancel when it asks for the signal.
+   */
+  private _cancelServedRequest(requestId: string): void {
+    const controller = this._requestControllers.get(requestId);
+    if (this._disposeUpload(requestId)) {
+      this._requestControllers.delete(requestId);
+    }
+    controller?.abort(new Error('Cancelled by the buyer'));
+    this._finishServedDownload(requestId);
+  }
+
+  /** Seller side: clear a pending upload's timer, byte budget and buffers. False when none is pending. */
+  private _disposeUpload(requestId: string): boolean {
+    const entry = this._pendingUploads.get(requestId);
+    if (!entry) return false;
+    clearTimeout(entry.timer);
+    this._releasePending(entry.byteCount);
+    for (const c of entry.chunks) c.fill(0);
+    this._pendingUploads.delete(requestId);
+    return true;
+  }
+
+  /** Seller side: the request was served; a download's pending chunk waits end with it. */
+  private _finishServedRequest(requestId: string): void {
+    const controller = this._requestControllers.get(requestId);
+    this._requestControllers.delete(requestId);
+    if (this._servedDownloads.has(requestId)) controller?.abort();
+    this._finishServedDownload(requestId);
+  }
+
+  private _finishServedDownload(requestId: string): void {
+    this._servedDownloads.delete(requestId);
+    this._downloadAcks.delete(requestId);
   }
 
   finishDownload(requestId: string): void {
-    this._downloadControllers.get(requestId)?.abort();
-    this._downloadControllers.delete(requestId);
-    this._downloadAcks.delete(requestId);
+    this._finishServedRequest(requestId);
   }
 
   async sendDownloadChunk(chunk: SerializedHttpResponseChunk): Promise<void> {
@@ -293,9 +342,10 @@ export class ProxyMux {
             // Venice downloads are a small JSON POST naming the job.
             const validBody = request.method === 'POST' && request.body.length <= 4096;
             if (!validBody || request.headers[ANTSEED_UPLOAD_CHUNK_HEADER]) throw new Error('Invalid download request');
-            if (this._downloadControllers.has(request.requestId)) throw new Error('Duplicate download request');
-            this._downloadControllers.set(request.requestId, new AbortController());
+            if (this._servedDownloads.has(request.requestId)) throw new Error('Duplicate download request');
+            this._servedDownloads.add(request.requestId);
           }
+          if (!this._requestControllers.has(request.requestId)) this._requestControllers.set(request.requestId, new AbortController());
           debugLog(
             `[ProxyMux] recv request reqId=${request.requestId.slice(0, 8)} chunked=${request.headers[ANTSEED_UPLOAD_CHUNK_HEADER] === 'chunked' ? "true" : "false"} bodyBytes=${request.body?.length ?? 0} bodyType=${typeof request.body}`,
           );
@@ -321,7 +371,9 @@ export class ProxyMux {
             });
           } else if (this._requestHandler) {
             try { await this._requestHandler(request); }
-            finally { this.finishDownload(request.requestId); }
+            finally { this._finishServedRequest(request.requestId); }
+          } else {
+            this._finishServedRequest(request.requestId);
           }
           break;
         }
@@ -378,7 +430,10 @@ export class ProxyMux {
             entry.chunks.length = 0;
 
             const { [ANTSEED_UPLOAD_CHUNK_HEADER]: _marker, ...cleanHeaders } = entry.headerReq.headers;
-            await this._requestHandler({ ...entry.headerReq, headers: cleanHeaders, body });
+            try { await this._requestHandler({ ...entry.headerReq, headers: cleanHeaders, body }); }
+            finally { this._finishServedRequest(chunk.requestId); }
+          } else {
+            this._finishServedRequest(chunk.requestId);
           }
           break;
         }
@@ -464,8 +519,10 @@ export class ProxyMux {
           break;
         }
         case MessageType.HttpRequestCancel: {
+          // Seller side: the buyer gave the request up.
           const chunk = decodeHttpResponseChunk(frame.payload);
-          this.finishDownload(chunk.requestId);
+          debugLog(`[ProxyMux] recv cancel reqId=${chunk.requestId.slice(0, 8)}`);
+          this._cancelServedRequest(chunk.requestId);
           break;
         }
         default:
@@ -499,10 +556,13 @@ export class ProxyMux {
    * Zeros all buffered chunk data before discarding.
    */
   abortPendingUploads(): void {
-    for (const requestId of this._downloadControllers.keys()) this.finishDownload(requestId);
-    for (const entry of this._pendingUploads.values()) {
+    // A download's pending chunk waits end with the connection. Other answers still finish: a buyer
+    // whose connection ends before its answer does still owes for it (only a cancel stops one).
+    for (const requestId of [...this._servedDownloads]) this._finishServedRequest(requestId);
+    for (const [requestId, entry] of this._pendingUploads) {
       clearTimeout(entry.timer);
       for (const c of entry.chunks) c.fill(0);
+      this._requestControllers.delete(requestId);
     }
     this._pendingUploads.clear();
     this._releasePending(this._totalPendingUploadBytes);
@@ -544,13 +604,8 @@ export class ProxyMux {
    * response to the buyer.
    */
   private _abortUpload(requestId: string, statusCode: number, reason: string): void {
-    const entry = this._pendingUploads.get(requestId);
-    if (!entry) return;
-
-    clearTimeout(entry.timer);
-    this._releasePending(entry.byteCount);
-    for (const c of entry.chunks) c.fill(0);
-    this._pendingUploads.delete(requestId);
+    if (!this._disposeUpload(requestId)) return;
+    this._finishServedRequest(requestId);
 
     this.sendProxyResponse({
       requestId,

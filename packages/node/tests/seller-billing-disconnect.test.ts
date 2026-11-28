@@ -29,7 +29,8 @@ import { signUtf8, type Identity } from '../src/p2p/identity.js';
 import { decodeFrame } from '../src/p2p/message-protocol.js';
 import { PaymentMux } from '../src/p2p/payment-mux.js';
 import type { PeerConnection } from '../src/p2p/connection-manager.js';
-import { decodeHttpResponse, encodeHttpRequest } from '../src/proxy/request-codec.js';
+import { decodeHttpResponse, encodeHttpRequest, encodeHttpResponseChunk } from '../src/proxy/request-codec.js';
+import { computeCostUsdc, usageForBilling } from '@antseed/buyer-core';
 import { SellerRequestHandler } from '../src/seller-request-handler.js';
 import { ConnectionState } from '../src/types/connection.js';
 import type { SerializedHttpRequest, SerializedHttpResponse } from '../src/types/http.js';
@@ -51,8 +52,10 @@ const COST = 2_500n;
 
 const USAGE = { prompt_tokens: 1000, completion_tokens: 500, total_tokens: 1500 };
 const encoder = new TextEncoder();
+const concat = (a: Uint8Array, b: Uint8Array): Uint8Array => { const out = new Uint8Array(a.length + b.length); out.set(a); out.set(b, a.length); return out; };
 
-type AnswerKind = 'buffered' | 'streamed';
+/** `cancellable*`: a streamed answer whose provider stops when the buyer cancels it, by throwing or by ending the stream. */
+type AnswerKind = 'buffered' | 'streamed' | 'cancellable-throws' | 'cancellable-ends';
 
 function identity(): Identity {
   const privateKey = randomBytes(32);
@@ -63,6 +66,7 @@ function identity(): Identity {
 /** An upstream whose answers can be held open, so a test can act while one is being served. */
 function makeUpstream(kind: AnswerKind) {
   let calls = 0;
+  let sawCancel = false;
   let held: Promise<void> | null = null;
   let open: (() => void) | null = null;
   const serve = async (): Promise<void> => {
@@ -101,10 +105,33 @@ function makeUpstream(kind: AnswerKind) {
         return { requestId: request.requestId, statusCode: 200, headers, body: encoder.encode(firstChunk + lastChunk) };
       },
     } satisfies Pick<Provider, 'handleRequestStream'> : {}),
+    ...(kind.startsWith('cancellable') ? {
+      handleRequestStream: async (request, callbacks) => {
+        const headers = { 'content-type': 'text/event-stream' };
+        callbacks.onResponseStart({ requestId: request.requestId, statusCode: 200, headers, body: new Uint8Array(0) });
+        await callbacks.onResponseChunk({ requestId: request.requestId, data: encoder.encode(firstChunk), done: false });
+        const signal = callbacks.signal;
+        await Promise.race([serve(), new Promise<void>((resolve) => signal?.addEventListener('abort', () => resolve(), { once: true }))]);
+        if (signal?.aborted) {
+          sawCancel = true;
+          if (kind === 'cancellable-throws') throw signal.reason;
+          // Ends the stream the way the HTTP relay does: an error event, then done.
+          const errorEvent = encoder.encode('event: error\ndata: Cancelled by the buyer\n\n');
+          await callbacks.onResponseChunk({ requestId: request.requestId, data: errorEvent, done: false });
+          await callbacks.onResponseChunk({ requestId: request.requestId, data: new Uint8Array(0), done: true });
+          return { requestId: request.requestId, statusCode: 200, headers, body: concat(encoder.encode(firstChunk), errorEvent) };
+        }
+        await callbacks.onResponseChunk({ requestId: request.requestId, data: encoder.encode(lastChunk), done: false });
+        await callbacks.onResponseChunk({ requestId: request.requestId, data: new Uint8Array(0), done: true });
+        return { requestId: request.requestId, statusCode: 200, headers, body: encoder.encode(firstChunk + lastChunk) };
+      },
+    } satisfies Pick<Provider, 'handleRequestStream'> : {}),
   };
   return {
     provider,
     get calls() { return calls; },
+    get sawCancel() { return sawCancel; },
+    firstChunk,
     /** Holds the answers started from now on; returns what releases just those. */
     hold() {
       let release!: () => void;
@@ -243,6 +270,11 @@ async function setup(kind: AnswerKind, config: Partial<SellerPaymentConfig> = {}
       body: encoder.encode(JSON.stringify({ model, messages: [{ role: 'user', content: 'hello' }] })),
     }),
   });
+  const cancel = (requestId: string): Promise<void> => connection.mux.handleFrame({
+    type: MessageType.HttpRequestCancel,
+    messageId: 2,
+    payload: encodeHttpResponseChunk({ requestId, data: new Uint8Array(0), done: false }),
+  });
   const responseTo = (requestId: string): SerializedHttpResponse => connection.frames
     .map((frame) => decodeFrame(frame).message!)
     .filter((message) => message.type === MessageType.HttpResponse)
@@ -261,6 +293,7 @@ async function setup(kind: AnswerKind, config: Partial<SellerPaymentConfig> = {}
     paymentMuxAcks: () => connection.authAcks.mock.calls.map(([payload]) => payload),
     buyerPeerId: buyer.peerId,
     send,
+    cancel,
     responseTo,
     reserveAuth,
     spendingAuth,
@@ -802,5 +835,63 @@ describe.each<AnswerKind>(['buffered', 'streamed'])('seller billing across a dis
     expect(h.upstream.calls).toBe(1);
     expect(h.manager.getCumulativeSpend(CHANNEL_A)).toBe(0n);
     expect(h.needAuths).not.toHaveBeenCalled();
+  });
+});
+
+describe.each<AnswerKind>(['cancellable-throws', 'cancellable-ends'])('a streamed answer the buyer cancels (%s)', (kind) => {
+  it('stops the provider and bills only what reached the buyer before the cancel', async () => {
+    const h = await setup(kind);
+    expect(await h.openChannel(CHANNEL_A)).toBe('reserved');
+    // Held open after its first chunk, so the cancel arrives mid-answer.
+    h.upstream.hold();
+    const answered = h.send('cancelled');
+    await h.upstream.started(1);
+
+    await h.cancel('cancelled');
+    await answered;
+
+    expect(h.upstream.sawCancel, 'the provider was told to stop').toBe(true);
+    const body = JSON.stringify({ model: PAID_MODEL, messages: [{ role: 'user', content: 'hello' }] });
+    const { usage } = usageForBilling(encoder.encode(body), {
+      requestId: 'cancelled', statusCode: 200, headers: { 'content-type': 'text/event-stream' }, body: encoder.encode(h.upstream.firstChunk),
+    });
+    const streamedCost = computeCostUsdc(usage.freshInputTokens, usage.outputTokens, { inputUsdPerMillion: 1, outputUsdPerMillion: 3 }, usage.cachedInputTokens);
+    expect(streamedCost).toBeGreaterThan(0n);
+    expect(streamedCost).toBeLessThan(COST);
+    expect(h.manager.getCumulativeSpend(CHANNEL_A), 'the estimate of the streamed part, not the full answer').toBe(streamedCost);
+  });
+
+  it('never starts the provider for a request cancelled during its admission checks', async () => {
+    const h = await setup(kind);
+    expect(await h.openChannel(CHANNEL_A)).toBe('reserved');
+    // The cancel lands while the seller waits on the buyer's payments, before it reads the request's signal.
+    vi.spyOn(h.manager, 'waitForPendingAuths').mockImplementationOnce(async () => {
+      await h.cancel('cancelled-in-admission');
+    });
+
+    await h.send('cancelled-in-admission');
+
+    expect(h.upstream.calls, 'upstream calls for a cancelled request').toBe(0);
+    expect(h.manager.getCumulativeSpend(CHANNEL_A)).toBe(0n);
+    expect(h.needAuths).not.toHaveBeenCalled();
+  });
+
+  it('bills nothing for a request cancelled before its answer started', async () => {
+    const h = await setup(kind);
+    expect(await h.openChannel(CHANNEL_A)).toBe('reserved');
+    // Cancelled while its provider has not started streaming yet.
+    const blocked = h.upstream.provider.handleRequestStream!;
+    h.upstream.provider.handleRequestStream = async (request, callbacks) => {
+      await new Promise<void>((resolve) => callbacks.signal?.addEventListener('abort', () => resolve(), { once: true }));
+      throw callbacks.signal!.reason;
+    };
+    const answered = h.send('early');
+    await vi.waitFor(() => expect(h.store.getChannel(CHANNEL_A)).toBeDefined());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await h.cancel('early');
+    await answered;
+    h.upstream.provider.handleRequestStream = blocked;
+
+    expect(h.manager.getCumulativeSpend(CHANNEL_A)).toBe(0n);
   });
 });

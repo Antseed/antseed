@@ -184,7 +184,7 @@ export class BaseProvider implements Provider {
         });
       });
 
-      await this._relay.handleRequest(req);
+      await this._relay.handleRequest(req, callbacks.signal);
 
       return await responsePromise;
     } catch (err) {

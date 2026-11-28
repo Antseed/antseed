@@ -1064,6 +1064,11 @@ export class SellerRequestHandler {
       let streamAuthStatusCode = 0;
       let streamAuthHeaders: Record<string, string> | null = null;
       let responseUsage: import('./utils/response-usage.js').ResponseUsage = { inputTokens: 0, outputTokens: 0, freshInputTokens: 0, cachedInputTokens: 0 };
+      // Aborted when the buyer cancels the request: the provider stops,
+      // and a cancelled answer is billed for what reached the buyer before the cancel.
+      const cancelSignal = mux.requestSignal(request.requestId);
+      const cancelled = (): boolean => cancelSignal?.aborted === true;
+      const streamedToBuyer: Uint8Array[] = [];
       let billingUsageReport: UnitBillingUsageReportV1 | null = null;
       let unitCostUsdc = 0n;
       // Hold the channel open for the whole billable span — provider call,
@@ -1101,6 +1106,11 @@ export class SellerRequestHandler {
         });
         return;
       }
+      if (cancelled()) {
+        // Cancelled during the admission checks above: the provider never starts and nothing is billed.
+        debugLog(`[SellerHandler] Request ${request.requestId.slice(0, 8)} cancelled by the buyer before the provider started`);
+        return;
+      }
       if (isBillable) spm!.beginBillableRequest(buyerPeerId);
       this.adjustProviderLoad(provider.name, 1);
       try {
@@ -1111,7 +1121,7 @@ export class SellerRequestHandler {
           const sellerCost: SellerCost | undefined = unitBillingModel ? undefined
             : isServedFree ? () => 0 : (usage) => tokenCostUsd(usage, requestPricing);
           let response = await this._executeRequest(provider, request, sellerCost, {
-            signal: isDownload ? mux.downloadSignal(request.requestId) : undefined,
+            signal: cancelSignal,
             onResponseStart: (streamResponseStart) => {
               markFreeAllowance(streamResponseStart.headers, coveredByAllowance);
               if (isDownload) downloadHash = createStreamingResponseHash(streamResponseStart);
@@ -1134,12 +1144,19 @@ export class SellerRequestHandler {
                 heldDoneChunkData = chunk.data;
                 return;
               }
-              if (chunk.data.byteLength > 0) streamTail = [...streamTail, ...chunk.data.subarray(-2)].slice(-2);
+              // Nothing more goes to a buyer that cancelled, and nothing more is billed.
+              if (cancelled()) return;
+              if (chunk.data.byteLength > 0) {
+                streamTail = [...streamTail, ...chunk.data.subarray(-2)].slice(-2);
+                streamedToBuyer.push(chunk.data);
+              }
               mux.sendProxyChunk(chunk);
               // A provider that awaits this stops reading its upstream while the buyer is behind.
               return mux.whenWritable();
             },
           }, isDownload);
+          // A provider may end a cancelled stream normally: it is billed for what reached the buyer.
+          if (cancelled() && streamedResponseStarted && !isDownload) response = { ...response, body: concatBytes(streamedToBuyer) };
           if (!streamedResponseStarted) {
             response = { ...response, headers: { ...response.headers } };
             markFreeAllowance(response.headers, coveredByAllowance);
@@ -1153,7 +1170,8 @@ export class SellerRequestHandler {
           // Polling or downloading a video already paid for says nothing about the account's credit.
           const upstreamBody = response.body ?? new Uint8Array(0);
           const upstreamError = statusCode >= 400 ? new TextDecoder().decode(upstreamBody.slice(0, 2_000)) : '';
-          this._deps.emit('provider:response', { provider, service: requestedModel, statusCode, body: upstreamError, billable: videoRoute?.action !== 'retrieve' });
+          // A cancelled request says nothing about the upstream's health.
+          if (!cancelled()) this._deps.emit('provider:response', { provider, service: requestedModel, statusCode, body: upstreamError, billable: videoRoute?.action !== 'retrieve' });
           const upstreamStatusCode = statusCode;
           let maskedAs: 'account' | 'self-health' | null = null;
           if (!streamedResponseStarted && isUpstreamAccountError(statusCode, upstreamError)) {
@@ -1217,54 +1235,71 @@ export class SellerRequestHandler {
             });
           }
         } catch (err) {
-          const message = err instanceof Error ? err.message : "Internal error";
-          // An exception can quote the upstream's answer; content-free mode keeps only that it failed.
-          failureMessage = isContentFreeLogging() ? 'provider call failed' : message;
-          this._deps.emit('provider:failure', { provider, service: requestedModel, billable: videoRoute?.action !== 'retrieve' });
-          debugWarn(`[SellerHandler] Provider exception: provider="${provider.name}" model="${requestedModel}" buyer=${buyerPeerId.slice(0, 12)}... (${Date.now() - startTime}ms) ${message}`);
-          if (videoRoute?.action === 'create') this._closeOneOffBestEffort(oneOffChannelId, 'video create failed');
-          // The exception can quote the upstream (its account, its answer): the buyer only learns the request failed.
-          responseBody = new TextEncoder().encode(PROVIDER_FAILURE_MESSAGE);
-          if (streamedResponseStarted && isDownload) {
-            statusCode = 502;
-            responseForAuth = null;
-            mux.sendProxyError(request.requestId);
-          } else if (streamedResponseStarted) {
-            // A stream cut mid-line or mid-event is closed first, so the error frame reads as an event of its own.
-            const closing = streamTail[1] !== 10 ? '\n\n' : streamTail[0] !== 10 ? '\n' : '';
-            const errorFrame = new TextEncoder().encode(`${closing}event: error\ndata: ${PROVIDER_FAILURE_MESSAGE}\n\n`);
-            responseBody = errorFrame;
-            mux.sendProxyChunk({
-              requestId: request.requestId,
-              data: errorFrame,
-              done: false,
-            });
-            mux.sendProxyChunk({
-              requestId: request.requestId,
-              data: new Uint8Array(0),
-              done: true,
-            });
-            if (streamAuthHeaders !== null) {
-              responseForAuth = {
-                requestId: request.requestId,
-                statusCode: streamAuthStatusCode,
-                headers: streamAuthHeaders,
-                body: errorFrame,
-              };
+          if (cancelled() && !isDownload) {
+            // The buyer gave the request up and the provider stopped: no error to send to anyone.
+            failureMessage = 'cancelled by the buyer';
+            debugLog(`[SellerHandler] Request ${request.requestId.slice(0, 8)} cancelled by the buyer (${Date.now() - startTime}ms)`);
+            if (streamedResponseStarted && streamAuthHeaders !== null) {
+              // Billed like any answer without a usage figure: by estimate from the bytes the buyer got.
+              responseBody = concatBytes(streamedToBuyer);
+              responseForAuth = { requestId: request.requestId, statusCode: streamAuthStatusCode, headers: streamAuthHeaders, body: responseBody };
+              statusCode = streamAuthStatusCode;
+              responseUsage = isServedFree ? parseResponseUsage(responseBody) : usageForBilling(request.body, responseForAuth).usage;
+            } else {
+              // Nothing was answered yet: nothing is billed.
+              statusCode = 499;
+              responseForAuth = null;
             }
           } else {
-            const health = serviceHealthOf(provider.serviceHealth, requestedModel);
-            responseForAuth = isServiceHealthFailing(health)
-              ? buildSelfHealthErrorResponse(request.requestId, requestedModel, health, { statusCode: 500, headers: {}, body: responseBody })
-              : {
+            const message = err instanceof Error ? err.message : "Internal error";
+            // An exception can quote the upstream's answer; content-free mode keeps only that it failed.
+            failureMessage = isContentFreeLogging() ? 'provider call failed' : message;
+            this._deps.emit('provider:failure', { provider, service: requestedModel, billable: videoRoute?.action !== 'retrieve' });
+            debugWarn(`[SellerHandler] Provider exception: provider="${provider.name}" model="${requestedModel}" buyer=${buyerPeerId.slice(0, 12)}... (${Date.now() - startTime}ms) ${message}`);
+            if (videoRoute?.action === 'create') this._closeOneOffBestEffort(oneOffChannelId, 'video create failed');
+            // The exception can quote the upstream (its account, its answer): the buyer only learns the request failed.
+            responseBody = new TextEncoder().encode(PROVIDER_FAILURE_MESSAGE);
+            if (streamedResponseStarted && isDownload) {
+              statusCode = 502;
+              responseForAuth = null;
+              mux.sendProxyError(request.requestId);
+            } else if (streamedResponseStarted) {
+              // A stream cut mid-line or mid-event is closed first, so the error frame reads as an event of its own.
+              const closing = streamTail[1] !== 10 ? '\n\n' : streamTail[0] !== 10 ? '\n' : '';
+              const errorFrame = new TextEncoder().encode(`${closing}event: error\ndata: ${PROVIDER_FAILURE_MESSAGE}\n\n`);
+              responseBody = errorFrame;
+              mux.sendProxyChunk({
                 requestId: request.requestId,
-                statusCode: 500,
-                headers: { "content-type": "text/plain" },
-                body: responseBody,
-              };
-            statusCode = responseForAuth.statusCode;
-            responseBody = responseForAuth.body;
-            mux.sendProxyResponse(responseForAuth);
+                data: errorFrame,
+                done: false,
+              });
+              mux.sendProxyChunk({
+                requestId: request.requestId,
+                data: new Uint8Array(0),
+                done: true,
+              });
+              if (streamAuthHeaders !== null) {
+                responseForAuth = {
+                  requestId: request.requestId,
+                  statusCode: streamAuthStatusCode,
+                  headers: streamAuthHeaders,
+                  body: errorFrame,
+                };
+              }
+            } else {
+              const health = serviceHealthOf(provider.serviceHealth, requestedModel);
+              responseForAuth = isServiceHealthFailing(health)
+                ? buildSelfHealthErrorResponse(request.requestId, requestedModel, health, { statusCode: 500, headers: {}, body: responseBody })
+                : {
+                  requestId: request.requestId,
+                  statusCode: 500,
+                  headers: { "content-type": "text/plain" },
+                  body: responseBody,
+                };
+              statusCode = responseForAuth.statusCode;
+              responseBody = responseForAuth.body;
+              mux.sendProxyResponse(responseForAuth);
+            }
           }
         }
 
@@ -1291,7 +1326,8 @@ export class SellerRequestHandler {
         const finishedAt = Date.now();
         const latencyMs = finishedAt - startTime;
         // Video jobs are polled and downloaded on their own schedule: their timing says nothing about the model.
-        if (!videoRoute && requestedModel !== 'unknown') {
+        // A request the buyer cancelled says nothing about it either.
+        if (!videoRoute && requestedModel !== 'unknown' && !cancelled()) {
           const { firstTokenAt } = streamOutcome;
           this._deps.servicePerformance?.record(provider.name, requestedModel, {
             ok: failureMessage === null && !streamOutcome.failed && !isUpstreamFailureStatus(statusCode),

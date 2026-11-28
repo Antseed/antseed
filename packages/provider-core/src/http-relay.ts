@@ -282,7 +282,8 @@ export class HttpRelay {
     });
   }
 
-  async handleRequest(request: SerializedHttpRequest): Promise<void> {
+  /** `signal` aborts the request (the buyer cancelled it): the upstream fetch stops, with no retry or failover. */
+  async handleRequest(request: SerializedHttpRequest, signal?: AbortSignal): Promise<void> {
     // Validate service against pre-computed set (normalized at construction time).
     const jsonBody = new JsonBody(request);
     const validationError = validateRequestService(request, this._validationServices, jsonBody.read);
@@ -308,9 +309,9 @@ export class HttpRelay {
         let attempt: UpstreamAttempt | undefined;
         try {
           try {
-            attempt = await this._fetchUpstream(request, upstream, jsonBody);
+            attempt = await this._fetchUpstream(request, upstream, jsonBody, signal);
           } catch (err) {
-            if (isLast) throw err;
+            if (isLast || signal?.aborted) throw err;
             this._coolDown(index, service, null);
             this._logFailover(service, upstream, candidates[position + 1]!.upstream, err instanceof Error ? err.message : String(err));
             continue;
@@ -327,7 +328,7 @@ export class HttpRelay {
               attempt.body = await readUpstreamBody(attempt);
             } catch (err) {
               const error = attempt.signal.aborted ? attempt.signal.reason : err;
-              if (isLast) throw error;
+              if (isLast || signal?.aborted) throw error;
               this._coolDown(index, service, null);
               this._logFailover(service, upstream, candidates[position + 1]!.upstream, error instanceof Error ? error.message : String(error));
               continue;
@@ -346,6 +347,11 @@ export class HttpRelay {
         }
       }
     } catch (err) {
+      // The buyer gave the request up: not the upstream's failure.
+      if (signal?.aborted) {
+        this._sendError(request.requestId, 499, 'Cancelled by the buyer');
+        return;
+      }
       const errMsg = err instanceof Error ? err.message : String(err);
       const sanitized = errMsg.replace(/sk-ant-[a-zA-Z0-9_-]+/g, 'sk-***');
       this._sendError(request.requestId, 502, `Upstream error: ${sanitized}`);
@@ -390,7 +396,7 @@ export class HttpRelay {
     console.warn(`[http-relay] ${name}: dropped ${fields.join(', ')} (the upstream rejects them for this model)`);
   }
 
-  private async _fetchUpstream(request: SerializedHttpRequest, upstream: ResolvedUpstream, jsonBody: JsonBody): Promise<UpstreamAttempt> {
+  private async _fetchUpstream(request: SerializedHttpRequest, upstream: ResolvedUpstream, jsonBody: JsonBody, signal?: AbortSignal): Promise<UpstreamAttempt> {
     // Every decision below reads the path fetch will send, so a decision and the URL cannot disagree.
     const { pathname, search } = new URL(`http://local${request.path.startsWith('/') ? '' : '/'}${request.path}`);
     const requestPath = `${pathname}${search}`;
@@ -537,7 +543,10 @@ export class HttpRelay {
     const timeoutMs = this._config.timeoutMs ?? DEFAULT_HTTP_TIMEOUT_MS;
 
     const doFetch = async (headers: Record<string, string>): Promise<UpstreamAttempt> => {
+      if (signal?.aborted) throw signal.reason;
       const controller = new AbortController();
+      const cancel = (): void => controller.abort(signal?.reason);
+      signal?.addEventListener('abort', cancel, { once: true });
       let paused = false;
       const timeout = setTimeout(() => {
         if (!paused) controller.abort(new Error(`Upstream request timed out after ${timeoutMs}ms`));
@@ -565,11 +574,13 @@ export class HttpRelay {
           },
           dispose: () => {
             clearTimeout(timeout);
+            signal?.removeEventListener('abort', cancel);
             controller.abort();
           },
         };
       } catch (error) {
         clearTimeout(timeout);
+        signal?.removeEventListener('abort', cancel);
         if (controller.signal.aborted) {
           throw controller.signal.reason;
         }
@@ -593,6 +604,7 @@ export class HttpRelay {
           const delay = baseDelay * (2 ** (attempt - 1));
           await new Promise((resolve) => setTimeout(resolve, delay));
         }
+        if (signal?.aborted) throw signal.reason;
 
         try {
           const result = await runFetch(currentHeaders);
@@ -602,7 +614,7 @@ export class HttpRelay {
           result.dispose();
         } catch (error) {
           lastError = error;
-          if (attempt === maxRetries) {
+          if (attempt === maxRetries || signal?.aborted) {
             throw error;
           }
         }
