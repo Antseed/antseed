@@ -3,7 +3,7 @@
 
 .cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; width: 100%; max-width: 1120px; }
 .card { display: flex; flex-direction: column; gap: 20px; }
-.painting { display: grid; place-items: center; aspect-ratio: 4 / 3; border-radius: 16px; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .06); }
+.painting { display: grid; place-items: center; aspect-ratio: 4 / 3; border-radius: var(--site-radius-card); box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .06); }
 :global(:root[data-theme='dark']) .painting { box-shadow: inset 0 0 0 1px rgba(150, 200, 145, .14); }
 
 /* the name on glass */
@@ -20,7 +20,8 @@
 
 .caption { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
 .text { max-width: 520px; font: 400 16px/25px var(--site-font); color: var(--site-text-body); text-wrap: pretty; }
-.more { font: 500 15px/22px var(--site-font); color: var(--site-accent); }
+/* a 44px tap target without moving anything */
+.more { padding-block: 11px; margin-block: -11px; font: 500 15px/22px var(--site-font); color: var(--site-accent); }
 
 @media (max-width: 760px) {
   .rail { gap: 40px; }

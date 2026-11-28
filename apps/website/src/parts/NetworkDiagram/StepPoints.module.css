@@ -37,8 +37,8 @@
   .button { max-width: none; }
   .button::after { content: ''; position: absolute; inset: 0; }
 }
-/* a phone: the steps leave the row to the board's own control; the way onwards stays under the board, the rail's content line in */
+/* a phone: the steps leave the row to the board's own control; the way onwards stays under the board, on the control's edge, with a section's air below */
 @media (max-width: 760px) {
   .steps > .step { display: none; }
-  .steps > .step + .extra { display: block; padding: 24px 20px 0; --dots-top: 0px; --dots-left: 0px; }
+  .steps > .step + .extra { display: block; padding: 24px 12px 72px; --dots-top: 0px; --dots-left: 0px; }
 }

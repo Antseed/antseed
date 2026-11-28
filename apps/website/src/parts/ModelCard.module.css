@@ -11,7 +11,8 @@
 .meta { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin: 6px 0 0; }
 .price { padding: 0; border: 0; background: none; font: 400 12.5px/16px var(--site-font-mono); color: var(--site-text); white-space: nowrap; }
 .unit { color: var(--site-text-small); }
-.providers { display: inline-flex; margin-left: auto; align-items: center; gap: 4px; font: 400 12px/16px var(--site-font); color: var(--site-text-small); font-variant-numeric: tabular-nums; }
+/* --count-inset keeps the count clear of an ant standing over the card's right corner */
+.providers { display: inline-flex; margin-left: auto; margin-right: var(--count-inset, 0px); align-items: center; gap: 4px; font: 400 12px/16px var(--site-font); color: var(--site-text-small); font-variant-numeric: tabular-nums; }
 .nodes { width: 12px; height: 12px; align-self: center; background: currentColor;
   -webkit-mask: url(/site/assets/home/icons/nodes.svg) center / contain no-repeat; mask: url(/site/assets/home/icons/nodes.svg) center / contain no-repeat; }
 .srOnly { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
@@ -19,4 +20,6 @@
 @media (max-width: 760px) {
   .card { padding: 14px; }
   .name { font-size: 14px; line-height: 18px; }
+  /* a long price ('$61.88/M chars') leaves no room for the count beside it: the count drops under it rather than past the card's padding */
+  .meta { flex-wrap: wrap; row-gap: 2px; }
 }

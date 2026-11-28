@@ -16,7 +16,7 @@ export default function ThemeSwitch({className}: {className?: string}): JSX.Elem
       title={dark ? 'Turn dark mode off' : 'Turn dark mode on'}
       className={clsx(styles.switch, className)}
       onClick={() => setThemeAnimated(setColorMode, dark ? 'light' : 'dark')}>
-      <svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true" fill={dark ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.4">
+      <svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.4">
           <path d="M13.5 9.6A5.75 5.75 0 0 1 6.4 2.5a5.75 5.75 0 1 0 7.1 7.1z" />
       </svg>
     </button>

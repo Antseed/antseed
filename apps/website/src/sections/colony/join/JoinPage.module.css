@@ -40,12 +40,19 @@
 /* the bar: logo, progress, step count, close */
 .bar { position: relative; z-index: 3; display: flex; align-items: center; gap: 20px; height: 68px; padding: 0 24px; }
 .logo img { display: block; width: auto; height: 28px; }
+/* touch screens: a 44px tall touch area round the logo */
+@media (max-width: 1079px) {
+  .bar .logo { position: relative; }
+  .bar .logo::after { content: ''; position: absolute; inset: -12px 0; }
+}
 :global(:root[data-theme='dark']) .logo img { filter: invert(.93); }
 .progress { flex: 1; max-width: 520px; height: 6px; margin: 0 auto; overflow: hidden; border-radius: 3px; background: var(--jn-tile-hover); }
 .progressFill { display: block; width: 0; height: 100%; border-radius: inherit; background: var(--jn-fill); transition: width .35s cubic-bezier(.3, .7, .2, 1); }
 .count { min-width: 52px; font: 500 13px/1 var(--site-font-mono); color: var(--jn-muted); text-align: right; }
-.close { display: grid; place-items: center; width: 36px; height: 36px; border: 1px solid var(--jn-line); border-radius: 9px; background: var(--jn-tile); }
+.close { position: relative; display: grid; place-items: center; width: 36px; height: 36px; border: 1px solid var(--jn-line); border-radius: 9px; background: var(--jn-tile); }
 .close:hover { background: var(--jn-tile-hover); }
+/* a 44px hit area round the 36px tile */
+.close::before { content: ''; position: absolute; inset: -4px; }
 .close svg { width: 14px; height: 14px; fill: none; stroke: var(--jn-ink); stroke-width: 1.6; stroke-linecap: round; }
 
 /* the painting: each step names one, faded in over the last (painted on Antseed, 18 Nov); --y keeps the ant's face in the phone strip */
@@ -57,8 +64,13 @@
 .artLayer[data-art='name'] { --y: 49%; background-image: url(/site/assets/colony/join/name.webp); }
 .artLayer[data-art='review'] { --y: 48%; background-image: url(/site/assets/colony/join/email.webp); }
 .artLayer[data-art='done'] { --y: 70%; background-image: url(/site/assets/colony/join/done.webp); }
-/* the paintings are daylight only; a visitor who picked dark gets them a little dimmer */
-:global(:root[data-theme='dark']) .artLayer { filter: brightness(.8) saturate(.92); }
+/* the night of each painting in the dark theme ('review' reuses the email painting) */
+:global(:root[data-theme='dark']) .artLayer[data-art='mac'] { background-image: url(/site/assets/colony/join/mac-night.webp); }
+:global(:root[data-theme='dark']) .artLayer[data-art='chip'] { background-image: url(/site/assets/colony/join/chip-night.webp); }
+:global(:root[data-theme='dark']) .artLayer[data-art='memory'] { background-image: url(/site/assets/colony/join/memory-night.webp); }
+:global(:root[data-theme='dark']) .artLayer[data-art='name'] { background-image: url(/site/assets/colony/join/name-night.webp); }
+:global(:root[data-theme='dark']) .artLayer[data-art='review'] { background-image: url(/site/assets/colony/join/email-night.webp); }
+:global(:root[data-theme='dark']) .artLayer[data-art='done'] { background-image: url(/site/assets/colony/join/done-night-2.webp); }
 @keyframes jnFade { from { opacity: 0; } }
 
 /* the questions */
@@ -77,6 +89,8 @@
 .question span { color: var(--jn-grey); }
 .question b { font-weight: 400; color: var(--jn-green); }
 .help { max-width: 52ch; margin-top: 14px; font-size: 17px; line-height: 1.55; color: var(--jn-body); }
+/* below the desktop the help line keeps its last word company */
+@media (max-width: 1199px) { .step .help { text-wrap: pretty; } }
 
 /* the options: big cards (the Mac), chips (its chip, its memory) */
 .options { display: grid; gap: 10px; margin-top: 28px; }
@@ -138,7 +152,7 @@
 .page .skip { text-decoration: underline; text-decoration-color: var(--jn-line); }
 .skip:hover { color: var(--jn-ink); }
 .page .skip:hover { text-decoration-color: currentColor; }
-.option:focus-visible, .button:focus-visible, .skip:focus-visible, .field input:focus-visible { outline: 2px solid var(--jn-fill); outline-offset: 2px; }
+.option:focus-visible, .button:focus-visible, .skip:focus-visible, .back:focus-visible, .summary button:focus-visible, .field input:focus-visible { outline: 2px solid var(--jn-fill); outline-offset: 2px; }
 
 /* the name and the email */
 .summary { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 22px; }
@@ -165,7 +179,8 @@
 .badge { display: grid; place-items: center; width: 56px; height: 56px; margin-bottom: 22px; border-radius: 16px; background: var(--site-lime); box-shadow: 0 0 0 6px rgba(200, 245, 60, .25); animation: jnPop .5s cubic-bezier(.3, 1.6, .5, 1) .1s both; }
 .badge svg { width: 28px; height: 28px; fill: none; stroke: #0a1a12; stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
 @keyframes jnPop { from { transform: scale(.4); opacity: 0; } }
-.done:focus { outline: none; }
+/* the review and done steps take the focus so a screen reader lands on them; their controls keep their own rings */
+.step[tabindex='-1']:focus { outline: none; }
 .hint { margin-top: 10px; font-size: 14px; color: var(--jn-muted); }
 .textLink { padding: 0; border: 0; background: none; color: var(--jn-green); font: inherit; text-decoration: underline; cursor: pointer; }
 .cardImage { margin: 0 0 8px; }
@@ -229,6 +244,13 @@
   .next li > div, .group > div { flex-basis: 100%; }
   .group .button { flex: 1 1 100%; }
   .go .button { flex: 1 1 100%; }
+}
+/* phones and touch tablets: Back and the answers to change are a thumb's size, Back where it sat */
+@media (max-width: 640px), (pointer: coarse) {
+  .back { min-height: 44px; margin: -6px 0 13px; }
+  .summary { gap: 8px; }
+  .summary button { position: relative; min-height: 36px; padding: 10px 12px; }
+  .summary button::before { content: ''; position: absolute; inset: -4px; }
 }
 /* the smallest phones: the options' names keep to one line, with no key number over them */
 @media (max-width: 359px) {

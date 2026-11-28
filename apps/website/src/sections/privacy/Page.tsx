@@ -27,6 +27,7 @@ export default function Page(): JSX.Element {
         title={['Everything stays', 'on your machine.']}
         lead="Antseed Desktop runs on your computer. Your settings, your signing key, and every routing decision stay on your device. Each request goes peer-to-peer over an encrypted connection to the provider you picked."
         points={POINTS}
+        pointsAlign="first-line"
         action={{label: 'Read the TEE guide', href: '/docs/verify-tee/'}}
         code={{blocks: BLOCKS, status: 'Connected Localhost:8377', typed: true}}
       />

@@ -18,8 +18,8 @@ type Props = {
 };
 
 /**
- * The sheet under the nav where the bar's links don't fit: the links at one size, Providers' two pages under it, and on a tablet the
- * nav's two buttons at its foot.
+ * The sheet under the nav where the bar's links don't fit: the links at one size, Providers' two pages under it, and on a phone
+ * (760px and under, where the bar hides it) the Gateway button at its foot.
  */
 export default function PhoneMenu({phase, sheetRef, onNavigate}: Props): JSX.Element {
   return (

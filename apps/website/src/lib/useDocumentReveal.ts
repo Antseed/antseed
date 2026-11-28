@@ -43,9 +43,14 @@ export function useDocumentReveal(): void {
         });
     }, {rootMargin: '0px 0px -40px 0px'});
 
+    // a block with no box (display: contents) never intersects: release it rather than observe it for ever
+    const watch = (b: Element) => {
+      if (getComputedStyle(b).display === 'contents') { b.removeAttribute('data-rv'); return; }
+      io.observe(b);
+    };
     const observeWithin = (scope: Element) => {
-      if (scope.matches(OBSERVED)) io.observe(scope);
-      scope.querySelectorAll(OBSERVED).forEach((b) => io.observe(b));
+      if (scope.matches(OBSERVED)) watch(scope);
+      scope.querySelectorAll(OBSERVED).forEach(watch);
     };
     observeWithin(document.body);
     const mo = new MutationObserver((records) => {

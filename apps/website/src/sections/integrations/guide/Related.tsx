@@ -14,7 +14,8 @@ export function Related({integration: i}: {integration: Integration}): JSX.Eleme
     .filter((x) => x.category === i.category && x.slug !== i.slug)
     .slice(0, RELATED_COUNT)
     .map((x) => ({name: x.name, href: `/integrations/${x.slug}/`, text: <Ticks>{x.oneLiner}</Ticks>, mark: <IntegrationMark integration={x} />, action: 'Guide'}));
-  rows.push({name: 'All integrations', href: '/integrations/', text: 'Every tool that works with an Antseed gateway.', action: 'Browse'});
+  // an empty mark slot keeps this row on the marked rows' text edge; alone, it needs none
+  rows.push({name: 'All integrations', href: '/integrations/', text: 'Every tool that works with an Antseed gateway.', action: 'Browse', mark: rows.length > 0 ? null : undefined});
   return (
     <Section cmp="integration/related" labelledBy="related-title" pad="all" className={styles.related}>
       <SectionHead eyebrow={CATEGORY_LABELS[i.category]} id="related-title" title={['More guides,', 'same endpoint.']} />

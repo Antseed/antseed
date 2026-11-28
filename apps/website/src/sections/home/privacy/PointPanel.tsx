@@ -28,7 +28,8 @@ export function PointPanel({point, index, on, stacked}: Props): JSX.Element {
       aria-labelledby={tabId(point)}
       inert={!on}
       data-panel=""
-      data-on={on ? '' : undefined}>
+      data-on={on ? '' : undefined}
+      data-rv={stacked ? 'panel' : undefined}>
       <Wash unveil replayKey={arrivals} className={styles.panel} {...point.painting}>
         <PrivacyWindow window={point.window} />
       </Wash>

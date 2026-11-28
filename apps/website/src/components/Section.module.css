@@ -22,6 +22,10 @@
 .padX { padding-inline: var(--site-pad); }
 .padY { padding-block: 120px; }
 
+/* wide: 124px, the sections' own scale */
+@media (min-width: 1200px) {
+  .padAll, .padY { padding-block: 124px; }
+}
 @media (max-width: 760px) {
   .padAll { padding: 72px var(--site-pad); }
   .padY { padding-block: 72px; }

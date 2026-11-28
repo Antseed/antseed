@@ -33,7 +33,7 @@
 
 .status { min-height: 20px; margin-top: 12px; font: 400 13px/20px var(--site-font); color: var(--site-text-small); }
 .empty { margin-top: 40px; font: 400 16px/24px var(--site-font); color: var(--site-text-body); }
-.empty a { color: var(--site-accent); }
+.empty a { color: var(--site-accent); text-decoration: underline; text-decoration-color: color-mix(in srgb, currentColor 35%, transparent); text-underline-offset: 3px; }
 
 .group { margin-top: 56px; scroll-margin-top: calc(var(--site-nav-height) + 24px); }
 .groupHead { display: flex; flex-direction: column; gap: 8px; margin-bottom: 24px; }
@@ -50,7 +50,22 @@
 .groupCount { font: 400 13px/16px var(--site-font-mono); letter-spacing: 0; color: var(--site-text-small); }
 .groupLine { max-width: 640px; font: 400 16px/24px var(--site-font); color: var(--site-text-body); text-wrap: pretty; }
 
-@media (max-width: 760px) {
+/* below the width where chips and search share a row, the search spans the column instead of hanging at 280px */
+@media (max-width: 1023px) {
   .search { width: 100%; }
+}
+/* tablet: the chips and the search wrap as one row of controls, so the last chip shares its row with the search */
+@media (min-width: 761px) and (max-width: 1023px) {
+  .controls { gap: 8px; justify-content: flex-start; }
+  .controls .jump { display: contents; }
+  .controls .search { flex: 1 1 200px; width: auto; }
+}
+/* touch: 44px controls; 16px text keeps iOS from zooming into the field */
+@media (max-width: 760px), (pointer: coarse) {
+  .jumpLink { height: 44px; }
+  .search { height: 44px; font-size: 16px; }
+}
+
+@media (max-width: 760px) {
   .groupTitle { font-size: 26px; line-height: 30px; }
 }

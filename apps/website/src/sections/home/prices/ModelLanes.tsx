@@ -45,7 +45,7 @@ export function ModelLanes({medium, models: rows, carried, side, width}: Props):
           const cast = castLane(k, cards.length, above);
           above = cast;
           return (
-            <div key={k} className={clsx(styles.lane, styles.carryLane)} data-carry-lane="" style={{'--below': `${laneBelow(side).toFixed(2)}px`} as CSSProperties}>
+            <div key={k} className={clsx(styles.lane, styles.carryLane, k > 0 && styles.mirroredLane)} data-carry-lane="" style={{'--below': `${laneBelow(side).toFixed(2)}px`} as CSSProperties}>
               <ul className={styles.track}>
                 {cards.map(({m, r, i}, n) => (
                   <ModelCard key={`${r}-${i}`} model={m} medium={medium} repeat={r > 0} carried className={styles.carried}

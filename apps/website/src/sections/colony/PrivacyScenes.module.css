@@ -6,14 +6,16 @@
 .icon { color: #a6ff3c; }
 
 .from { left: 7%; top: 12%; }
+/* one line of whole groups: the groups that don't fit wrap onto a second line that the pill clips, so none is cut mid-glyph */
 .cipher {
   left: 7%; right: 7%; top: 38%;
-  padding: 8px 12px;
+  box-sizing: content-box;
+  height: 32px;
+  padding: 0 12px;
   border-radius: 8px;
   overflow: hidden;
-  font: 400 11.5px/16px var(--site-font-mono);
+  font: 400 11.5px/32px var(--site-font-mono);
   letter-spacing: .04em;
-  white-space: nowrap;
 }
 .scene .cipher { color: #98c463; }
 .to { right: 7%; bottom: 10%; width: 52%; }

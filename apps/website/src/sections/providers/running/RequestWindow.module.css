@@ -50,8 +50,9 @@
 
 @container (max-width: 359.9px) {
   .previous { left: 24px; width: 244px; }
-  .current { left: 6px; width: 268px; padding: 12px; }
-  .model { font-size: 11.5px; }
+  .current { left: 6px; width: 268px; padding: 12px 10px; }
+  .model { font-size: 11px; gap: 4px; }
+  .previousModel { font-size: 10.5px; }
 }
 @container (max-width: 279.9px) {
   .previous { left: 18px; right: 18px; width: auto; }

@@ -3,6 +3,25 @@
 @media (max-width: 760px) {
   .token .title { font-size: 34px; line-height: 36px; }
 }
+/* under 1200 a column beside the painting is too narrow for the title at its size: stacked as on a tablet, the offer over the
+   painting (the screen's grid, its text and its painting), on the sections' text edge */
+@media (min-width: 900px) and (max-width: 1199px) {
+  section.token {
+    --in: 64px;
+    --gap-title: var(--stacked-title);
+    --gap-sub: var(--stacked-sub);
+    --gap-actions: var(--stacked-actions);
+  }
+  .token .grid { grid-template-columns: 1fr; height: auto; }
+  .token .text { padding: 56px calc(var(--edge) - var(--in)) 48px var(--edge); }
+  .token .panel { aspect-ratio: 16 / 9; }
+}
+/* side by side under 1440 the text column grows (the painting keeps at least 40%) so each sentence still holds one line at 48px */
+@media (min-width: 1200px) and (max-width: 1439px) {
+  .token .grid { grid-template-columns: minmax(0, min(60%, max(50%, var(--edge) + 40px + 48px * 11.4))) minmax(0, 1fr); }
+  .token header:has(> .title) { container-type: inline-size; }
+  .token .title { font-size: min(48px, 100cqi / 11.4); line-height: .96; letter-spacing: -.042em; }
+}
 @media (min-width: 1200px) {
   .token .sub { text-wrap: wrap; }
 }

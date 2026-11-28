@@ -10,16 +10,18 @@ type Props = {
   rows: readonly CompareRow[];
   /** The header of the row labels' column (visually hidden). */
   rowsLabel: string;
+  /** Where the rows become blocks: from tablets down (a wide table), or on phones only (short values a tablet reads across). */
+  stack?: 'tablet' | 'phone';
   className?: string;
 };
 
 /**
- * A comparison table between dotted rules; on phones each row becomes a block with its cells labelled. Rows are laid out as grids
+ * A comparison table between dotted rules; on phones (and tablets, unless `stack` is `phone`) each row becomes a block with its cells labelled. Rows are laid out as grids
  * (so each can carry its dotted rule), with the table roles spelled out because a changed display drops them in some browsers.
  */
-export function CompareTable({columns, rows, rowsLabel, className}: Props): JSX.Element {
+export function CompareTable({columns, rows, rowsLabel, stack = 'tablet', className}: Props): JSX.Element {
   return (
-    <div className={clsx(styles.wrap, className)} style={{'--columns': columns.length} as CSSProperties} data-rv="">
+    <div className={clsx(styles.wrap, styles[stack], className)} style={{'--columns': columns.length} as CSSProperties} data-rv="">
       <table className={styles.table} role="table">
         <thead role="rowgroup">
           <tr className={clsx(styles.row, styles.head)} role="row">

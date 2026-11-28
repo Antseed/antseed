@@ -13,6 +13,9 @@ export function Token(): JSX.Element {
       cmp="ants/token"
       titleId="ants-title"
       className={styles.token}
+      gridClassName={styles.grid}
+      textClassName={styles.text}
+      panelClassName={styles.panel}
       eyebrow="$ANTS details"
       title={['Inference is the currency.', '$ANTS makes it liquid.']}
       titleClassName={styles.title}

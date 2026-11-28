@@ -1,4 +1,4 @@
-// closing-dots.js: the closing band's dot field, ported from the site's own code (src/parts/CtaBand/CtaDots.tsx, gridLayout.ts and
+// closing-dots.js: the closing band's dot field, ported from the site's own code (src/sections/brand/EndDots.tsx, PrivacyDots/gridLayout.ts and
 // PrivacyDots/mosaic.ts) with the same files, grid and values. It draws the still mosaic into `.cta-card .tw`; the site's moving layer
 // (twinkles, warm dots, ants) is not part of the kit. Load it at the end of <body>, as starter.html does:
 //   <script type="module" src="effects/closing-dots.js"></script>

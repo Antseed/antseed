@@ -12,7 +12,7 @@ const FEATURES: readonly Feature[] = [
   {icon: 'blocks', text: <>Pick any model at the best available price,<br /> or start free</>},
   {icon: 'plug', text: <>Connect Claude Code, Codex, OpenCode<br /> and your other apps</>},
   {icon: 'lock', text: <>Go Private and providers can&apos;t read your chats</>},
-  {icon: 'blocks', text: <>Stake ANTS and manage your rewards, right in the app.</>},
+  {icon: 'analytics', text: <>Stake ANTS and manage your rewards, right in the app.</>},
 ];
 
 /** Antseed Desktop: the app playing its loop over a painting, beside the pitch. */
@@ -25,6 +25,9 @@ export default function Desktop(): JSX.Element {
       id="desktop"
       labelledBy="desktop-title"
       flip
+      className={styles.desktop}
+      railClassName={styles.rail}
+      textClassName={styles.text}
       text={
         <ProductCopy
           eyebrow={{label: 'Antseed Desktop', href: '/docs/desktop/'}}

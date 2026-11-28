@@ -1,9 +1,9 @@
 /* The painting fills the card, 4px under the nav and 2px in from its sides. Only the theme on screen is painted; while the theme
    flips ([data-theming]) both are, the other one already cached (Painting.tsx). The stills come in as variables (--day, --night) so
    they keep the URLs the head preloads (a url() here would be a hashed copy, fetched twice). */
-.paint { position: absolute; inset: 4px 2px 0; overflow: hidden; container-type: size;
+/* isolated, so the arrival's veil and cover (z-index 3) stay under the text in both themes */
+.paint { position: absolute; inset: 4px 2px 0; overflow: hidden; container-type: size; isolation: isolate;
   background: var(--day-cut, var(--day)) 50% 50% / cover no-repeat; }
-:global(:root[data-theme='dark']) .paint { isolation: isolate; }
 :global(:root[data-theme='dark']) .paint:not([data-theming]) { background-image: none; }
 
 /* a 16:9 stage covering the painting from its centre: the film and the clouds share it */

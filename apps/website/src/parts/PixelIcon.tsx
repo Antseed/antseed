@@ -2,7 +2,7 @@ import type {CSSProperties, JSX} from 'react';
 import clsx from 'clsx';
 import styles from './PixelIcon.module.css';
 
-export type PixelIconName = 'analytics' | 'blocks' | 'check' | 'chevron-right' | 'directions' | 'laptop' | 'lock' | 'message' | 'plug'
+export type PixelIconName = 'analytics' | 'blocks' | 'check' | 'check-lg' | 'chevron-right' | 'directions' | 'laptop' | 'lock' | 'message' | 'plug'
   | 'server' | 'sliders-horizontal' | 'user';
 
 const DEFAULT_SIZE = 24;   // each of the icon's pixels a whole 2px

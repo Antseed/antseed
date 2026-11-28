@@ -14,13 +14,13 @@ export default function Top(): JSX.Element {
       title={['Coding,', 'without the usage limits.']}
       sub="Keep Claude Code, Codex, Cursor, or OpenCode. Point it at your local endpoint and pay a fraction of the plan price, with no hourly, weekly, or monthly limits."
       actions={<>
-        <DownloadButton />
-        <Button href="/docs/install/" variant="ghost">Install the CLI&nbsp;→</Button>
+        <DownloadButton size="page" />
+        <Button href="/docs/install/" variant="ghost" size="page">Install the CLI&nbsp;→</Button>
       </>}
       note="Free models to start. No account either way."
       painting={{
         day: '/site/assets/colony/join-day.webp',
-        night: '/site/assets/colony/join-night.webp',
+        night: '/site/assets/colony/join-night-2.webp',
         focus: '30% 50%',
         label: 'Ants sit in a row at laptops on a bench in a meadow while another carries in one more.',
       }}

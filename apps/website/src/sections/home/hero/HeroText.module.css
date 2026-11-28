@@ -5,6 +5,10 @@
 .content { position: relative; z-index: 2; flex: 1; width: 100%; display: flex; flex-direction: column; align-items: center; gap: 10px;
   padding: max(24px, calc((100svh - 32px) * .172 - var(--site-nav-height))) 16px 24px; }
 .content > * { max-width: 100%; }
+@media (min-width: 761px) {
+  :global(:root:has(.theme-announcement-bar):not([data-announcement-bar-initially-dismissed='true'])) .content {
+    padding-top: max(24px, calc((100svh - 32px - 42px) * .172 - var(--site-nav-height))); }
+}
 
 /* the news pill, lifted from the title rather than the title pushed down */
 .pill { position: relative; top: -22px; display: flex; align-items: center; gap: 2px; height: 24px; padding: 0 11px; border-radius: 999px;

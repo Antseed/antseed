@@ -15,8 +15,8 @@ export default function Top(): JSX.Element {
       titleSize="long"
       sub="Same OpenAI-compatible API. Any provider can join. Pay per request in USDC. No central account, independent providers, open peer-to-peer routing."
       actions={<>
-        <Button href="/docs/install/">Install Antseed&nbsp;→</Button>
-        <Button href="https://antseedstats.com/network" variant="ghost">Live pricing&nbsp;↗</Button>
+        <Button href="/docs/install/" size="page">Install Antseed&nbsp;→</Button>
+        <Button href="https://antseedstats.com/network" variant="ghost" size="page">Live pricing&nbsp;↗</Button>
       </>}
       painting={{
         ...painting('/site/assets/network/hero', true),

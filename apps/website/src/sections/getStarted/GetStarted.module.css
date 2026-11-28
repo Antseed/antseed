@@ -16,15 +16,21 @@
   border: 0;
   background: none;
   font: 500 15px/22px var(--site-font);
-  color: var(--site-text-muted);
   cursor: pointer;
 }
-.back:hover, .share:hover { color: var(--site-text); text-decoration: none; }
+/* the body grey, not the title grey: 15px text needs the contrast */
+.back { color: var(--site-text-body); }
+.bar .share { color: var(--site-accent); }
+.back:hover, .bar .share:hover { color: var(--site-text); text-decoration: none; }
 .back:focus-visible, .share:focus-visible { outline: 2px solid var(--site-accent); outline-offset: 4px; border-radius: 2px; }
-.share { color: var(--site-accent); }
+/* each keeps its look in a 44px tall touch area, inside the bar's gap */
+.back, .share { position: relative; }
+.back::after, .share::after { content: ''; position: absolute; inset: -11px -8px; }
 
-.painting { aspect-ratio: 16 / 10; border-radius: 16px; }
+.painting { aspect-ratio: 16 / 10; border-radius: var(--site-radius-card); }
 .screen .title { font-size: 34px; line-height: 36px; letter-spacing: -1.4px; text-wrap: balance; }
+/* the grey line after the break balances on its own, so no word is left alone */
+.screen .title span { display: inline-block; text-wrap: balance; }
 
 .cards, .steps { display: flex; flex-direction: column; }
 .card {
@@ -62,7 +68,9 @@
   background: var(--site-surface);
 }
 .shot { display: block; width: 100%; height: auto; border-radius: 12px; }
-.shot.flush { width: calc(100% + 16px); margin: -8px -8px 0; }
+.shot.flush { width: calc(100% + 16px); max-width: none; margin: -8px -8px 0; }
+/* the captures are light only: dimmed at night so they are not the brightest thing on the screen */
+[data-theme='dark'] .page .shot { filter: brightness(0.82); }
 .stepText { display: flex; align-items: center; gap: 16px; font: 400 16px/24px var(--site-font); color: var(--site-text); }
 .number {
   display: grid;

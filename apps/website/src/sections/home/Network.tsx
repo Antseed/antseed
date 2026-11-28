@@ -10,7 +10,7 @@ export default function Network(): JSX.Element {
     <Section cmp="home/network" id="network" labelledBy="network-title" className={styles.network} railClassName={styles.rail}>
       <header className={styles.head}>
         <EyebrowLink to="/network/">How the network works</EyebrowLink>
-        <Heading reveal id="network-title" title={['Building the world’s largest', 'inference liquidity network.']} secondLine="break" />
+        <Heading reveal id="network-title" title={['Building the world’s largest', 'inference liquidity network.']} secondLine="break" className={styles.title} />
         <Sub reveal className={styles.sub}>
           A fully peer-to-peer network for AI — like BitTorrent for inference. Buyers connect directly to independent providers, with no
           middleman. Anyone can supply intelligence, on their own terms.

@@ -11,7 +11,8 @@ export type TokenPoint = {
   sub: string;
   features: readonly Feature[];
   actions: readonly [Link, Link];
-  painting: {day: string; night: string; label: string};
+  /** `soft`: the day painting runs to its sides, so it fades out at them. */
+  painting: {day: string; night: string; label: string; soft?: boolean};
   /** Painting on the left on wide screens. */
   flip?: boolean;
 };
@@ -53,6 +54,7 @@ export const POINTS: readonly TokenPoint[] = [
       day: `${ART}/pools-day.webp`,
       night: `${ART}/pools-night.webp`,
       label: 'The provider’s stall in a birch wood: the ant in glasses serves a customer while three ants drop green coins into a clay pot, and coins fly back to them from the stall',
+      soft: true,
     },
     flip: true,
   },

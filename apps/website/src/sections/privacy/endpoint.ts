@@ -4,7 +4,7 @@ import {flag, shell, sub, value} from '../../parts/Terminal/tokens';
 
 export const POINTS: readonly Feature[] = [
   {icon: 'lock', text: 'Anonymous by default: no account, no email, no platform key.'},
-  {icon: 'directions', text: 'Route by privacy: set a minimum trust score, prefer TEE-verified providers.'},
+  {icon: 'directions', text: 'Route by privacy: set a minimum trust score, prefer TEE-verified\u00a0providers.'},
   {icon: 'check', text: "Verify a provider's TEE on your own machine. No special hardware needed."},
   {icon: 'analytics', text: 'Pay per request in USDC. No subscription tied to your name.'},
 ];

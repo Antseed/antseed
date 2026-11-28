@@ -29,7 +29,7 @@ export const PATHS: readonly ColonyPath[] = [
     copy: 'Bring a community of machines together and run the Colony others join. You choose the models it serves and coordinate the work.',
     painting: {
       day: `${A}/build-day.webp`,
-      night: `${A}/build-night.webp`,
+      night: `${A}/build-night-3.webp`,
       label: 'One ant with a rolled-up plan drives a stake into a roped-off circle of bare ground beside a blank wooden sign. A second ant sits on a pile of twigs and watches.',
     },
     action: 'soon',

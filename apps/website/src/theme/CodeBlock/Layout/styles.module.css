@@ -74,6 +74,12 @@
   color: var(--site-accent);
 }
 
+/* touch screens: a 44px tall touch area, the button as it looks */
+@media (max-width: 1079px) {
+  .header .copyButton { position: relative; z-index: 1; }
+  .header .copyButton::after { content: ''; position: absolute; inset: -6px -8px -12px; }   /* the header is 40 tall: the rest reaches a little into the code's top padding */
+}
+
 .content {
   position: relative;
   direction: ltr;

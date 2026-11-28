@@ -19,9 +19,12 @@
   font: 400 13px/20px var(--site-font-mono);
   color: var(--site-text);
   white-space: pre;
+  mask-image: linear-gradient(to left, transparent 8px, #000 92px);   /* a line too long fades out under the button */
 }
-.pre code { padding: 0; border: 0; background: none; font: inherit; color: inherit; }
-.pre:focus-visible { outline: 2px solid var(--site-accent); outline-offset: 2px; }
+.frame .pre code { padding: 0; border: 0; border-radius: 0; background: none; font: inherit; color: inherit; }   /* two classes: a block inside a list item never takes that list's inline-code chip */
+:global(:root[data-theme='dark']) .frame .pre code { background: none; }
+.pre:focus-visible { outline: none; }
+.frame:has(.pre:focus-visible) { outline: 2px solid var(--site-accent); outline-offset: 2px; }   /* on the frame, which the mask does not fade */
 
 .copy {
   position: absolute;
@@ -44,8 +47,16 @@
 .copy:focus-visible { outline: 2px solid var(--site-accent); outline-offset: 2px; }
 
 .output .frame { background: none; }
-.output .pre { padding-right: 16px; color: var(--site-text-body); }
+.output .pre { padding: 14px 16px; color: var(--site-text-body); mask-image: none; }
 
+/* a touch tablet: a 44px-tall hit area */
+@media (pointer: coarse) and (min-width: 561px) {
+  .copy::after { content: ''; position: absolute; inset: -8px -4px; }
+}
+/* a phone keeps the button beside the code, as its icon alone, with a 44px hit area */
 @media (max-width: 560px) {
-  .pre { padding-right: 16px; padding-top: 44px; }
+  .pre { padding-right: 56px; mask-image: linear-gradient(to left, transparent 40px, #000 56px); }   /* a line too long fades out by the button */
+  .copy { top: 6px; right: 6px; justify-content: center; width: 36px; height: 36px; padding: 0; }
+  .copy::after { content: ''; position: absolute; inset: -4px; }
+  .copyText { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 }

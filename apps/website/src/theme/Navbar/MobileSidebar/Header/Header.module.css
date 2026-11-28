@@ -2,7 +2,11 @@
 .end { display: flex; align-items: center; gap: 16px; margin-left: auto; }
 /* the nav's burger box: 44 square, its icon on the bar's right edge */
 .close {
-  display: grid; place-items: center; width: 44px; height: 44px; margin: 0 -10px 0 0; padding: 0; border: 0; border-radius: var(--site-radius-control);
+  display: grid; place-items: center; width: 44px; height: 44px; margin: 0 -14px 0 -4px; padding: 0; border: 0; border-radius: var(--site-radius-control);
   background: none; color: var(--site-ink); cursor: pointer;
 }
 .close:focus-visible { outline: 2px solid #789f00; outline-offset: -4px; }
+/* a phone: the bar's switch has no margin and sits 8px from the burger */
+@media (max-width: 760px) {
+  .end { gap: 8px; }
+}
