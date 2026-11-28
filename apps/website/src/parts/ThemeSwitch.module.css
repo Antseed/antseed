@@ -3,6 +3,8 @@
   width: 32px; height: 32px; padding: 0; border: 0; border-radius: 50%; cursor: pointer;
   background: transparent; color: var(--site-ink-muted);
 }
-.switch:hover { color: var(--site-ink); }
-.switch[aria-checked='true'] { background: var(--site-hairline); color: var(--site-ink); }
+@media (hover: hover) { .switch:hover { color: var(--site-ink); } }
+/* on from the theme attribute, which is set before the page hydrates (colorMode reads light until then) */
+:global(:root[data-theme='dark']) .switch { background: var(--site-hairline); color: var(--site-ink); }
+:global(:root[data-theme='dark']) .switch svg { fill: currentColor; }
 .switch:focus-visible { outline: 2px solid var(--site-ink); outline-offset: 2px; }

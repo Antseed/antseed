@@ -1,4 +1,4 @@
-import type {CSSProperties, JSX, ReactNode} from 'react';
+import type {CSSProperties, JSX, MouseEvent, ReactNode} from 'react';
 import clsx from 'clsx';
 import Head from '@docusaurus/Head';
 import Link from '@docusaurus/Link';
@@ -57,11 +57,59 @@ export function Faq({cmp, items, title = DEFAULT_TITLE, id = 'faq', titleId = `$
   );
 }
 
+/** How long a tapped question is held in place: the answer closing above it shrinks over .25s (Faq.module.css). */
+const HOLD_MS = 400;
+/** The visitor scrolling on their own: the hold lets go at once. */
+const SCROLL_INTENT = ['wheel', 'touchmove', 'keydown'] as const;
+const SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' ']);
+
+/** Lets go of the question being held, if any. */
+let releaseHold: (() => void) | null = null;
+
+/** Whether opening this question closes an open one above it in its group. */
+function closesOneAbove(details: HTMLDetailsElement): boolean {
+  if (details.open) return false;   // this tap closes it: nothing above moves
+  const group = details.parentElement?.querySelectorAll<HTMLDetailsElement>(':scope > details[open]') ?? [];
+  return [...group].some((d) => d !== details && Boolean(d.compareDocumentPosition(details) & Node.DOCUMENT_POSITION_FOLLOWING));
+}
+
+/**
+ * Opening a question closes the open one; when that one sits above, the page shrinks above the tapped question and pulls it from
+ * under the finger. Until the closing answer settles, the scroll follows it so the tapped question stays where it was, unless the
+ * visitor scrolls on their own first.
+ */
+function holdInPlace(e: MouseEvent<HTMLElement>) {
+  releaseHold?.();
+  const summary = e.currentTarget;
+  const details = summary.parentElement;
+  if (!(details instanceof HTMLDetailsElement) || !closesOneAbove(details)) return;
+  const top = summary.getBoundingClientRect().top;
+  const until = performance.now() + HOLD_MS;
+  let frame = 0;
+  const intent = (ev: Event) => {
+    if (!(ev instanceof KeyboardEvent) || SCROLL_KEYS.has(ev.key)) release();
+  };
+  const release = () => {
+    cancelAnimationFrame(frame);
+    for (const type of SCROLL_INTENT) window.removeEventListener(type, intent, {capture: true});
+    if (releaseHold === release) releaseHold = null;
+  };
+  const follow = () => {
+    const moved = summary.getBoundingClientRect().top - top;
+    if (moved) window.scrollBy({top: moved, behavior: 'instant'});
+    if (performance.now() < until) frame = requestAnimationFrame(follow);
+    else release();
+  };
+  for (const type of SCROLL_INTENT) window.addEventListener(type, intent, {capture: true, passive: true});
+  releaseHold = release;
+  frame = requestAnimationFrame(follow);
+}
+
 function Question({item, open, group}: {item: FaqItem; open: boolean; group: string}): JSX.Element {
   useBrokenLinks().collectAnchor(item.id);
   return (
     <details id={item.id} name={group} open={open} className={styles.question} data-rv="">
-      <summary className={styles.summary}>{item.question}</summary>
+      <summary className={styles.summary} onClick={holdInPlace}>{item.question}</summary>
       <div className={styles.answer}>
         <p className={styles.text}>{item.answer}</p>
         {item.link && <Link className={styles.link} to={item.link.href}>{item.link.label}</Link>}

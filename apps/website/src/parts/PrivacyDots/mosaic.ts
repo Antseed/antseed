@@ -12,6 +12,7 @@ const SIDE_TOP = 160;
 const SIDE_BOTTOM = 672;
 const SIDE = 30 * STEP;
 
+export type Box = {l: number; r: number; t: number; b: number};
 export type DotGroup = {fill: string; dots: [number, number][]};
 /** The dots laid in a band, per colour, plus every dot's centre (for the moving layer). */
 export type Layout = {paths: {fill: string; path: Path2D}[]; xs: number[]; ys: number[]};
@@ -39,8 +40,8 @@ function parse(svg: string): DotGroup[] {
   }));
 }
 
-/** The mosaic's top half from the band's top, its bottom half from the band's bottom, centred horizontally. */
-export function layOut(groups: DotGroup[], width: number, height: number): Layout {
+/** The mosaic's top half from the band's top, its bottom half from the band's bottom, centred horizontally; no dot inside a `clear` box. */
+export function layOut(groups: DotGroup[], width: number, height: number, clear: Box[] = []): Layout {
   const band = Math.max(MIN_BAND, MOSAIC_H - height / 2);
   const ox = width / 2 - MOSAIC_W / 2;
   const xs: number[] = [];
@@ -49,6 +50,7 @@ export function layOut(groups: DotGroup[], width: number, height: number): Layou
     const path = new Path2D();
     const add = (x: number, y: number) => {
       if (x < -DOT_RADIUS || y < -DOT_RADIUS || x > width + DOT_RADIUS || y > height + DOT_RADIUS) return;
+      if (clear.some((c) => x > c.l && x < c.r && y > c.t && y < c.b)) return;
       path.moveTo(x + DOT_RADIUS, y);
       path.arc(x, y, DOT_RADIUS, 0, Math.PI * 2);
       xs.push(x);

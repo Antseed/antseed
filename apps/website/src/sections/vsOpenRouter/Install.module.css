@@ -2,4 +2,5 @@
 .title { text-wrap: balance; }
 .command { display: flex; justify-content: center; max-width: 100%; }
 .note { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px 16px; font: 400 15px/22px var(--site-font); color: var(--site-text-small); }
-.note a { font-weight: 500; color: var(--site-accent); }
+/* a 44px tap target without moving anything */
+.note a { padding-block: 11px; margin-block: -11px; font-weight: 500; color: var(--site-accent); }

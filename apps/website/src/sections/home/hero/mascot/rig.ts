@@ -9,6 +9,8 @@ export type Antenna = {box: [number, number, number, number]; ball: number; sway
 
 export const RIG = {
   body: `${DIR}/ant-body.webp`,          // the neutral pose with the arms painted out
+  /** the same at 768px, for a phone's smaller ant: drawn into the 1024 frame, it keeps every point below */
+  bodyPhone: `${DIR}/ant-body-phone.webp`,
   size: 1024,
   bounds: [252, 115, 772, 928] as const,   // the ant's drawn box in the frame
   eyes: [{x: 525, y: 422, rx: 64, ry: 64}, {x: 717, y: 417, rx: 46, ry: 57}] as Eye[],
@@ -31,8 +33,13 @@ export const RIG = {
 };
 
 /** How the mascot sits and moves. */
+/** Screens that get the phone's art (the card's phone layout). */
+export const PHONE_ART = '(max-width: 760px)';
+
 export const TUNING = {
   width: 420,               // CSS px, shrunk to clear the install block
+  narrowShare: 0.6,         // at most this share of the card's width (a phone's card)
+  minShare: 0.6,            // smaller than this share of that it hides rather than crowd the text
   inset: 40,                // its right edge from the card's right
   crop: 0.22,               // share of its height below the card's bottom edge
   fps: 24,                  // drawn at the painting films' rate

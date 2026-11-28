@@ -7,7 +7,8 @@
 type Side = 'l' | 'r' | 'm';
 type Item = {el: SVGGraphicsElement; l: number; r: number; t: number; b: number; sx: number; sy: number; cube?: 'l' | 'r'};
 type Stack = {items: Item[]; side: Side; ax: number; ay: number; dx: number; cube: boolean};
-export type Labels = {stacks: Stack[]; names: {el: Element; size: number}[]; reset(): void};
+/** `view`: the drawing's left and right edges (its viewBox), where the SVG clips. */
+export type Labels = {stacks: Stack[]; names: {el: Element; size: number}[]; view: {l: number; r: number}; reset(): void};
 
 const MIN_READ_PX = 11;      // a label is drawn at least this high on screen…
 const MAX_GROW = 1.75;       // …up to this many times its size
@@ -19,6 +20,7 @@ const BUYERS_EDGE = 1240;    // cubes left of this (sum of both faces' x) are bu
 const SIDE_OF: Record<string, Side> = {'Pill / 10 USDC': 'l'};
 const TILE_MAX_WIDTH = 80;   // a pool's tile, among its slab's shapes
 const CAP_CENTRE = .36;      // the baseline below a line's middle, in font sizes
+const VIEW_INSET = 4;        // a grown label keeps this far inside the drawing's edges
 
 const layer = (el: Element) => el.getAttribute('data-n') ?? '';
 
@@ -76,8 +78,9 @@ export function collectLabels(svg: SVGSVGElement): Labels {
   const isPool = (t: Element) => t.getAttribute('fill') === 'white';
   const restorePools = flat.filter(isPool).map(centreOnTile);
   const names = flat.filter((t) => !isPool(t)).map((el) => ({el, size: Number(el.getAttribute('font-size'))}));
+  const vb = svg.viewBox.baseVal;
   return {
-    stacks, names,
+    stacks, names, view: {l: vb.x, r: vb.x + vb.width},
     reset() {
       restorePools.forEach((restore) => restore());
       stacks.forEach((st) => st.items.forEach((i) => i.el.removeAttribute('transform')));
@@ -112,23 +115,37 @@ function centreOnTile(t: SVGTextElement): () => void {
 /** Enlarges the labels for the drawing's on-screen `scale` (screen px per drawing unit). */
 export function fitLabels(labels: Labels, scale: number): void {
   const k = Math.max(1, Math.min(MAX_GROW, MIN_READ_PX / (LABEL_SIZE * scale)));
-  const grown = (st: Stack) => ({
-    l: Math.min(...st.items.map((i) => st.ax + (i.l - st.ax) * k)) + st.dx, r: Math.max(...st.items.map((i) => st.ax + (i.r - st.ax) * k)) + st.dx,
-    t: Math.min(...st.items.map((i) => st.ay + (i.t - st.ay) * k)), b: Math.max(...st.items.map((i) => st.ay + (i.b - st.ay) * k)),
+  const kOf = new Map<Stack, number>();
+  const grown = (st: Stack, g = kOf.get(st) ?? k) => ({
+    l: Math.min(...st.items.map((i) => st.ax + (i.l - st.ax) * g)) + st.dx, r: Math.max(...st.items.map((i) => st.ax + (i.r - st.ax) * g)) + st.dx,
+    t: Math.min(...st.items.map((i) => st.ay + (i.t - st.ay) * g)), b: Math.max(...st.items.map((i) => st.ay + (i.b - st.ay) * g)),
   });
   // at the right, a stack that would run into one nearer the drawing moves further out
   const outer = labels.stacks.filter((st) => st.side === 'l' && st.ax > 860 && !st.cube).sort((a, c) => a.ax - c.ax);
+  for (const st of labels.stacks) st.dx = 0;
   outer.forEach((st, n) => {
-    st.dx = 0;
     for (const near of outer.slice(0, n)) {
       const a = grown(near);
       const c = grown(st);
       if (c.l < a.r + 6 && c.t < a.b + 2 && a.t < c.b + 2) st.dx += a.r + 8 - c.l;
     }
   });
+  // a stack grown past the drawing's edge would be clipped there (the holders' name grows leftwards from its cube): growing towards
+  // that edge, it grows less, so it keeps its place by its cube; whatever still crosses moves back in
+  const lo = labels.view.l + VIEW_INSET;
+  const hi = labels.view.r - VIEW_INSET;
+  for (const st of labels.stacks) {
+    let g = grown(st);
+    if (g.l < lo && st.side === 'r') kOf.set(st, Math.max(1, k * (st.ax + st.dx - lo) / (st.ax + st.dx - g.l)));
+    if (g.r > hi && st.side === 'l') kOf.set(st, Math.max(1, k * (hi - st.ax - st.dx) / (g.r - st.ax - st.dx)));
+    g = grown(st);
+    if (g.l < lo) st.dx += lo - g.l;
+    else if (g.r > hi) st.dx -= g.r - hi;
+  }
   for (const st of labels.stacks) for (const i of st.items) {
+    const g = kOf.get(st) ?? k;
     const shift = i.sx || i.sy ? `translate(${i.sx.toFixed(2)} ${i.sy.toFixed(2)})` : '';
-    const grow = k > 1 ? `translate(${(st.ax + st.dx).toFixed(2)} ${st.ay.toFixed(2)}) scale(${k.toFixed(3)}) translate(${(-st.ax).toFixed(2)} ${(-st.ay).toFixed(2)})` : '';
+    const grow = g > 1 ? `translate(${(st.ax + st.dx).toFixed(2)} ${st.ay.toFixed(2)}) scale(${g.toFixed(3)}) translate(${(-st.ax).toFixed(2)} ${(-st.ay).toFixed(2)})` : '';
     const transform = [grow, shift].filter(Boolean).join(' ');
     if (transform) i.el.setAttribute('transform', transform);
     else i.el.removeAttribute('transform');

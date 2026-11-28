@@ -13,7 +13,7 @@
   text-align: left;
 }
 .place { display: flex; flex-direction: column; gap: 16px; }
-.card { aspect-ratio: 4 / 3; border-radius: 16px; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .06); }
+.card { aspect-ratio: 4 / 3; border-radius: var(--site-radius-card); box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .06); }
 :global(:root[data-theme='dark']) .card { box-shadow: inset 0 0 0 1px rgba(150, 200, 145, .14); }
 .caption { font: 400 16px/24px var(--site-font); color: var(--site-text-body); text-wrap: balance; }
 .caption b { font-weight: 500; color: var(--site-text); }

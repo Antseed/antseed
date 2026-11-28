@@ -21,7 +21,7 @@ export default function Build(): JSX.Element {
         sub="Antseed gives projects a local API surface, open provider marketplace, and onchain payments so teams can build products on top of independent AI supply."
       />
       <div className={clsx(styles.grid, styles.places)}>
-        {PLACES.map((p) => <ListingCard key={p.href} href={p.href} name={p.name} line={p.line} shot={{src: p.shot, alt: p.alt}} />)}
+        {PLACES.map((p) => <ListingCard key={p.href} href={p.href} name={p.name} line={p.line} shot={{src: p.shot, night: p.shotNight, alt: p.alt}} />)}
       </div>
     </Section>
   );

@@ -2,6 +2,8 @@
 .scene { background: var(--site-bg); }
 .scene .head { padding: 112px var(--site-pad) 16px; text-wrap: balance; }
 .join .sub { max-width: 620px; text-wrap: wrap; }
+/* on phones the sub line keeps its last word company */
+@media (max-width: 760px) { .join .scene .sub { text-wrap: pretty; } }
 .painting { aspect-ratio: 1312 / 560; }
 .join .painting { background-position: 50% 72%; }
 /* the painting's sky fades up into the band's, so the two read as one */

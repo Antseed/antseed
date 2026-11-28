@@ -83,6 +83,7 @@ export class Leaves {
     this.drawn = null;
     const f = this.frame;
     if (veiled || f.shown < 0.01 || !fore.offsetParent) return;
+    if (ch > cw) return;   // a portrait card (phone, tablet) crops the plants' plate off its right edge: nothing to fetch or draw
     if (!this.loading) return this.load();
     const plants = this.plants;
     if (!plants) return;

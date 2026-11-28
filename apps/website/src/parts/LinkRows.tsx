@@ -9,7 +9,7 @@ export type LinkRow = {
   text?: ReactNode;
   /** The link's words at the right, before the arrow. */
   action?: string;
-  /** A logo (decorative). */
+  /** A logo (decorative). `null` keeps its place empty, so the row's words line up with marked rows above. */
   mark?: ReactNode;
   /** Accessible name of the link, when the visible words are not enough. */
   label?: string;
@@ -29,7 +29,7 @@ export function LinkRows({rows, columns = 1, className}: Props): JSX.Element {
       {rows.map((r) => (
         <li key={r.name} className={styles.item} data-rv="">
           <Link to={r.href} className={styles.row} aria-label={r.label}>
-            {r.mark && (
+            {r.mark !== undefined && (
               <span className={styles.mark} aria-hidden="true">
                 {r.mark}
               </span>

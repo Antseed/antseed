@@ -1,6 +1,6 @@
 import type {JSX} from 'react';
 import {Section} from '../../../components';
-import {Ticks} from '../../../parts/Ticks';
+import {Code, Ticks} from '../../../parts/Ticks';
 import {CodeBlock} from '../../../parts/CodeBlock';
 import {JOIN_BUYER_SKILL_COMMAND} from '../../../parts/CommandChip';
 import type {Integration} from '../../../integrations/integrations';
@@ -21,7 +21,7 @@ function ModelPick({integration: i}: {integration: Integration}): JSX.Element | 
       </ul>
       {i.modelHints.note && <p className={styles.para}><Ticks>{i.modelHints.note}</Ticks></p>}
       <p className={styles.para}>
-        The full list is every model on the network. Run <code>GET /v1/models</code> on your endpoint, <code>antseed network browse</code>,
+        The full list is every model on the network. Run <Code>GET /v1/models</Code> on your endpoint, <Code>antseed network browse</Code>,
         or open the <a href={LIVE_NETWORK} target="_blank" rel="noopener noreferrer">live network page</a> to see what's available right
         now.
       </p>

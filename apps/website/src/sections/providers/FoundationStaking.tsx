@@ -8,14 +8,15 @@ const APPLICATION = 'https://docs.google.com/forms/d/e/1FAIpQLSdeb4e5bx-aJxVzqb4
 
 export function FoundationStaking(): JSX.Element {
   return (
-    <Duo cmp="providers/foundation-staking" id="foundation-staking" labelledBy="foundation-staking-title" text={
+    <Duo cmp="providers/foundation-staking" id="foundation-staking" labelledBy="foundation-staking-title"
+      className={styles.staking} railClassName={styles.rail} textClassName={styles.text} text={
       <SectionHead
         size="compact"
         eyebrow="Foundation Provider Staking Program"
         id="foundation-staking-title"
         title={['Get Foundation stake', 'behind your provider.']}
         sub="The Foundation may stake ANTS behind active, high-performing providers. Support depends on agreed milestones and requires KYB/KYC screening. Providers that use a TEE or offer a free model receive priority.">
-        <Actions reveal>
+        <Actions fill reveal>
           <Button href={APPLICATION} size="page">Apply for Foundation staking</Button>
         </Actions>
       </SectionHead>

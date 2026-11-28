@@ -12,6 +12,11 @@
   .vision .principles { grid-template-columns: 1fr 1fr; }
   .vision .principle:nth-child(3) { --dots-left: 0px; }
 }
+/* where the title wraps, each sentence takes its own lines, balanced, so no line ends on 'a' */
+@media (max-width: 899px) {
+  .vision .head .title { text-wrap: balance; }
+  .vision .title > span { display: block; }
+}
 @media (max-width: 760px) {
   .rail { padding-top: 72px; }
   .vision .head { padding-bottom: 40px; }

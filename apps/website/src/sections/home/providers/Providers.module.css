@@ -1,4 +1,5 @@
 .providers .rail { padding: 120px 0 124px; }
+@media (min-width: 1200px) { .providers .rail { padding-top: 124px; } }
 
 .head { --head-gap: 20px; display: flex; flex-direction: column; gap: var(--head-gap); align-items: flex-start; padding-inline: var(--site-pad); }
 .head .title, .head .sub, .path .pathTitle, .path .copy { text-wrap: balance; }
@@ -14,6 +15,8 @@
 .path .panel { margin-bottom: 16px; aspect-ratio: 3 / 2; border-radius: var(--site-radius-card); box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .06); background-position: 50% 85%; }
 /* the stall drawn 1.4× the panel's width from its right edge, so it stands left and the listing has room on the right */
 .path .panel.ownPanel { background-size: 140% auto; background-position: 100% 85%; }
+/* the day colony painting fades into the page: the film covers the ring but for its bottom row, so it has none (a seam otherwise) */
+:global(:root:not([data-theme='dark'])) .path .panel:not(.ownPanel) { box-shadow: none; }
 .ownFilm { --film-left: -40%; --film-width: 140%; }
 
 .path .pathTitle { margin-bottom: 4px; font-size: 30px; line-height: 34px; font-weight: 400; letter-spacing: -1px; }
@@ -33,6 +36,8 @@
 }
 @media (max-width: 760px) {
   .providers .rail { padding: 72px 0; }
+  /* the whole title balances as one block here, so each part breaks in two even lines */
+  .head .title > br + span { display: inline; }
   .paths { grid-template-columns: 1fr; margin-top: 40px; padding: 0 16px; }
   .path + .path { margin-top: 56px; }
   .path { transition-delay: 0s; }

@@ -3,7 +3,6 @@
   --site-text: #f2f4ef;
   --site-text-muted: #7b827e;
   --site-dot: #363b3a;
-  --cta-mosaic-opacity: 1;   /* the shared dots are faint for a pale card by day; this ground is dark in both themes */
   isolation: isolate;
   align-items: center;
   justify-content: center;

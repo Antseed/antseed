@@ -54,7 +54,7 @@
 .answer .link { align-self: flex-start; font: 500 15px/22px var(--site-font); color: var(--site-accent); }
 
 @media (min-width: 1200px) {
-  .faq .rail { padding-block: var(--faq-wide-pad, 120px); }
+  .faq .rail { padding-block: var(--faq-wide-pad, 124px); }
 }
 @media (max-width: 1199px) {
   .faq .rail { grid-template-columns: 280px minmax(0, 1fr); }

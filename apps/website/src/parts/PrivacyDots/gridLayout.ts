@@ -1,4 +1,4 @@
-import {DOT_RADIUS, type DotGroup, type Layout} from '../PrivacyDots/mosaic';
+import {DOT_RADIUS, type DotGroup, type Layout} from './mosaic';
 
 /** The mosaic's size in its own cells. */
 const MOSAIC_COLS = 97;

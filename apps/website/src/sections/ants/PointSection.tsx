@@ -1,4 +1,5 @@
 import type {JSX} from 'react';
+import clsx from 'clsx';
 import {Actions, Button, Duo, DuoHead, Heading, Sub, Wash} from '../../components';
 import {EyebrowLink} from '../../parts/EyebrowLink';
 import {FeatureList} from '../../parts/FeatureList';
@@ -18,7 +19,7 @@ export function PointSection({point}: {point: TokenPoint}): JSX.Element {
       className={styles.section}
       railClassName={styles.rail}
       textClassName={styles.text}
-      panel={<Wash unveil reveal="panel" className={styles.panel} day={point.painting.day} night={point.painting.night} label={point.painting.label} />}
+      panel={<Wash unveil reveal="panel" className={clsx(styles.panel, point.painting.soft && styles.soft)} day={point.painting.day} night={point.painting.night} label={point.painting.label} />}
       text={
         <>
           <EyebrowLink to={point.eyebrow.href} className={styles.eyebrow}>{point.eyebrow.label}</EyebrowLink>

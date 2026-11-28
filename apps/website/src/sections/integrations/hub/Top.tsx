@@ -11,6 +11,7 @@ export default function Top(): JSX.Element {
       titleId="integrations-title"
       eyebrow="Integrations"
       title={['One endpoint.', 'Every tool you already use']}
+      secondLine="block"
       titleSize="tight"
       sub="Your Antseed gateway gives each tool its own API key, from your computer, a server or a tunnel. It is OpenAI and Anthropic compatible and translates between the two on the fly. Pick your tool below."
       actions={<>

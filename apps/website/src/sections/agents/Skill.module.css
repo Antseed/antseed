@@ -21,6 +21,7 @@
   .rail { padding-top: 72px; }
   .head { padding-bottom: 40px; }
   .rail .steps { grid-template-columns: 1fr; }
+  .steps .step { padding-inline: var(--site-pad); }   /* the steps on the heading's line */
   .number { margin-bottom: 8px; font-size: 32px; }
   .command { padding: 32px var(--site-pad) 40px; }
 }

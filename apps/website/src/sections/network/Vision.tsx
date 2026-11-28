@@ -17,6 +17,7 @@ export default function Vision(): JSX.Element {
       <SectionHead
         padX
         className={styles.head}
+        titleClassName={styles.title}
         eyebrow="Our vision"
         id="vision-title"
         title={['Every computer a provider.', 'Every agent a customer.']}

@@ -10,7 +10,8 @@ export default function Layers(): JSX.Element {
       <SectionHead
         padX
         id="layers-title"
-        title={['A fully peer-to-peer network.', 'In three connected layers.']}
+        titleClassName={styles.title}
+        title={[<>A fully <span className={styles.nobreak}>peer-to-peer</span> network.</>, 'In three connected layers.']}
         sub="Many users and many independent providers, connected directly. No central Antseed server."
       />
       <NetworkDiagram boardClassName={styles.board} pointClassName={styles.point} />

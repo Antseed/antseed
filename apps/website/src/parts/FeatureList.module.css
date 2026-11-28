@@ -1,5 +1,10 @@
 .list { align-self: stretch; margin: 0; padding: 0; list-style: none; }
-.item { display: flex; align-items: center; gap: 12px; padding: 8px 0; font: 400 16px/24px var(--site-font); color: var(--site-text); }
+.item { display: flex; align-items: center; gap: 12px; padding: 8px 0; font: 400 16px/24px var(--site-font); color: var(--site-text); text-wrap: pretty; }
 .icon { color: var(--site-text-muted); }
-/* the authored line breaks are for wide screens; on a phone the text wraps as it may */
-@media (max-width: 760px) { .item br { display: none; } }
+/* points that wrap: the icon on the first line (icon and line are both 24px) */
+.firstLine .item { align-items: flex-start; }
+/* the authored line breaks are for wide screens; on a phone the text wraps as it may, so every list keeps its icons on the first line */
+@media (max-width: 760px) {
+  .item br { display: none; }
+  .list .item { align-items: flex-start; }
+}

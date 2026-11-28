@@ -37,7 +37,7 @@
 
 /* 2 · the answer patterns: every third bar tall and lit, every fourth short, every fifth mid */
 .fingerprint { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-.series { display: grid; gap: 10px; padding: 14px 16px 16px; border: .5px solid rgba(205, 216, 209, .4); border-radius: 6px; }
+.series { display: grid; grid-template-rows: 1fr auto; gap: 10px; padding: 14px 16px 16px; border: .5px solid rgba(205, 216, 209, .4); border-radius: 6px; }
 .series .seriesName { font-size: 13px; line-height: 20px; color: #e6ece8; }
 .bars { display: flex; align-items: center; justify-content: space-between; height: 38px; }
 .bars i { width: 7px; height: 20px; border-radius: 5px; background: #98c463; }

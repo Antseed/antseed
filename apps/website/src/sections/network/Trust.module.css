@@ -2,8 +2,8 @@
 .title { text-wrap: balance; }
 
 .trust .head .sub { margin-top: 0; text-wrap: pretty; }
-.signalsList b { font-weight: 500; }
-.signal { display: block; text-wrap: balance; }
+.signalsList b { font-weight: 500; color: var(--site-text); }
+.signal { display: block; text-wrap: balance; color: var(--site-text-body); }   /* the term in ink, its text in grey, as in Pay and Vision */
 .link { font: 500 16px/24px var(--site-font); color: var(--site-accent); }
 .link:hover { color: var(--site-accent); }
 
@@ -27,7 +27,9 @@
   .link::after { content: ''; position: absolute; inset: -10px 0; }
 }
 @media (max-width: 760px) {
+  .trust .text { padding-top: 72px; }   /* the text opens the section here: the same 72px as the sections around it */
   .link { padding-block: 10px; margin-block: -10px; }   /* a full tap target; the lines around it unchanged */
+  .window .signals { display: grid; grid-template-columns: repeat(2, max-content); }   /* four signals can't share a row here: an even 2 by 2 */
 }
 
 /* the window on its glass; its own ink and grey */

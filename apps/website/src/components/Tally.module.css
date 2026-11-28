@@ -2,3 +2,5 @@
 .tally { display: inline-grid; font-variant-numeric: tabular-nums; }
 .tally > * { grid-area: 1 / 1; }
 .holder { visibility: hidden; }
+/* while motion is on, the figure waits hidden until useCountUp has set it to where the count starts (data-ready) */
+:global(html[data-motion]) .tally > :not(.holder):not([data-ready]) { visibility: hidden; }

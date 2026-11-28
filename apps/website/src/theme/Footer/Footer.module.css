@@ -52,11 +52,13 @@
 @media (max-width: 1079px) {
   .link { padding-block: 12px; margin-block: -12px; }
   .brand, .socialLink { position: relative; }
-  .brand::after, .socialLink::after { content: ''; position: absolute; inset: -6px 0; }
+  .brand::after { content: ''; position: absolute; inset: -6px 0; }
+  .socialLink::after { content: ''; position: absolute; inset: -6px -2px; }   /* 36 wide, meeting in the 4px gaps */
 }
 @media (max-width: 760px) {
   .rail { padding-inline: 20px; }   /* the words on the sections' content line; the meadow stays full width */
   .columns { grid-template-columns: 1fr 1fr; }
   .bar { flex-wrap: wrap; }
   .copyright { flex-basis: 100%; }
+  .bar .social { margin-left: -7px; }   /* the row starts a line: the first glyph, not its box, on the text's edge */
 }

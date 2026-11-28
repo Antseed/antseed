@@ -1,12 +1,2 @@
 .host { position: absolute; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; }
-.mosaic, .live { position: absolute; top: 0; left: 0; }
-/* the mosaic is drawn for the night; faint on the day's pale card. A band on a dark ground in both themes sets --cta-mosaic-opacity: 1 */
-.mosaic { opacity: var(--cta-mosaic-opacity, .22); }
-:global(:root[data-theme='dark']) .mosaic { opacity: var(--cta-mosaic-opacity, 1); }
-/* a phone: the dots kept to the card's edges, clear behind the words */
-@media (max-width: 760px) {
-  .host {
-    -webkit-mask-image: radial-gradient(farthest-side, #0000 72%, #0008 86%, #000 100%);
-    mask-image: radial-gradient(farthest-side, #0000 72%, #0008 86%, #000 100%);
-  }
-}
+.canvas { position: absolute; top: 0; left: 0; }

@@ -35,12 +35,19 @@
   .search { margin-right: 0; }
 }
 
-/* a touch screen: the switch, the only control left beside the burger, a 44 tall touch area */
+/* a touch screen: the icons beside the burger get 44 tall touch areas, which meet in the 8px gaps without overlapping */
 @media (max-width: 1079px) {
   .themeSwitch::after { content: ''; position: absolute; inset: -8px -4px; }
+  .social { position: relative; }
+  .social::after { content: ''; position: absolute; inset: -4px; }
 }
 /* a phone: the marketing pages' nav on the sections' content line (the rail's edge + 20); the homepage's sits in the hero's frame */
 @media (max-width: 760px) {
   .actions .barGateway { display: none; }
+  .frame .actions .themeSwitch { margin-right: 0; }   /* its margin parts it from the Gateway button, hidden here */
   .frame.page .nav { padding-inline: calc((100% - var(--site-rail)) / 2 + 20px); }
+}
+/* the blog index's and the integrations' row also carries the search: on the narrowest phones it only fits in the docs' gutter */
+@media (max-width: 359px) {
+  .frame.page.searchRow .nav { padding-inline: 16px; }
 }

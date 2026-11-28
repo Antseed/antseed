@@ -1,5 +1,6 @@
 import type React from 'react';
-import {useEffect} from 'react';
+import {useEffect, useRef} from 'react';
+import {useLocation} from '@docusaurus/router';
 import '../styles/fonts.css';
 import '@fontsource/instrument-sans/latin-400.css';
 import '@fontsource/instrument-sans/latin-500.css';
@@ -160,8 +161,73 @@ function useClickTracking() {
   }, []);
 }
 
+/** How long after hydration a hash landing is kept on its target while the page settles. */
+const HASH_SETTLE_MS = 3000;
+
+/** Signs the visitor is moving the page themselves: a press, a key, a wheel or trackpad scroll, a touch drag. */
+const SCROLL_INTENT = ['pointerdown', 'keydown', 'wheel', 'touchmove'] as const;
+
+/**
+ * Landing on a #hash: in-page scrolling turns smooth (`data-smooth`, custom.css) only at the first press or key, so the browser's
+ * jump to the hash is instant. Sections that change height on hydration (the home Privacy stage) move the target after that jump,
+ * so for a few seconds at most it is put back at the top of the screen whenever the page resizes, until the visitor scrolls, presses
+ * or types: from then on the page is theirs. The same holds after each in-site link to a #hash (Root stays mounted across routes):
+ * there the target is put back only when the page resizes, so an in-page link still scrolls smoothly and a page still loading is
+ * landed on once it renders.
+ */
+function useHashLanding() {
+  const {pathname, hash} = useLocation();
+  const firstLanding = useRef(true);
+
+  useEffect(() => {
+    const root = document.documentElement;
+    const smooth = () => {
+      root.dataset.smooth = '';
+    };
+    window.addEventListener('pointerdown', smooth, {once: true, capture: true});
+    window.addEventListener('keydown', smooth, {once: true, capture: true});
+    return () => {
+      window.removeEventListener('pointerdown', smooth, {capture: true});
+      window.removeEventListener('keydown', smooth, {capture: true});
+    };
+  }, []);
+
+  useEffect(() => {
+    const initial = firstLanding.current;
+    firstLanding.current = false;
+    let id = '';
+    try {
+      id = hash ? decodeURIComponent(hash.slice(1)) : '';
+    } catch {
+      // a malformed hash: nothing to land on
+    }
+    if (!id || (initial && !document.getElementById(id))) return;
+    // a ResizeObserver calls back once as soon as it observes: on the first landing that puts the target back after hydration,
+    // after an in-site link it is skipped so the browser's own (smooth) scroll runs undisturbed
+    let skip = !initial;
+    const resized = new ResizeObserver(() => {
+      if (skip) {
+        skip = false;
+        return;
+      }
+      document.getElementById(id)?.scrollIntoView({block: 'start', behavior: 'instant'});
+    });
+    let stop = 0;
+    const settle = () => {
+      resized.disconnect();
+      window.clearTimeout(stop);
+      for (const type of SCROLL_INTENT) window.removeEventListener(type, settle, {capture: true});
+    };
+    for (const type of SCROLL_INTENT) window.addEventListener(type, settle, {capture: true, passive: true});
+    resized.observe(document.getElementById('__docusaurus') ?? document.body);
+    stop = window.setTimeout(settle, HASH_SETTLE_MS);
+    return settle;
+  }, [pathname, hash]);
+}
+
 export default function Root({children}: {children: React.ReactNode}) {
   useScrollState();
+  useHashLanding();
   useClickTracking();
   useDocumentReveal();
   return <>{children}</>;

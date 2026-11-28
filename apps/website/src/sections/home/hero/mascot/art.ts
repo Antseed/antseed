@@ -1,4 +1,4 @@
-import {RIG, TUNING} from './rig';
+import {PHONE_ART, RIG, TUNING} from './rig';
 
 export type Picture = HTMLCanvasElement | HTMLImageElement;
 
@@ -10,10 +10,11 @@ const ctx2d = (w: number, h: number, read = false) => {
 export const loadImage = (src: string): Promise<HTMLImageElement | null> =>
   new Promise((ok) => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => ok(null); i.src = src; });
 
-/** A gamma that darkens the mid-tones and keeps the whites white, applied once per part. */
+/** A gamma that darkens the mid-tones and keeps the whites white, applied once per part, in the rig's frame whatever the file's size. */
 function grade(img: HTMLImageElement): HTMLCanvasElement {
-  const g = ctx2d(img.naturalWidth, img.naturalHeight, true);
-  g.drawImage(img, 0, 0);
+  const g = ctx2d(RIG.size, RIG.size, true);
+  g.imageSmoothingQuality = 'high';
+  g.drawImage(img, 0, 0, RIG.size, RIG.size);
   const lut = Uint8ClampedArray.from({length: 256}, (_, v) => 255 * (v / 255) ** TUNING.gamma);
   const im = g.getImageData(0, 0, g.canvas.width, g.canvas.height);
   const d = im.data;
@@ -62,7 +63,8 @@ export type Art = {body: HTMLCanvasElement; arms: HTMLCanvasElement[]; mouthless
 
 /** The parts, graded; null if any is missing. */
 export async function loadArt(): Promise<Art | null> {
-  const [body, ...arms] = await Promise.all([RIG.body, ...RIG.arms.map((a) => a.src)].map(loadImage));
+  const bodySrc = matchMedia(PHONE_ART).matches ? RIG.bodyPhone : RIG.body;
+  const [body, ...arms] = await Promise.all([bodySrc, ...RIG.arms.map((a) => a.src)].map(loadImage));
   if (!body || arms.some((a) => !a)) return null;
   const graded = grade(body);
   return {body: graded, arms: (arms as HTMLImageElement[]).map(grade), mouthless: paintOutMouth(graded)};

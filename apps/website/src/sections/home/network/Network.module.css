@@ -12,12 +12,19 @@
   gap: 20px;
   padding-inline: var(--site-pad);
 }
+.network .head .title { text-wrap: balance; }
 .network .head .sub { max-width: 760px; margin-top: 0; text-wrap: pretty; }
 
 .board { flex: none; width: 100%; margin-top: 40px; }
 /* three steps, then the way onwards in a column of its own */
 .network .points { grid-template-columns: repeat(3, 1fr) auto; }
 .network .point { padding: 48px 32px; }
+/* tablets: the three steps share the width and the way onwards takes a row of its own under them */
+@media (min-width: 761px) and (max-width: 1199px) {
+  .network .points { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .network .point { padding: 32px 20px; }
+  .network .point:last-child { grid-column: 1 / -1; padding-block: 24px 48px; --dots-left: 0px; --dots-top: 2px; }
+}
 
 @media (max-width: 760px) {
   .network .points { grid-template-columns: 1fr; }

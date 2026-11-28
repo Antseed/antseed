@@ -50,7 +50,7 @@ const FEATURES: readonly Feature[] = [
 export default function Features(): JSX.Element {
   return (
     <Section cmp="apps/features" id="routing" labelledBy="features-title" pad="all" railClassName={styles.rail}>
-      <SectionHead eyebrow="What you get" id="features-title" title="One gateway. Full control." />
+      <SectionHead eyebrow="What you get" id="features-title" title="One gateway. Full control." titleClassName={styles.head} />
       <div className={styles.cards}>
         {FEATURES.map((f) => (
           <article key={f.tag} className={styles.card}>

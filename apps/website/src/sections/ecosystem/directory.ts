@@ -8,6 +8,8 @@ export type Listing = {
   href: string;
   /** A screenshot of where the card leads, 800 × 600. */
   shot: string;
+  /** The same page in its night theme, for Antseed's own pages; other sites keep their one shot. */
+  shotNight?: string;
   alt: string;
 };
 
@@ -26,8 +28,8 @@ export const PROJECTS: readonly Listing[] = [
 /** Where builders start: the explorer, the docs, the provider hub. */
 export const PLACES: readonly Listing[] = [
   {name: 'Network Explorer.', line: 'Watch live providers, market prices, usage, and routing activity across the Antseed network.', href: 'https://antseedstats.com/network', shot: `${SHOTS}/explorer.webp`, alt: 'The AntSeedStats network page'},
-  {name: 'Developer Docs.', line: 'Use Antseed as peer-to-peer AI infrastructure from apps, agents, routers, and existing tools.', href: '/docs/', shot: `${SHOTS}/docs.webp`, alt: 'The Antseed documentation'},
-  {name: 'Provider Hub.', line: 'Launch a differentiated AI service, managed product, agent, router, or inference provider.', href: '/providers/', shot: `${SHOTS}/providers.webp`, alt: 'The Antseed providers page'},
+  {name: 'Developer Docs.', line: 'Use Antseed as peer-to-peer AI infrastructure from apps, agents, routers, and existing tools.', href: '/docs/', shot: `${SHOTS}/docs-2.webp`, shotNight: `${SHOTS}/docs-2-night.webp`, alt: 'The Antseed documentation'},
+  {name: 'Provider Hub.', line: 'Launch a differentiated AI service, managed product, agent, router, or inference provider.', href: '/providers/', shot: `${SHOTS}/providers-2.webp`, shotNight: `${SHOTS}/providers-2-night.webp`, alt: 'The Antseed providers page'},
 ];
 
 export type Pillar = {icon: PixelIconName; name: string; line: string};
