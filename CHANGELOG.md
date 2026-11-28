@@ -6,6 +6,23 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+## 2026-11-28 — CLI 0.1.267, Node 0.2.196
+
+### Packages
+
+- `@antseed/cli@0.1.267`
+- `@antseed/node@0.2.196`
+- `@antseed/api-adapter@0.1.69`
+- `@antseed/buyer-core@0.1.58`
+- `@antseed/gateway-console@0.1.38`
+- `@antseed/web-sdk@0.1.52`
+- `@antseed/payments@0.1.123`
+- `@antseed/ants@0.1.81`
+- `@antseed/provider-alibaba-video@0.1.18`
+- `@antseed/provider-fal-image@0.1.14`
+- `@antseed/provider-fal-video@0.1.30`
+- `@antseed/provider-venice-video@0.1.31`
+
 ### Added
 
 - Gateway alerts: each workspace can get a signed webhook, a Telegram message (through its own bot) or an email (through the host's SMTP server, `ANTSEED_GATEWAY_SMTP_URL` and `ANTSEED_GATEWAY_SMTP_FROM`) when its credits drop below a threshold or run out, when a key, member or workspace spend limit is near or reached, or when spend tracking stops. Low-credit alerts carry the wallet address and a suggested top-up amount, so a webhook can automate deposits. Set them up under **Alerts** in the Gateway Console; see the Alerts guide.
