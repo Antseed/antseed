@@ -5378,12 +5378,15 @@ export class BuyerProxy {
     // Both run at once, and the topic lookup skips its own wildcard scan: the
     // refresh is that scan, and running them one after the other made an
     // unknown pin take about three sweeps to fail.
-    const topicLookup = !pinnedDiscovered && typeof this._node.findPeer === 'function'
+    const lookUpPinTopic = (): Promise<PeerInfo | null> | null => typeof this._node.findPeer === 'function'
       ? this._node.findPeer(pinnedPeerId, { wildcardFallback: false }).catch(() => null)
       : null
+    let topicLookup = pinnedDiscovered ? null : lookUpPinTopic()
     if (!pinnedDiscovered || routingPeers.length === 0 || cacheAgeMs > this._peerCacheTtlMs) {
       await refreshPeerSelection('pinned-peer routing preflight')
       pinnedDiscovered = isPinnedDiscovered()
+      // A cached pin that the refresh's sweep missed: its own topic still finds it.
+      if (!pinnedDiscovered) topicLookup ??= lookUpPinTopic()
     }
     if (!pinnedDiscovered && topicLookup) {
       const found = await topicLookup

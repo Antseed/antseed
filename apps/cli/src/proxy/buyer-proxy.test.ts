@@ -3831,6 +3831,37 @@ test('a pinned peer missing from the cache is looked up on its own topic during 
   assert.deepEqual(lookups, [{ peerId: pinnedPeerId, options: { wildcardFallback: false } }])
 })
 
+test('a cached pin that a stale-cache refresh misses is still looked up on its own topic', async () => {
+  const pinned = makeCataloguePeer('c')
+  const other = makeCataloguePeer('b')
+  const proxy = makeBuyerProxyWithPeers([pinned, other], [pinned, other], permissiveRouter())
+  ;(proxy as any)._cacheLastUpdatedAtMs = Date.now() - (proxy as any)._peerCacheTtlMs - 1_000
+  // The refresh's sweep reaches other shards and returns without the pin.
+  ;(proxy as any)._getPeers = async (options?: { forceRefresh?: boolean }) => options?.forceRefresh ? [other] : [pinned, other]
+  const lookups: unknown[] = []
+  ;(proxy as any)._node.findPeer = async (peerId: string, options?: unknown) => {
+    lookups.push({ peerId, options })
+    return peerId === pinned.peerId ? pinned : null
+  }
+  const attempts: string[] = []
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
+    attempts.push(peer.peerId)
+    return {
+      requestId: request.requestId,
+      statusCode: 200,
+      headers: { 'content-type': 'application/json' },
+      body: Buffer.from('{"choices":[{"message":{"content":"ok"}}]}'),
+    }
+  }
+  const res = await invokeProxy(proxy, makeProxyRequest({
+    headers: { 'x-antseed-pin-peer': pinned.peerId },
+    body: { model: 'gpt-5', messages: [] },
+  }))
+  assert.equal(res.statusCode, 200, res.body)
+  assert.deepEqual(attempts, [pinned.peerId])
+  assert.deepEqual(lookups, [{ peerId: pinned.peerId, options: { wildcardFallback: false } }])
+})
+
 test('verifier preimage capture header stays local and enables exact capture', async () => {
   const peer = makePeer('a', ['openai'])
   const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
