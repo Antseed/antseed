@@ -7,7 +7,7 @@ import { BUYER_SHUTDOWN_DRAIN_MS } from '../shutdown-timeouts.js'
 import { randomUUID } from 'node:crypto'
 import { buildRoutingServices, findPinnedRoutingService } from './routing-services.js'
 import { readFileSync, watchFile, unwatchFile } from 'node:fs'
-import { telemetryClientTool, telemetryProtocol, traceFor, type BuyerTelemetry, type ConversationKeySource, type SwitchReason } from '../telemetry/buyer.js'
+import { TELEMETRY_TRAFFIC_HEADER, telemetryClientTool, telemetryProtocol, traceFor, trafficTag, type BuyerTelemetry, type ConversationKeySource, type SwitchReason } from '../telemetry/buyer.js'
 import { finishReasonFromBody } from '../telemetry/finish-reason.js'
 import { readFile, writeFile, rename, mkdir, readdir, stat, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -75,6 +75,7 @@ import { encodeServedSelection, ROUTE_SELECTION_HEADER, type RouteSelection, typ
 import { canonicalModelKey } from '@antseed/node/model-identity'
 import {
   createStreamingAdapter,
+  errorEventStreamAsJson,
   detectRequestServiceApiProtocol,
   extractRequestBodyFields,
   type ServiceApiProtocol,
@@ -117,6 +118,7 @@ import {
   findUnannouncedRequestParameters,
   findAdvertisedServiceOffer,
   findAdvertisedServiceProtocols,
+  isServiceListedByAnyPeer,
   findFailingServiceOffers,
   getExplicitProviderOverride,
   getExplicitPeerIdOverride,
@@ -727,7 +729,7 @@ const MAX_TRACKED_REQUEST_CONVERSATIONS = 512
 /** Why a speech seller is not a route: it does not list the voice the request asks for. */
 const UNSUPPORTED_VOICE_REASON = 'does not offer the requested voice'
 
-/** Min gap between background peer refreshes triggered by model_not_found responses. */
+/** Min gap between background peer refreshes triggered by a model nobody serves (a seller's model_not_found, or no seller listing it). */
 const MODEL_NOT_FOUND_REFRESH_THROTTLE_MS = 30_000
 
 /**
@@ -887,6 +889,17 @@ function adaptOpenAICompatibleErrorResponse(
     },
     body: Buffer.from(JSON.stringify(wrappedError)),
   }
+}
+
+/** The APIs the buyer translates between; telemetry reports translation only for them. */
+const TRANSLATABLE_PROTOCOLS: ReadonlySet<string> = new Set(['anthropic-messages', 'openai-chat-completions', 'openai-responses'])
+
+/** A seller error sent as an event stream, as `protocol`'s JSON error body (see `errorEventStreamAsJson`). */
+function errorEventStreamAsJsonFor(
+  response: SerializedHttpResponse,
+  protocol: ServiceApiProtocol | null,
+): SerializedHttpResponse {
+  return protocol ? errorEventStreamAsJson(response, protocol) : response
 }
 
 function adaptBuyerFaultErrorResponse(
@@ -1488,7 +1501,7 @@ export class BuyerProxy {
   /** After a network switch the DHT routing table can stay populated with stale
       nodes, so repeated empty sweeps are the reachability signal — not node count. */
   private _consecutiveEmptyDiscoveries = 0
-  private _lastModelNotFoundRefreshAtMs = 0
+  private _lastBackgroundPeerRefreshAtMs = 0
   private _bgRefreshHandle: ReturnType<typeof setInterval> | null = null
   /**
    * Per-peer failure streaks and cooldowns. Advisory only: a cooling-down peer
@@ -3154,15 +3167,17 @@ export class BuyerProxy {
    * so scoring reflects the miss.
    */
   private _onModelNotFound(peerId: string, requestedService: string | null): void {
+    this._refreshPeersInBackground(`peer ${peerId.slice(0, 12)}... does not serve ${requestedService ?? 'the requested model'}`)
+  }
+
+  /** Refresh peer metadata without making a request wait for it, at most once per throttle window. */
+  private _refreshPeersInBackground(reason: string): void {
     const now = this._now()
-    if (now - this._lastModelNotFoundRefreshAtMs < MODEL_NOT_FOUND_REFRESH_THROTTLE_MS) {
+    if (now - this._lastBackgroundPeerRefreshAtMs < MODEL_NOT_FOUND_REFRESH_THROTTLE_MS) {
       return
     }
-    this._lastModelNotFoundRefreshAtMs = now
-    log(
-      `Peer ${peerId.slice(0, 12)}... does not serve ${requestedService ?? 'the requested model'}; `
-      + 'refreshing peer metadata in background.',
-    )
+    this._lastBackgroundPeerRefreshAtMs = now
+    log(`${reason[0]!.toUpperCase()}${reason.slice(1)}; refreshing peer metadata in background.`)
     void this._refreshPeersNow().catch(() => {})
   }
 
@@ -4343,6 +4358,9 @@ export class BuyerProxy {
     delete headers[SYSTEM_ROUTED_MODEL_HEADER]
     const requestedRequestId = headers['x-antseed-request-id']?.trim()
     delete headers['x-antseed-request-id']
+    // Telemetry tag for test traffic: read here, never forwarded.
+    const requestTrafficTag = trafficTag(headers[TELEMETRY_TRAFFIC_HEADER])
+    delete headers[TELEMETRY_TRAFFIC_HEADER]
     // Internal marker from the API-key gateway: report this request's signed
     // spend under the gateway's tag. Stripped so it never reaches a seller.
     const spendAttributionTag = parseSpendAttributionTag(headers[SPEND_ATTRIBUTION_HEADER])
@@ -4451,6 +4469,8 @@ export class BuyerProxy {
     if (isConversationRequest || nativeVideo || isImageOrDecisionRequest(method, serializedReq)) {
       const trace = this._telemetry?.beginRequest(res, this._cachedPeers.length > 0)
       if (trace) {
+        trace.useRequestId(serializedReq.requestId)
+        if (requestTrafficTag) trace.traffic = requestTrafficTag
         trace.clientTool = telemetryClientTool(conversationIdentity?.tool ?? requestClientTool(serializedReq.headers))
         this._telemetry?.noteRequestBody(trace, method, path, serializedReq.body, conversationBody, `${buyerIdentity ?? ''}\0${routingConversationKey ?? ''}`)
       }
@@ -4983,9 +5003,24 @@ export class BuyerProxy {
       let discoveredPeers = peers
       let selection = selectModelPeers(discoveredPeers)
       const cacheAgeMs = Date.now() - this._cacheLastUpdatedAtMs
-      if ((selection.candidatePeers.length === 0 || cacheAgeMs > this._peerCacheTtlMs) && !this._initialDiscoveryRunning()) {
-        discoveredPeers = await this._getPeers({ forceRefresh: true })
-        selection = selectModelPeers(discoveredPeers)
+      const cacheStale = cacheAgeMs > this._peerCacheTtlMs
+      // Whether any seller lists the model, for the peers it was last checked against.
+      let listing: { peers: PeerInfo[]; listed: boolean } | null = null
+      const isListed = (): boolean => {
+        if (listing?.peers !== discoveredPeers) listing = { peers: discoveredPeers, listed: isServiceListedByAnyPeer(discoveredPeers, requestedService) }
+        return listing.listed
+      }
+      if ((selection.candidatePeers.length === 0 || cacheStale) && !this._initialDiscoveryRunning()) {
+        if (!cacheStale && !isListed()) {
+          // No seller in a fresh cache lists the model at all, so a network
+          // sweep (tens of seconds) would almost always end in the same miss.
+          // Answer now; a background refresh catches a seller that just
+          // announced it, for the next request.
+          this._refreshPeersInBackground(`no discovered seller lists ${requestedService}`)
+        } else {
+          discoveredPeers = await this._getPeers({ forceRefresh: true })
+          selection = selectModelPeers(discoveredPeers)
+        }
       }
       const router = this._node.router
       // Conversations the client identifies (session id, prompt-cache key)
@@ -5091,7 +5126,10 @@ export class BuyerProxy {
           log(`Request rejected: no seller of ${requestedService} usable yet; discovery still running`)
           return this._discoveryInProgressFailure(requestedService)
         }
-        return dispatchFailure(capabilityRequired ? 422 : 502, { 'content-type': 'application/json' }, JSON.stringify({
+        // 404 when no seller lists the model at all; 502 when one does but
+        // none can take this request (routing policy, pricing, cooldowns).
+        const notFoundStatus = isListed() ? 502 : 404
+        return dispatchFailure(capabilityRequired ? 422 : notFoundStatus, { 'content-type': 'application/json' }, JSON.stringify({
           error: capabilityRequired
             ? {
                 type: 'required_capability_unavailable',
@@ -5335,14 +5373,23 @@ export class BuyerProxy {
     // missing, candidate filter empty, or cache past TTL.
     const cacheAgeMs = Date.now() - this._cacheLastUpdatedAtMs
     let pinnedDiscovered = isPinnedDiscovered()
+    // The network refresh only walks a few DHT shards; ask the pinned peer's
+    // own topic too, which also picks up a seller that moved to a new address.
+    // Both run at once, and the topic lookup skips its own wildcard scan: the
+    // refresh is that scan, and running them one after the other made an
+    // unknown pin take about three sweeps to fail.
+    const lookUpPinTopic = (): Promise<PeerInfo | null> | null => typeof this._node.findPeer === 'function'
+      ? this._node.findPeer(pinnedPeerId, { wildcardFallback: false }).catch(() => null)
+      : null
+    let topicLookup = pinnedDiscovered ? null : lookUpPinTopic()
     if (!pinnedDiscovered || routingPeers.length === 0 || cacheAgeMs > this._peerCacheTtlMs) {
       await refreshPeerSelection('pinned-peer routing preflight')
       pinnedDiscovered = isPinnedDiscovered()
+      // A cached pin that the refresh's sweep missed: its own topic still finds it.
+      if (!pinnedDiscovered) topicLookup ??= lookUpPinTopic()
     }
-    if (!pinnedDiscovered && typeof this._node.findPeer === 'function') {
-      // The network refresh only walks a few DHT shards; ask the pinned peer's
-      // own topic, which also picks up a seller that moved to a new address.
-      const found = await this._node.findPeer(pinnedPeerId).catch(() => null)
+    if (!pinnedDiscovered && topicLookup) {
+      const found = await topicLookup
       if (found) {
         this._replacePeers([found, ...this._cachedPeers.filter((peer) => peer.peerId !== found.peerId)])
         discoveredPeers = [found, ...discoveredPeers.filter((peer) => peer.peerId !== found.peerId)]
@@ -5779,6 +5826,22 @@ export class BuyerProxy {
       requestForPeer = withoutAdapterReasoningItems(requestForPeer)
     }
 
+    const attemptTrace = traceFor(res)
+    if (attemptTrace) {
+      // The id this attempt's answer carries in `x-antseed-request-id` (a router attempt has its own).
+      attemptTrace.useRequestId(requestForPeer.requestId)
+      // Translation happens only between the three chat APIs; other requests always pass through.
+      if (requestProtocol && TRANSLATABLE_PROTOCOLS.has(requestProtocol)) {
+        attemptTrace.noteRoute({
+          translated: selectedRoutePlan.selection?.requiresTransform === true,
+          sellerProtocol: selectedRoutePlan.selection?.targetProtocol ?? requestProtocol,
+          clientProtocol: requestProtocol,
+          clientBody: serializedReq.body,
+          sellerBody: requestForPeer.body,
+        })
+      }
+    }
+
     if (DEBUG()) {
       log(`Outbound request shape: ${summarizeRequestShape(requestForPeer)}`)
     }
@@ -5802,7 +5865,10 @@ export class BuyerProxy {
         await downloadVideo(requestForPeer, res, (request, callbacks, signal) => this._node.sendRequestStream(selectedPeer, request, {
           ...callbacks,
           onResponseChunk: (chunk) => {
-            if (chunk.data.length) traceFor(res)?.noteFirstByte(Date.now())
+            if (chunk.data.length) {
+              traceFor(res)?.noteFirstByte(Date.now())
+              traceFor(res)?.noteStreamWrite(Date.now())
+            }
             return callbacks.onResponseChunk?.(chunk)
           },
         }, {
@@ -5876,6 +5942,7 @@ export class BuyerProxy {
             for (const adaptedChunk of adaptedChunks) {
               if (adaptedChunk.data.length > 0) {
                 res.write(Buffer.from(adaptedChunk.data))
+                traceFor(res)?.noteStreamWrite(Date.now())
               }
             }
           },
@@ -5889,7 +5956,12 @@ export class BuyerProxy {
 
         recordRouterUsage(this._modelRoutingClient, routingConversationKey, requestForPeer, response, selectedPeer, requestSignal)
 
-        let responseForClient = adaptBuyerFaultErrorResponse(response, requestProtocol)
+        // A stream that starts with an error status is never forwarded (buyer-core
+        // buffers it), so it is still a failure before the first byte: answer JSON.
+        let responseForClient = adaptBuyerFaultErrorResponse(
+          streamed ? response : errorEventStreamAsJsonFor(response, peerResponseProtocol),
+          requestProtocol,
+        )
         const freeTierRefusal = adaptFreeTierRefusal(responseForClient)
         responseForClient = freeTierRefusal ?? adaptPeerResponse(responseForClient)
         if (
@@ -5932,6 +6004,7 @@ export class BuyerProxy {
             ? telemetry
             : computeResponseTelemetry(requestForPeer, { ...response, body: fullBody }, selectedPeer)
           usageTrace.noteUsage(fullTelemetry.usage)
+          usageTrace.noteReplyBody(response.headers['content-type'], fullBody, peerResponseProtocol)
           usageTrace.noteAnswerDetails({
             finishReason: finishReasonFromBody(response.headers['content-type'], fullBody),
             estimatedCostUsd: fullTelemetry.estimatedCostUsd,
@@ -6052,7 +6125,7 @@ export class BuyerProxy {
         )) {
           await this._persistResourceRoutes().catch(error => console.error('[proxy] Accepted video route was not persisted:', error))
         }
-        let response = adaptBuyerFaultErrorResponse(upstreamResponse, requestProtocol)
+        let response = adaptBuyerFaultErrorResponse(errorEventStreamAsJsonFor(upstreamResponse, peerResponseProtocol), requestProtocol)
         const freeTierRefusal = adaptFreeTierRefusal(response)
         response = freeTierRefusal ?? adaptPeerResponse(response)
         if (
@@ -6084,6 +6157,7 @@ export class BuyerProxy {
         const answerTrace = response.statusCode < 400 ? traceFor(res) : undefined
         if (answerTrace) {
           answerTrace.noteUsage(telemetry.usage)
+          answerTrace.noteReplyBody(upstreamResponse.headers['content-type'], upstreamResponse.body, peerResponseProtocol)
           answerTrace.noteAnswerDetails({
             finishReason: finishReasonFromBody(response.headers['content-type'], response.body),
             estimatedCostUsd: telemetry.estimatedCostUsd,

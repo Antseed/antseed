@@ -148,17 +148,30 @@ function usageObjectOf(parsed: Record<string, unknown>): Record<string, unknown>
 /** A protocol whose usage itemises reasoning. */
 export type ReasoningUsageProtocol = keyof typeof REASONING_TOKEN_FIELDS;
 
+/** Whether `protocol` itemises reasoning in its usage (the chat APIs). */
+export function isReasoningUsageProtocol(protocol: string | null | undefined): protocol is ReasoningUsageProtocol {
+  return typeof protocol === 'string' && Object.hasOwn(REASONING_TOKEN_FIELDS, protocol);
+}
+
+/**
+ * The reasoning token count a usage object itemises where `protocol` puts it, floored; undefined
+ * when it itemises none. A reported 0 is kept, and another protocol's field is not read.
+ */
+export function reportedReasoningTokens(usage: unknown, protocol: ReasoningUsageProtocol): number | undefined {
+  if (!usage || typeof usage !== 'object') return undefined;
+  const [detailsField, countField] = REASONING_TOKEN_FIELDS[protocol];
+  const details = (usage as Record<string, unknown>)[detailsField];
+  const count = details && typeof details === 'object' ? (details as Record<string, unknown>)[countField] : undefined;
+  return typeof count === 'number' && Number.isFinite(count) && count >= 0 ? Math.floor(count) : undefined;
+}
+
 /**
  * `extractUsage`, with the reasoning token count when the reply itemises one where `protocol`,
  * the reply's own, puts it. Another protocol's field in the same usage object is not read.
  */
 export function extractReportedUsage(parsed: Record<string, unknown>, protocol: ReasoningUsageProtocol): ReportedUsage {
-  const [detailsField, countField] = REASONING_TOKEN_FIELDS[protocol];
-  const details = usageObjectOf(parsed)[detailsField];
-  const count = details && typeof details === 'object' ? (details as Record<string, unknown>)[countField] : undefined;
-  return typeof count === 'number' && Number.isFinite(count) && count >= 0
-    ? { ...extractUsage(parsed), reasoningTokens: Math.floor(count) }
-    : extractUsage(parsed);
+  const reasoningTokens = reportedReasoningTokens(usageObjectOf(parsed), protocol);
+  return reasoningTokens === undefined ? extractUsage(parsed) : { ...extractUsage(parsed), reasoningTokens };
 }
 
 /** The reasoning token count as `protocol` itemises it in a usage object; nothing when the reply reported none. */

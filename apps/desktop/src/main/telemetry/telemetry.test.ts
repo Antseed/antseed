@@ -1234,6 +1234,11 @@ test('legacy install id is ignored while milestones are preserved', async (t) =>
 
 // ── Bucket helpers ──
 
+test('public models live on the network are reported by their registry id, not custom_or_unknown', () => {
+  assert.equal(publicModelId('kimi-k3-1-pro', true), 'kimi-k3.1-pro');
+  assert.equal(publicModelId('glm-5.3', true), 'glm-5.3');
+});
+
 test('bucket helpers classify correctly', () => {
   assert.equal(durationBucket(10_000), 'under_30s');
   assert.equal(durationBucket(60_000), '30s_2m');

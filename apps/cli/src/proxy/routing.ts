@@ -202,6 +202,21 @@ export function findAdvertisedServiceProtocols(peers: PeerInfo[], requestedServi
   return [...protocols].sort()
 }
 
+/**
+ * Whether any peer's catalogue lists the requested model under any protocol,
+ * provider or health state. False means nobody on the network (as far as
+ * discovery knows) serves it: a 404 rather than a routing failure.
+ */
+export function isServiceListedByAnyPeer(peers: PeerInfo[], requestedService: string): boolean {
+  const modelKey = canonicalModelKey(requestedService)
+  if (!modelKey) return false
+  return buildNetworkServiceOffers(peers, {
+    includeFailing: true,
+    modelKey,
+    only: (_provider, serviceId) => isRequestedServiceMatch(serviceId, requestedService),
+  }).length > 0
+}
+
 /** Required parameters a route cannot take: all of them through a protocol transform. */
 export function findMissingRouteParameters(
   peer: PeerInfo,

@@ -10,6 +10,7 @@ import type { PostHogEvent } from '@antseed/telemetry'
 import { BuyerProxy } from '../proxy/buyer-proxy.js'
 import { BuyerTelemetry, ConversationMemory, MAX_ATTEMPT_EVENTS, RequestTrace, RetryMemory, attemptEventProperties, publicModelId, telemetryClientTool } from './buyer.js'
 import { finishReasonFromBody } from './finish-reason.js'
+import { replyFacts } from './reply-facts.js'
 import { CLIENT_TOOLS, CLI_EVENT_CATALOG } from './catalog.js'
 import { sanitizeEventProperties } from '@antseed/telemetry'
 import { DEFAULT_APP_PROFILES } from '@antseed/connected-apps/defaults'
@@ -89,6 +90,14 @@ test('the CLI registers antseed telemetry enable|disable|status', () => {
   const program = createProgram()
   const telemetry = program.commands.find((command) => command.name() === 'telemetry')!
   assert.deepEqual(telemetry.commands.map((command) => command.name()).sort(), ['disable', 'enable', 'status'])
+})
+
+test('public models live on the network are reported by their registry id, not custom_or_unknown', () => {
+  for (const [spelling, id] of [
+    ['kimi-k3-1-pro', 'kimi-k3.1-pro'], ['moonshotai/Kimi-K3.1-Pro', 'kimi-k3.1-pro'],
+    ['glm-5.3', 'glm-5.3'], ['z-ai-glm-5-3', 'glm-5.3'],
+    ['gpt-6-luna', 'gpt-6-luna'], ['gpt-6.1-terra', 'gpt-6.1-terra'], ['minimax-m3.1-flash', 'minimax-m3.1-flash'],
+  ] as const) assert.equal(publicModelId(spelling), id, spelling)
 })
 
 test('request trace: failure taxonomy, fallbacks and buckets', () => {
@@ -172,7 +181,8 @@ class FakeResponse extends EventEmitter {
   writableEnded = false
   writableFinished = false
   body = ''
-  writeHead(statusCode: number) { this.statusCode = statusCode; this.headersSent = true; return this }
+  headers: Record<string, string> = {}
+  writeHead(statusCode: number, headers?: Record<string, string>) { this.statusCode = statusCode; this.headers = { ...headers }; this.headersSent = true; return this }
   setHeader() { return this }
   write(chunk: string | Uint8Array) { this.body += Buffer.from(chunk).toString(); return true }
   end(chunk?: string | Uint8Array) {
@@ -278,6 +288,209 @@ test('buyer_request_finished: one per request, enums only, nothing added to what
   assert.equal(body.includes('my secret prompt'), false)
   assert.equal(forwarded.length, 1)
   assert.equal(Object.keys(forwarded[0]!).some((name) => name.includes('telemetry')), false)
+})
+
+/** The `buyer_request_finished` properties, as sent, of one request through a telemetry-enabled proxy. */
+async function finishedProps(
+  t: TestContext,
+  req: Readable,
+  options: { okBody?: object; env?: NodeJS.ProcessEnv } = {},
+): Promise<{ props: Record<string, unknown>; res: FakeResponse; forwarded: Record<string, string>[]; sentBodies: unknown[]; events: PostHogEvent[] }> {
+  const { proxy, telemetry, events, forwarded } = await proxyWithTelemetry(t, options.env ?? {}, 200, options.okBody)
+  const sentBodies: unknown[] = []
+  const sendRequest = (proxy as any)._node.sendRequest
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, outbound: { requestId: string; headers: Record<string, string>; body: Uint8Array }) => {
+    sentBodies.push(JSON.parse(Buffer.from(outbound.body).toString('utf8')))
+    return sendRequest(peer, outbound)
+  }
+  const res = await send(proxy, req)
+  await telemetry.close()
+  const props = events.find((event) => event.event === 'buyer_request_finished')!.properties
+  return { props, res, forwarded, sentBodies, events }
+}
+
+function responsesRequest(body: object, headers: Record<string, string> = {}): Readable {
+  const req = request(body, headers)
+  ;(req as unknown as Record<string, unknown>)['url'] = '/v1/responses'
+  return req
+}
+
+test('reply facts: reasoning tokens, tool calls and a text-only reply, as buckets, from the seller\'s answer', async (t) => {
+  const toolReply = {
+    choices: [{ message: { content: null, tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'run', arguments: '{}' } }] }, finish_reason: 'tool_calls' }],
+    usage: { prompt_tokens: 10, completion_tokens: 1_500, completion_tokens_details: { reasoning_tokens: 1_234 } },
+  }
+  const tool = (await finishedProps(t, request({ model: 'gpt-5', messages: [{ role: 'user', content: 'hi' }] }), { okBody: toolReply })).props
+  assert.equal(tool['reasoning_tokens_bucket'], '1000_9999')
+  assert.equal(tool['tool_calls_bucket'], '1')
+  assert.equal(tool['text_only_reply'], false)
+
+  const textReply = { choices: [{ message: { content: 'Done.' }, finish_reason: 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 3, completion_tokens_details: { reasoning_tokens: 0 } } }
+  const text = (await finishedProps(t, request({ model: 'gpt-5', messages: [{ role: 'user', content: 'hi' }] }), { okBody: textReply })).props
+  assert.equal(text['reasoning_tokens_bucket'], '0', 'a reported zero is a zero, the signal of a reply that did not think')
+  assert.equal(text['tool_calls_bucket'], '0')
+  assert.equal(text['text_only_reply'], true)
+
+  // No itemised reasoning: no bucket, rather than a zero the seller never said.
+  const plain = (await finishedProps(t, request({ model: 'gpt-5', messages: [{ role: 'user', content: 'hi' }] }))).props
+  assert.equal('reasoning_tokens_bucket' in plain, false)
+})
+
+test('reply facts: tool calls, text and reasoning tokens from each protocol, streamed or whole', () => {
+  const sse = (...events: object[]) => Buffer.from(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join('') + 'data: [DONE]\n\n')
+  // Chat stream: two calls built over several deltas, reasoning in the final usage chunk.
+  assert.deepEqual(replyFacts('text/event-stream', sse(
+    { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'a', function: { name: 'run', arguments: '' } }] } }] },
+    { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: '{}' } }] } }] },
+    { choices: [{ index: 0, delta: { tool_calls: [{ index: 1, id: 'b', function: { name: 'read', arguments: '{}' } }] } }] },
+    { choices: [], usage: { completion_tokens: 50, completion_tokens_details: { reasoning_tokens: 40 } } },
+  ), 'openai-chat-completions'), { toolCalls: 2, hasText: false, reasoningTokens: 40 })
+  // Anthropic stream: text, then one tool use; thinking tokens where Messages itemises them.
+  assert.deepEqual(replyFacts('text/event-stream', sse(
+    { type: 'message_start', message: { usage: { input_tokens: 5, output_tokens: 1 } } },
+    { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+    { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Let me look.' } },
+    { type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 'toolu_1', name: 'run', input: {} } },
+    { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 20, output_tokens_details: { thinking_tokens: 12 } } },
+  ), 'anthropic-messages'), { toolCalls: 1, hasText: true, reasoningTokens: 12 })
+  // Responses stream: the same call seen added, done and in the completed response counts once.
+  const call = { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'run', arguments: '{}' }
+  assert.deepEqual(replyFacts('text/event-stream', sse(
+    { type: 'response.output_item.added', output_index: 0, item: call },
+    { type: 'response.output_item.done', output_index: 0, item: call },
+    { type: 'response.completed', response: { output: [call], usage: { output_tokens: 9, output_tokens_details: { reasoning_tokens: 0 } } } },
+  ), 'openai-responses'), { toolCalls: 1, hasText: false, reasoningTokens: 0 })
+  // Whole chat answer; another API's reasoning field is not read.
+  assert.deepEqual(replyFacts('application/json', Buffer.from(JSON.stringify({
+    choices: [{ message: { content: 'Hello.' } }], usage: { output_tokens_details: { reasoning_tokens: 7 } },
+  })), 'openai-chat-completions'), { toolCalls: 0, hasText: true, reasoningTokens: null })
+  assert.equal(replyFacts('application/json', Buffer.from('not json'), 'openai-chat-completions'), null)
+
+  // The same call announced with its item id and finished with its call id counts once, by its place.
+  assert.equal(replyFacts('text/event-stream', sse(
+    { type: 'response.output_item.added', output_index: 1, item: { type: 'function_call', id: 'fc_1', name: 'run', arguments: '' } },
+    { type: 'response.output_item.done', output_index: 1, item: { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'run', arguments: '{}' } },
+  ), 'openai-responses')?.toolCalls, 1)
+  // A built-in tool is the seller's own: a reply with a web search and text has no client tool call.
+  assert.deepEqual(replyFacts('application/json', Buffer.from(JSON.stringify({
+    object: 'response',
+    output: [{ type: 'web_search_call', id: 'ws_1' }, { type: 'message', content: [{ type: 'output_text', text: 'Found it.' }] }],
+  })), 'openai-responses'), { toolCalls: 0, hasText: true, reasoningTokens: null })
+  // An image, speech or decision answer is no reply.
+  assert.equal(replyFacts('application/json', Buffer.from('{"created":1,"data":[{"b64_json":"aGk="}]}'), 'openai-images'), null)
+})
+
+test('translation and seller protocol: passed through, or translated to the seller\'s API', async (t) => {
+  const passthrough = (await finishedProps(t, request({ model: 'gpt-5', messages: [{ role: 'user', content: 'hi' }] }))).props
+  assert.equal(passthrough['translation'], 'passthrough')
+  assert.equal(passthrough['seller_protocol'], 'openai-chat-completions')
+
+  const translated = (await finishedProps(t, responsesRequest({ model: 'gpt-5', input: 'hi' }))).props
+  assert.equal(translated['protocol'], 'openai-responses')
+  assert.equal(translated['translation'], 'translated')
+  assert.equal(translated['seller_protocol'], 'openai-chat-completions')
+})
+
+test('reasoning replay: how many reasoning items the client sent, and how many went on to the seller', async (t) => {
+  const mine = { type: 'reasoning', id: 'rs_1', summary: [], content: [{ type: 'reasoning_text', text: 'Check the disk.' }], encrypted_content: 'antseed.reasoning.v1:gpt-5' }
+  const foreign = { type: 'reasoning', id: 'rs_2', summary: [], content: [{ type: 'reasoning_text', text: 'Another model.' }], encrypted_content: 'antseed.reasoning.v1:other-model' }
+  const input = [
+    { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'How full is the disk?' }] },
+    mine,
+    { type: 'function_call', call_id: 'call_1', name: 'run', arguments: '{}' },
+    { type: 'function_call_output', call_id: 'call_1', output: '40%' },
+    foreign,
+    { type: 'function_call', call_id: 'call_2', name: 'run', arguments: '{}' },
+    { type: 'function_call_output', call_id: 'call_2', output: 'ok' },
+  ]
+  const { props, sentBodies } = await finishedProps(t, responsesRequest({ model: 'gpt-5', input, include: ['reasoning.encrypted_content'] }))
+  assert.equal(props['reasoning_items_received'], '2_3')
+  assert.equal(props['reasoning_items_replayed'], '1')
+  assert.equal(props['reasoning_items_dropped'], '1')
+  const messages = (sentBodies[0] as { messages: Array<{ reasoning_content?: string }> }).messages
+  assert.deepEqual(messages.filter((message) => message.reasoning_content).map((message) => message.reasoning_content), ['Check the disk.'])
+
+  // Two items of one turn travel together on one assistant message: both replayed, none dropped.
+  const split = { ...mine, id: 'rs_3', content: [{ type: 'reasoning_text', text: 'Then the logs.' }] }
+  const merged = await finishedProps(t, responsesRequest({ model: 'gpt-5', input: [input[0], mine, split, ...input.slice(2, 4)], include: ['reasoning.encrypted_content'] }))
+  assert.equal(merged.props['reasoning_items_received'], '2_3')
+  assert.equal(merged.props['reasoning_items_replayed'], '2_3')
+  assert.equal(merged.props['reasoning_items_dropped'], '0')
+
+  // A request without reasoning items says nothing about replay.
+  const none = (await finishedProps(t, responsesRequest({ model: 'gpt-5', input: 'hi' }))).props
+  assert.equal(none['reasoning_items_received'], '0')
+  assert.equal(none['reasoning_items_dropped'], '0')
+  const chat = (await finishedProps(t, request({ model: 'gpt-5', messages: [{ role: 'user', content: 'hi' }] }))).props
+  assert.equal('reasoning_items_received' in chat, false, 'only Responses clients send reasoning items back')
+})
+
+test('request_id is the x-antseed-request-id the client received', async (t) => {
+  const { props, res } = await finishedProps(t, request({ model: 'gpt-5', messages: [{ role: 'user', content: 'hi' }] }))
+  assert.match(String(res.headers['x-antseed-request-id']), /^[0-9a-f-]{36}$/)
+  assert.equal(props['request_id'], res.headers['x-antseed-request-id'])
+})
+
+test('a request id a local client supplies is used when it is a random v4 UUID, and never otherwise', async (t) => {
+  const v4 = 'DEADBEEF-DEAD-4EEF-8EAD-DEADBEEFDEAD'
+  const supplied = await finishedProps(t, request({ model: 'gpt-5', messages: [{ role: 'user', content: 'hi' }] }, { 'x-antseed-request-id': v4 }))
+  assert.equal(supplied.res.headers['x-antseed-request-id'], v4)
+  assert.equal(supplied.props['request_id'], v4, 'the id the client sees, as it sent it')
+  // A v1 id carries a MAC address and a time: it may name the request, but it is never sent.
+  const v1 = 'c232ab00-9414-11ec-b3c8-9e6bdeced846'
+  const timeBased = await finishedProps(t, request({ model: 'gpt-5', messages: [{ role: 'user', content: 'hi' }] }, { 'x-antseed-request-id': v1 }))
+  assert.equal(timeBased.res.headers['x-antseed-request-id'], v1)
+  assert.notEqual(timeBased.props['request_id'], v1)
+  assert.match(String(timeBased.props['request_id']), /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+})
+
+test('the longest silence between stream writes to the client, as a bucket', () => {
+  const trace = new RequestTrace(0, true)
+  trace.noteAttempt('a'.repeat(40), 0)
+  trace.noteFirstByte(1_000)
+  trace.noteStreamWrite(1_400)
+  trace.noteStreamWrite(8_000)
+  trace.noteStreamWrite(8_100)
+  const props = trace.finish(200, false, 9_000)!
+  assert.equal(props['max_stream_gap_bucket'], '5_30s')
+  const whole = new RequestTrace(0, true)
+  whole.noteAttempt('a'.repeat(40), 0)
+  whole.noteAnswered(500, 200)
+  assert.equal('max_stream_gap_bucket' in whole.finish(200, false, 600)!, false, 'only for a streamed answer')
+
+  // A stream that goes silent until the client gives up: the silence at the end is the gap.
+  const stalled = new RequestTrace(0, true)
+  stalled.noteAttempt('a'.repeat(40), 0)
+  stalled.noteFirstByte(1_000)
+  stalled.noteStreamWrite(1_100)
+  const cancelled = stalled.finish(200, true, 400_000)!
+  assert.equal(cancelled['outcome'], 'cancelled')
+  assert.equal(cancelled['max_stream_gap_bucket'], '120s_plus')
+
+  // A stream silent for minutes before its last write still ends normally.
+  const late = new RequestTrace(0, true)
+  late.noteAttempt('a'.repeat(40), 0)
+  late.noteFirstByte(1_000)
+  late.noteStreamWrite(200_000)
+  const success = late.finish(200, false, 200_050)!
+  assert.equal(success['outcome'], 'success')
+  assert.equal(success['max_stream_gap_bucket'], '120s_plus')
+})
+
+test('test traffic: tagged by a request header or the buyer\'s environment, and never forwarded', async (t) => {
+  const body = { model: 'gpt-5', messages: [{ role: 'user', content: 'hi' }] }
+  const tagged = await finishedProps(t, request(body, { 'x-antseed-telemetry-traffic': 'test' }))
+  assert.equal(tagged.props['traffic'], 'test')
+  assert.equal(tagged.events.find((event) => event.event === 'buyer_seller_attempt')!.properties['traffic'], 'test', 'per-seller counts can leave test traffic out')
+  assert.equal(Object.keys(tagged.forwarded[0]!).some((name) => name.includes('traffic')), false)
+
+  const unknown = await finishedProps(t, request(body, { 'x-antseed-telemetry-traffic': 'my-secret-campaign' }))
+  assert.equal('traffic' in unknown.props, false, 'only the allowlisted value is sent')
+  assert.equal(Object.keys(unknown.forwarded[0]!).some((name) => name.includes('traffic')), false)
+
+  const env = await finishedProps(t, request(body), { env: { ANTSEED_TELEMETRY_TRAFFIC: 'test' } })
+  assert.equal(env.props['traffic'], 'test')
+  assert.equal('traffic' in (await finishedProps(t, request(body))).props, false)
 })
 
 test('seller choice: first turn, kept, and each kind of switch', () => {
@@ -387,6 +600,7 @@ test('a streamed answer: the cache counts in its first frame are read', async (t
   assert.equal(props['input_tokens'], 62_000, 'fresh plus cached input')
   assert.equal(props['cached_input_tokens'], 60_000)
   assert.equal(props['usage_reported'], true)
+  assert.equal(props['max_stream_gap_bucket'], '0_1s', 'the stream went out without a pause')
 })
 
 test('a request with only a prompt cache key is grouped by it', async (t) => {
@@ -903,6 +1117,10 @@ test('image, decision-model and video requests each send buyer_request_finished'
   assert.deepEqual(finished.map((props) => props['video_action'] ?? null), [null, null, null, 'create', 'retrieve'])
   assert.deepEqual(finished.map((props) => props['outcome']), ['success', 'success', 'success', 'success', 'success'])
   for (const props of finished.slice(0, 3)) assert.equal(props['seller_id'], SECRET_PEER)
+  for (const props of finished) {
+    // Not a chat request: never translated, and its answer is no reply with text or tool calls.
+    for (const key of ['translation', 'seller_protocol', 'tool_calls_bucket', 'text_only_reply']) assert.equal(key in props, false, `${String(props['protocol'])}: ${key}`)
+  }
   assert.equal(JSON.stringify(events).includes('secret'), false, 'no prompt or state leaves the process')
   assert.equal(forwarded.some((names) => names.includes('telemetry')), false, 'nothing added for the seller')
 })

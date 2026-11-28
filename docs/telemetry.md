@@ -256,8 +256,16 @@ Every event, from every product, includes this envelope:
     pairs are public on-chain; it is sent so cache and failure rates can be
     compared per seller. Every other seller the request was sent to is on
     its own `buyer_seller_attempt` event.
-  - `request_id`: a random id for this request, also on its
-    `buyer_seller_attempt` events.
+  - `request_id`: the `x-antseed-request-id` the client received with the
+    answer (a random UUID the buyer makes; a local client such as the model
+    verifier may send its own, and the gateway never passes one on), so a
+    captured response can be joined to its event. Also on the
+    request's `buyer_seller_attempt` events. A routing service's purchase
+    answers under its own id, and that id is the one sent. An id that is not
+    a random (version 4) UUID is never sent; a random one is used instead.
+    The same id goes to the seller with the request, and a gateway keeps it
+    in its request log, so whoever holds both the telemetry events and a
+    seller's or a gateway's log can join one event to one request.
   - `conversation_key_source`: how the proxy grouped the request into a
     conversation. `tool_session` (the tool's own session id), `prompt_cache_key`
     (the client's prompt cache key alone), `prompt_prefix` (a hash of the
@@ -299,6 +307,42 @@ Every event, from every product, includes this envelope:
     response (`stop`, `length` for the output cap, `tool_call`,
     `content_filter`, `refusal`, `other`, or `unknown` when the response does
     not say).
+  - `translation`: `passthrough` (the seller speaks the client's API) or
+    `translated` (the buyer translated the request to the seller's API), and
+    `seller_protocol`: the seller's API, from the same list as `protocol`.
+    Both for the final attempt, and only for Anthropic Messages, Chat
+    Completions and Responses requests (the APIs the buyer translates
+    between); omitted when no seller was tried.
+  - `reasoning_items_received`, `reasoning_items_replayed` and
+    `reasoning_items_dropped` (`0`, `1`, `2_3`, `4_plus`), for a Responses
+    client only: how many `reasoning` items its request sent back, how many
+    went on to the seller, and how many were not (another model's reasoning,
+    reasoning no turn follows, or items the seller cannot read). A Responses
+    seller's are counted as the items it was sent; for a chat seller an item
+    counts as replayed when its text is in the `reasoning_content` of an
+    assistant message (one message can carry several items).
+  - For a successful answer, read on device from the seller's answer:
+    `tool_calls_bucket` (`0`, `1`, `2_3`, `4_plus`): its calls of the
+    client's tools (function and custom tool calls; a seller's built-in tool,
+    such as a web search, does not count); `text_only_reply`: it had text and
+    no such call; and
+    `reasoning_tokens_bucket` (`0`, `1_99`, `100_999`, `1000_9999`,
+    `10000_plus`): the reasoning tokens its usage itemised, omitted when the
+    seller itemised none (a reported `0` is sent as `0`).
+    These three are sent only for Anthropic Messages, Chat Completions and
+    Responses answers.
+  - `max_stream_gap_bucket` (`0_1s`, `1_5s`, `5_30s`, `30_120s`,
+    `120s_plus`), for any streamed answer, whatever its outcome: the longest
+    silence between two writes of the answer to the client after its first
+    byte, or between the last write and the end of the request (a stream that
+    stalls until the client gives up has its longest silence there).
+  - `traffic`: `test` when the request was tagged as test traffic, with the
+    request header `x-antseed-telemetry-traffic: test` or the buyer's
+    environment variable `ANTSEED_TELEMETRY_TRAFFIC=test`. Any other value is
+    not sent, and the header never reaches a seller. A gateway does not pass
+    the header on, so only its operator can tag its traffic (with the
+    variable). Also on the request's `buyer_seller_attempt` events. Omitted
+    for real use.
 
 - `buyer_seller_attempt` — one per seller a request was sent to, in order,
   sent with the request's `buyer_request_finished`. A request that fell back
@@ -307,7 +351,7 @@ Every event, from every product, includes this envelope:
   past that, the first 9 and the final attempt, so the seller that answered
   is always sent.
   Properties:
-  - `request_id`: the same random id as the request's `buyer_request_finished`.
+  - `request_id`: the same id as the request's `buyer_request_finished`.
   - `attempt_number`: 1 for the first attempt, then 2, 3… (a rate-limit
     retry on the same seller is its own attempt); the final attempt keeps
     its real number when earlier ones were not sent.
@@ -325,6 +369,7 @@ Every event, from every product, includes this envelope:
   - `streamed`, `duration_ms` (this attempt, from sending it until it
     ended) and `seller_ttft_ms` (this seller's time to first byte, omitted
     when it sent no answer).
+  - `traffic`: as on the request.
 
   Per-seller failure rate: count `buyer_seller_attempt` by `seller_id` and
   `outcome` (leave out `cancelled`). Raw errors are never sent.

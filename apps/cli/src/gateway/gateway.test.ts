@@ -393,6 +393,22 @@ test('GET /v1/key/savings compares the key\'s own requests with retail prices', 
   }
 })
 
+test('gateway never forwards a key holder\'s test-traffic tag: the operator decides what telemetry counts as test', async () => {
+  const { store, cleanup } = tempDataDir()
+  const buyer = await fakeBuyer()
+  const { secret } = store.createKey({ label: 'Team', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
+  const gateway = await startGateway(store, buyer.port)
+  try {
+    const headers = { 'x-antseed-telemetry-traffic': 'test' }
+    assert.equal((await request(gateway.port, '/v1/responses', { method: 'POST', key: secret, body: '{}', headers })).status, 200)
+    assert.equal(buyer.captured[0]!.headers['x-antseed-telemetry-traffic'], undefined)
+  } finally {
+    await gateway.stop()
+    await buyer.close()
+    cleanup()
+  }
+})
+
 test('gateway never forwards the verifier\'s request-id or preimage-capture headers', async () => {
   const { store, cleanup } = tempDataDir()
   const buyer = await fakeBuyer()

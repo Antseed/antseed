@@ -233,7 +233,8 @@ Streaming responses carry only the request id, seller identity, price and route-
 | 422 | `no_eligible_candidates` | A routing service was named, but no allowed model is left for it to rank. Nothing was charged. |
 | 402 | `antseed_buyer_fault` with `insufficient_deposits` | The wallet has too few credits for a paid seller. Run `antseed buyer deposit` to show your funding address, or add funds in the desktop app. Free sellers need no funds: pin one as `<peerId>@<model>`. |
 | 413 | `upload_body_too_large` | The request is larger than the seller's upload limit. |
-| 502 | `model_not_found` | No seller your routing preferences allow offers this model. |
+| 404 | `model_not_found` | No seller the buyer has discovered offers this model at all. The answer comes at once; the buyer looks for new sellers in the background, so a model a seller has just started offering is found by a later request. |
+| 502 | `model_not_found` | Sellers offer this model, but none that your routing preferences allow can take this request. |
 | 503 | `discovery_in_progress` | The buyer started less than two minutes ago and is still discovering sellers. It has not found a seller it can use for this model yet. Retry after the `Retry-After` seconds. |
 
 The 402 comes back with the code `antseed_buyer_fault`, which marks a failure on the buyer's side, not the seller's. In OpenAI format the reason is in `error.param`:

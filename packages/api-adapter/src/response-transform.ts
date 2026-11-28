@@ -8,7 +8,7 @@ import {
   renderCanonicalResponseToOpenAIResponsesBody,
   type CanonicalLlmResponse,
 } from './canonical.js';
-import { encodeJson, encodeText, parseJsonObject, reasoningUsageFields, type ReportedUsage } from './utils.js';
+import { encodeJson, encodeText, parseJsonObject, parseJsonSafe, reasoningUsageFields, type ReportedUsage } from './utils.js';
 
 export interface ServiceApiResponseTransformOptions {
   from: ServiceApiProtocol;
@@ -78,32 +78,20 @@ export function transformResponse(
   };
 }
 
+/**
+ * A seller's error status is the answer before any output, so it stays a
+ * plain HTTP error with a JSON body even when the client asked for a stream:
+ * SDKs read JSON on a non-2xx, as the real APIs send. An error after output
+ * started is the stream adapter's, in the stream.
+ */
 function transformErrorResponse(
   response: SerializedHttpResponse,
   parsed: Record<string, unknown>,
   options: ServiceApiResponseTransformOptions,
 ): SerializedHttpResponse {
-  if (options.to === 'anthropic-messages') {
-    return transformAnthropicErrorResponse(response, parsed, options.streamRequested === true);
-  }
-
-  return transformOpenAICompatibleErrorResponse(response, parsed, options);
-}
-
-function transformAnthropicErrorResponse(
-  response: SerializedHttpResponse,
-  parsed: Record<string, unknown>,
-  streamRequested: boolean,
-): SerializedHttpResponse {
-  const body = { type: 'error', error: { type: 'api_error', message: extractErrorMessage(parsed) } };
-  if (streamRequested) {
-    return {
-      ...response,
-      headers: streamHeaders(response.headers),
-      body: encodeText(`event: error\ndata: ${JSON.stringify(body)}\n\n`),
-    };
-  }
-
+  const body = options.to === 'anthropic-messages'
+    ? { type: 'error', error: { type: 'api_error', message: extractErrorMessage(parsed) } }
+    : { error: normalizeOpenAIError(parsed) };
   return {
     ...response,
     headers: jsonHeaders(response.headers),
@@ -111,35 +99,66 @@ function transformAnthropicErrorResponse(
   };
 }
 
-function transformOpenAICompatibleErrorResponse(
+/**
+ * A seller error that arrived as an event stream before any output (an error
+ * status with a `text/event-stream` body), rewritten as `protocol`'s JSON
+ * error body. Reads a chat `data: {"error":…}` frame, a Responses `error`
+ * event or failed response, and an Anthropic `error` event; a stream with no
+ * readable error still becomes JSON, with its text as the message. Any other
+ * response is returned as is.
+ */
+export function errorEventStreamAsJson(
   response: SerializedHttpResponse,
-  parsed: Record<string, unknown>,
-  options: ServiceApiResponseTransformOptions,
+  protocol: ServiceApiProtocol,
 ): SerializedHttpResponse {
-  const body = { error: normalizeOpenAIError(parsed) };
-  if (options.streamRequested) {
-    return {
-      ...response,
-      headers: streamHeaders(response.headers),
-      body: encodeText(formatOpenAICompatibleErrorStream(options.to, body)),
-    };
-  }
+  if (response.statusCode < 400) return response;
+  const contentType = Object.entries(response.headers).find(([name]) => name.toLowerCase() === 'content-type')?.[1];
+  if (!contentType?.toLowerCase().includes('text/event-stream')) return response;
 
-  return {
-    ...response,
-    headers: jsonHeaders(response.headers),
-    body: encodeJson(body),
-  };
+  const text = new TextDecoder().decode(response.body);
+  const headers = Object.fromEntries(Object.entries(response.headers)
+    .filter(([name]) => !['content-type', 'content-length', 'cache-control'].includes(name.toLowerCase())));
+  // A JSON error body under an event-stream header: it already is the error, only the header is wrong.
+  if (parseJsonRecord(text.trim())) return { ...response, headers: jsonHeaders(headers) };
+  const error = findEventStreamError(text);
+  const fallbackMessage = text.trim().slice(0, 1_000) || 'Upstream error';
+  const message = typeof error?.message === 'string' && error.message.length > 0 ? error.message : fallbackMessage;
+  const body = protocol === 'anthropic-messages'
+    ? { type: 'error', error: { type: typeof error?.type === 'string' ? error.type : 'api_error', message } }
+    : { error: error ? { ...error, message } : { message, type: 'api_error' } };
+  return { ...response, headers: jsonHeaders(headers), body: encodeJson(body) };
 }
 
-function formatOpenAICompatibleErrorStream(
-  targetProtocol: ServiceApiProtocol,
-  body: Record<string, unknown>,
-): string {
-  if (targetProtocol === 'openai-chat-completions') {
-    return `data: ${JSON.stringify(body)}\n\ndata: [DONE]\n\n`;
+function findEventStreamError(text: string): Record<string, unknown> | null {
+  for (const event of text.split(/\r?\n\r?\n/)) {
+    const data = event.split(/\r?\n/)
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => line.slice(5).replace(/^ /, ''))
+      .join('\n');
+    if (!data || data === '[DONE]') continue;
+    const parsed = parseJsonRecord(data);
+    if (!parsed) continue;
+    if (isRecord(parsed.error)) return parsed.error;
+    // A flat error: `{"error":"rate_limited","message":"slow down"}`.
+    if (typeof parsed.error === 'string' && typeof parsed.message === 'string') {
+      return { message: parsed.message, code: parsed.error };
+    }
+    if (isRecord(parsed.response) && isRecord(parsed.response.error)) return parsed.response.error;
+    if (parsed.type === 'error' && typeof parsed.message === 'string') {
+      const { type: _type, sequence_number: _sequence, ...rest } = parsed;
+      return rest;
+    }
   }
-  return `event: error\ndata: ${JSON.stringify(body)}\n\n`;
+  return null;
+}
+
+function parseJsonRecord(text: string): Record<string, unknown> | null {
+  const parsed = parseJsonSafe(text);
+  return isRecord(parsed) ? parsed : null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function renderCanonicalResponseStream(

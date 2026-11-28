@@ -24,6 +24,7 @@ import {
   type SerializedHttpRequest,
   type PeerInfo,
   type SerializedHttpResponse,
+  type ServiceApiProtocol,
 } from '@antseed/node'
 import { parseRetailPrices } from '@antseed/node/retail-prices'
 
@@ -3690,6 +3691,177 @@ for (const hasOtherSeller of [true, false]) {
   })
 }
 
+/** A seller whose catalogue lists only `gpt-5`, on Chat Completions. */
+function makeCataloguePeer(seed: string): PeerInfo {
+  const peer = makePeer(seed, ['openai'])
+  peer.providerServiceApiProtocols = { openai: { services: { 'gpt-5': ['openai-chat-completions'] } } }
+  return peer
+}
+
+/** Counts foreground (forced) and background peer refreshes; the stubbed refresh never finds anything new. */
+function countPeerRefreshes(proxy: BuyerProxy, peers: PeerInfo[]): { foreground: number; background: number } {
+  const counts = { foreground: 0, background: 0 }
+  ;(proxy as any)._getPeers = async (options?: { forceRefresh?: boolean }) => {
+    if (options?.forceRefresh) counts.foreground += 1
+    return peers
+  }
+  ;(proxy as any)._refreshPeersNow = async () => {
+    counts.background += 1
+    return peers
+  }
+  return counts
+}
+
+test('a model no discovered seller lists fails fast with 404 model_not_found and refreshes peers in the background', async () => {
+  const peers = [makeCataloguePeer('a'), makeCataloguePeer('b')]
+  const proxy = makeBuyerProxyWithPeers(peers, peers, permissiveRouter())
+  const refreshes = countPeerRefreshes(proxy, peers)
+  ;(proxy as any)._node.sendRequest = () => { throw new Error('No purchase should be dispatched') }
+  for (const [path, body] of [
+    ['/v1/chat/completions', { model: 'no-such-model', messages: [{ role: 'user', content: 'Hi' }] }],
+    ['/v1/messages', { model: 'no-such-model', max_tokens: 16, messages: [{ role: 'user', content: 'Hi' }] }],
+    ['/v1/responses', { model: 'no-such-model', input: 'Hi' }],
+  ] as const) {
+    const res = await invokeProxy(proxy, makeProxyRequest({ path, body }))
+    assert.equal(res.statusCode, 404, `${path}: ${res.body}`)
+    assert.equal(res.headers['content-type'], 'application/json')
+    assert.deepEqual(JSON.parse(res.body).error, {
+      type: 'model_not_found',
+      code: 'model_not_found',
+      message: 'No policy-allowed peer currently serves model "no-such-model".',
+      param: 'model',
+    })
+  }
+  assert.equal(refreshes.foreground, 0, 'no request waits for a network sweep')
+  assert.equal(refreshes.background, 1, 'one throttled background refresh picks up a seller that just announced it')
+})
+
+test('a seller that announces no service list does not list the model: no attempt, and the answer is 404', async () => {
+  // It passes the candidate filter (its protocols are inferred), but routing has no service of it
+  // to buy, so no request reaches it, as before; only the status says "nobody lists it" now.
+  const bare = makePeer('a', ['openai'])
+  const proxy = makeBuyerProxyWithPeers([bare], [bare], permissiveRouter())
+  const refreshes = countPeerRefreshes(proxy, [bare])
+  let sent = 0
+  ;(proxy as any)._node.sendRequest = async () => { sent += 1; throw new Error('No purchase should be dispatched') }
+  const res = await invokeProxy(proxy, makeProxyRequest({ body: { model: 'any-model', messages: [{ role: 'user', content: 'Hi' }] } }))
+  assert.equal(res.statusCode, 404, res.body)
+  assert.equal(JSON.parse(res.body).error.code, 'model_not_found')
+  assert.equal(sent, 0)
+  assert.equal(refreshes.foreground, 0, 'a candidate was found, so nothing was refreshed or skipped')
+})
+
+test('the background refresh after an unknown model runs at most once per throttle window', async () => {
+  const clock = makeTestClock()
+  const peers = [makeCataloguePeer('a')]
+  const proxy = makeBuyerProxyWithPeers(peers, peers, permissiveRouter(), clock.now)
+  const refreshes = countPeerRefreshes(proxy, peers)
+  const ask = () => invokeProxy(proxy, makeProxyRequest({ body: { model: 'no-such-model', messages: [] } }))
+  assert.equal((await ask()).statusCode, 404)
+  clock.advance(29_000)
+  assert.equal((await ask()).statusCode, 404)
+  assert.equal(refreshes.background, 1, 'inside the window')
+  clock.advance(2_000)
+  assert.equal((await ask()).statusCode, 404)
+  assert.equal(refreshes.background, 2, 'the window reopened')
+})
+
+test('an unknown model against a stale peer cache is looked up once before the 404', async () => {
+  const peers = [makeCataloguePeer('a')]
+  const proxy = makeBuyerProxyWithPeers(peers, peers, permissiveRouter())
+  const refreshes = countPeerRefreshes(proxy, peers)
+  ;(proxy as any)._cacheLastUpdatedAtMs = Date.now() - (proxy as any)._peerCacheTtlMs - 1_000
+  const res = await invokeProxy(proxy, makeProxyRequest({ body: { model: 'no-such-model', messages: [] } }))
+  assert.equal(res.statusCode, 404, res.body)
+  assert.equal(refreshes.foreground, 1)
+})
+
+test('a listed model that no seller can take still answers 502 model_not_found', async () => {
+  const peer = makeCataloguePeer('a')
+  const proxy = makeBuyerProxyWithPeers([peer], [peer], { allowsPeerForPolicy: () => false, onResult: () => {} })
+  const refreshes = countPeerRefreshes(proxy, [peer])
+  const res = await invokeProxy(proxy, makeProxyRequest({ body: { model: 'gpt-5', messages: [] } }))
+  assert.equal(res.statusCode, 502, res.body)
+  assert.equal(JSON.parse(res.body).error.code, 'model_not_found')
+  assert.equal(refreshes.foreground, 0, 'the seller is a candidate, so no refresh is forced')
+})
+
+test('a request with no model keeps its fast 400', async () => {
+  const peers = [makeCataloguePeer('a')]
+  const proxy = makeBuyerProxyWithPeers(peers, peers, permissiveRouter())
+  const refreshes = countPeerRefreshes(proxy, peers)
+  const res = await invokeProxy(proxy, makeProxyRequest({ body: { messages: [{ role: 'user', content: 'Hi' }] } }))
+  assert.equal(res.statusCode, 400, res.body)
+  assert.equal(refreshes.foreground + refreshes.background, 0)
+})
+
+test('a pinned peer missing from the cache is looked up on its own topic during the one network refresh', async () => {
+  const pinnedPeerId = 'c'.repeat(40)
+  const other = makeCataloguePeer('b')
+  const proxy = makeBuyerProxyWithPeers([other], [other], permissiveRouter())
+  const events: string[] = []
+  let releaseRefresh!: () => void
+  const refreshDone = new Promise<void>((resolve) => { releaseRefresh = resolve })
+  // A lookup that waits for the refresh would never release it: let the refresh end on its own then.
+  const fallback = setTimeout(() => releaseRefresh(), 200)
+  ;(proxy as any)._getPeers = async (options?: { forceRefresh?: boolean }) => {
+    if (options?.forceRefresh) {
+      events.push('refresh-start')
+      await refreshDone
+      events.push('refresh-end')
+    }
+    return [other]
+  }
+  const lookups: unknown[] = []
+  ;(proxy as any)._node.findPeer = async (peerId: string, options?: unknown) => {
+    events.push('lookup-start')
+    lookups.push({ peerId, options })
+    releaseRefresh()
+    return null
+  }
+  const res = await invokeProxy(proxy, makeProxyRequest({
+    headers: { 'x-antseed-pin-peer': pinnedPeerId },
+    body: { model: 'gpt-5', messages: [] },
+  }))
+  clearTimeout(fallback)
+  assert.equal(res.statusCode, 502, res.body)
+  assert.match(res.body, /is not reachable right now/)
+  assert.ok(events.indexOf('lookup-start') < events.indexOf('refresh-end'), `the topic lookup runs while the refresh does, not after it: ${events.join(', ')}`)
+  // The refresh already is the wildcard scan, so the lookup must not run a second one.
+  assert.deepEqual(lookups, [{ peerId: pinnedPeerId, options: { wildcardFallback: false } }])
+})
+
+test('a cached pin that a stale-cache refresh misses is still looked up on its own topic', async () => {
+  const pinned = makeCataloguePeer('c')
+  const other = makeCataloguePeer('b')
+  const proxy = makeBuyerProxyWithPeers([pinned, other], [pinned, other], permissiveRouter())
+  ;(proxy as any)._cacheLastUpdatedAtMs = Date.now() - (proxy as any)._peerCacheTtlMs - 1_000
+  // The refresh's sweep reaches other shards and returns without the pin.
+  ;(proxy as any)._getPeers = async (options?: { forceRefresh?: boolean }) => options?.forceRefresh ? [other] : [pinned, other]
+  const lookups: unknown[] = []
+  ;(proxy as any)._node.findPeer = async (peerId: string, options?: unknown) => {
+    lookups.push({ peerId, options })
+    return peerId === pinned.peerId ? pinned : null
+  }
+  const attempts: string[] = []
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
+    attempts.push(peer.peerId)
+    return {
+      requestId: request.requestId,
+      statusCode: 200,
+      headers: { 'content-type': 'application/json' },
+      body: Buffer.from('{"choices":[{"message":{"content":"ok"}}]}'),
+    }
+  }
+  const res = await invokeProxy(proxy, makeProxyRequest({
+    headers: { 'x-antseed-pin-peer': pinned.peerId },
+    body: { model: 'gpt-5', messages: [] },
+  }))
+  assert.equal(res.statusCode, 200, res.body)
+  assert.deepEqual(attempts, [pinned.peerId])
+  assert.deepEqual(lookups, [{ peerId: pinned.peerId, options: { wildcardFallback: false } }])
+})
+
 test('verifier preimage capture header stays local and enables exact capture', async () => {
   const peer = makePeer('a', ['openai'])
   const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
@@ -4648,6 +4820,109 @@ test('a chat model\'s reasoning reaches a streaming Responses client only when i
   assert.doesNotMatch(await streamed(), /reasoning_text|antseed\.reasoning/)
 })
 
+const CONTEXT_ERROR = { message: 'This model\'s maximum context length is 1000 tokens.', type: 'invalid_request_error', param: null, code: null }
+
+/**
+ * A streamed request whose seller fails before any output. The seller speaks `sellerProtocol` for
+ * `model-a`; buyer-core hands a 4xx to the proxy as one buffered response, never as a stream.
+ */
+async function streamedRequestFailingBeforeOutput(
+  client: { path: string; body: Record<string, unknown> },
+  sellerProtocol: ServiceApiProtocol,
+  seller: { headers: Record<string, string>; body: string; statusCode?: number },
+): Promise<ReturnType<typeof makeProxyResponse>> {
+  const peer = makePeer('a', ['openai'])
+  peer.providerServiceApiProtocols = { openai: { services: { 'model-a': [sellerProtocol] } } }
+  const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
+  ;(proxy as any)._node.sendRequest = async () => { throw new Error('a streamed request goes through sendRequestStream') }
+  ;(proxy as any)._node.sendRequestStream = async (
+    _peer: PeerInfo,
+    request: SerializedHttpRequest,
+    callbacks: { onResponseStart: (response: SerializedHttpResponse, metadata: { streaming: boolean }) => void },
+  ) => {
+    const response = { requestId: request.requestId, statusCode: seller.statusCode ?? 400, headers: seller.headers, body: Buffer.from(seller.body) }
+    callbacks.onResponseStart(response, { streaming: false })
+    return response
+  }
+  return invokeProxy(proxy, makeProxyRequest({ path: client.path, body: { model: 'model-a', stream: true, ...client.body } }))
+}
+
+const JSON_ERROR_SELLER = { headers: { 'content-type': 'application/json' }, body: JSON.stringify({ error: CONTEXT_ERROR }) }
+
+test('a streamed Responses request translated to chat that fails before output gets a JSON error', async () => {
+  const res = await streamedRequestFailingBeforeOutput({ path: '/v1/responses', body: { input: 'hi' } }, 'openai-chat-completions', JSON_ERROR_SELLER)
+  assert.equal(res.statusCode, 400)
+  assert.equal(res.headers['content-type'], 'application/json')
+  assert.equal(JSON.parse(res.body).error.message, CONTEXT_ERROR.message)
+})
+
+test('a streamed Messages request translated to chat that fails before output gets an Anthropic JSON error', async () => {
+  const res = await streamedRequestFailingBeforeOutput(
+    { path: '/v1/messages', body: { max_tokens: 16, messages: [{ role: 'user', content: 'hi' }] } }, 'openai-chat-completions', JSON_ERROR_SELLER)
+  assert.equal(res.statusCode, 400)
+  assert.equal(res.headers['content-type'], 'application/json')
+  const body = JSON.parse(res.body)
+  assert.equal(body.type, 'error')
+  assert.equal(body.error.message, CONTEXT_ERROR.message)
+})
+
+test('a streamed Chat request translated to Messages that fails before output gets a Chat JSON error', async () => {
+  const res = await streamedRequestFailingBeforeOutput(
+    { path: '/v1/chat/completions', body: { messages: [{ role: 'user', content: 'hi' }] } }, 'anthropic-messages',
+    { headers: { 'content-type': 'application/json' }, body: JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: 'prompt is too long' } }) })
+  assert.equal(res.statusCode, 400)
+  assert.equal(res.headers['content-type'], 'application/json')
+  assert.equal(JSON.parse(res.body).error.message, 'prompt is too long')
+})
+
+test('a seller that answers an error as an event stream before any output reaches the client as JSON, in every protocol', async () => {
+  const sse = { 'content-type': 'text/event-stream' }
+  const cases: Array<{ client: { path: string; body: Record<string, unknown> }; seller: ServiceApiProtocol; body: string; envelope: 'openai' | 'anthropic' }> = [
+    { client: { path: '/v1/chat/completions', body: { messages: [{ role: 'user', content: 'hi' }] } }, seller: 'openai-chat-completions',
+      body: `data: ${JSON.stringify({ error: CONTEXT_ERROR })}\n\ndata: [DONE]\n\n`, envelope: 'openai' },
+    { client: { path: '/v1/responses', body: { input: 'hi' } }, seller: 'openai-responses',
+      body: `event: error\ndata: ${JSON.stringify({ type: 'error', code: 'context_length_exceeded', message: CONTEXT_ERROR.message, param: null })}\n\n`, envelope: 'openai' },
+    { client: { path: '/v1/responses', body: { input: 'hi' } }, seller: 'openai-responses',
+      body: `event: response.failed\ndata: ${JSON.stringify({ type: 'response.failed', response: { status: 'failed', error: { code: 'context_length_exceeded', message: CONTEXT_ERROR.message } } })}\n\n`, envelope: 'openai' },
+    { client: { path: '/v1/messages', body: { max_tokens: 16, messages: [{ role: 'user', content: 'hi' }] } }, seller: 'anthropic-messages',
+      body: `event: error\ndata: ${JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: CONTEXT_ERROR.message } })}\n\n`, envelope: 'anthropic' },
+    // Translated: a Responses client of a chat seller that streams its error.
+    { client: { path: '/v1/responses', body: { input: 'hi' } }, seller: 'openai-chat-completions',
+      body: `data: ${JSON.stringify({ error: CONTEXT_ERROR })}\n\n`, envelope: 'openai' },
+  ]
+  for (const { client, seller, body, envelope } of cases) {
+    const label = `${client.path} → ${seller}: ${body.slice(0, 40)}`
+    const res = await streamedRequestFailingBeforeOutput(client, seller, { headers: sse, body })
+    assert.equal(res.statusCode, 400, label)
+    assert.equal(res.headers['content-type'], 'application/json', label)
+    const parsed = JSON.parse(res.body)
+    if (envelope === 'anthropic') assert.equal(parsed.type, 'error', label)
+    assert.match(parsed.error.message, /maximum context length/, label)
+  }
+})
+
+test('a failure after the first byte stays an in-stream error with the stream\'s status', async () => {
+  const peer = makePeer('a', ['openai'])
+  peer.providerServiceApiProtocols = { openai: { services: { 'model-a': ['openai-chat-completions'] } } }
+  const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
+  ;(proxy as any)._node.sendRequestStream = async (
+    _peer: PeerInfo,
+    request: SerializedHttpRequest,
+    callbacks: { onResponseStart: (response: SerializedHttpResponse, metadata: { streaming: boolean }) => void; onResponseChunk: (chunk: unknown) => void },
+  ) => {
+    const headers = { 'content-type': 'text/event-stream' }
+    callbacks.onResponseStart({ requestId: request.requestId, statusCode: 200, headers, body: Buffer.from('data: {"choices":[{"index":0,"delta":{"content":"Hel"}}]}\n\n') }, { streaming: true })
+    const tail = Buffer.from(`data: ${JSON.stringify({ error: { message: 'upstream failed', type: 'api_error' } })}\n\n`)
+    callbacks.onResponseChunk({ requestId: request.requestId, data: tail, done: true })
+    return { requestId: request.requestId, statusCode: 200, headers, body: tail }
+  }
+  const res = await invokeProxy(proxy, makeProxyRequest({ body: { model: 'model-a', stream: true, messages: [{ role: 'user', content: 'hi' }] } }))
+  assert.equal(res.statusCode, 200)
+  assert.equal(res.headers['content-type'], 'text/event-stream')
+  assert.match(res.body, /Hel/)
+  assert.match(res.body, /upstream failed/)
+})
+
 test('a Responses request to a Responses seller loses only the reasoning items the adapter made', async () => {
   const peer = makePeer('a', ['openai-responses'])
   peer.providerServiceApiProtocols = { 'openai-responses': { services: { 'example-model': ['openai-responses'] } } }
@@ -4856,9 +5131,12 @@ test('transformed pre-stream seller errors preserve peer guidance', async () => 
 
   assert.equal(res.statusCode, 503)
   assert.equal(res.headers[ANTSEED_FAULT_ATTRIBUTION_HEADER], 'peer')
-  assert.match(res.headers['content-type'] ?? '', /text\/event-stream/)
-  assert.match(res.body, /Oops, pinned peer could not complete the request/)
-  assert.match(res.body, /Original Response:.*The seller upstream is unavailable\./)
+  // Nothing was streamed yet, so the client gets a plain JSON error in its own protocol.
+  assert.equal(res.headers['content-type'], 'application/json')
+  const body = JSON.parse(res.body)
+  assert.equal(body.type, 'error')
+  assert.match(body.error.message, /Oops, pinned peer could not complete the request/)
+  assert.match(body.error.message, /Original Response:.*The seller upstream is unavailable\./)
 })
 
 test('a free-tier refusal from a seller on another protocol reaches the client as JSON with its limit', async () => {

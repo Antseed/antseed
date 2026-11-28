@@ -51,6 +51,18 @@ export const VIDEO_ACTIONS = set('create', 'retrieve')
 export const FINISH_REASONS = set('stop', 'length', 'tool_call', 'content_filter', 'refusal', 'other', 'unknown')
 /** A seller attempt's result: the request taxonomy, plus an answer with no text or tool call. */
 export const ATTEMPT_FAILURE_REASONS = set(...FAILURE_REASONS, 'empty_answer')
+/** Whether the request went to the seller in the client's own API or was translated to the seller's. */
+export const TRANSLATIONS = set('passthrough', 'translated')
+/** Reasoning tokens the seller itemised in its answer's usage. */
+export const REASONING_TOKEN_BUCKETS = set('0', '1_99', '100_999', '1000_9999', '10000_plus')
+/** The longest silence between two writes of a streamed answer to the client. */
+export const STREAM_GAP_BUCKETS = set('0_1s', '1_5s', '5_30s', '30_120s', '120s_plus')
+/**
+ * A tag for traffic that is not real use (a stress test, an evaluation), from
+ * the `x-antseed-telemetry-traffic` request header or the buyer's
+ * `ANTSEED_TELEMETRY_TRAFFIC` environment variable. Only these values are sent.
+ */
+export const TRAFFIC_TAGS = set('test')
 /** 1-based position of an attempt in its request. Past 10 attempts the buyer sends the first 9 and the final one, under its real number. */
 export const ATTEMPT_NUMBER_RANGE: readonly [number, number] = [1, 1_000]
 /** A seller's public peer id (its EVM address, lowercase, no `0x`). */
@@ -89,6 +101,8 @@ export const CLI_EVENT_CATALOG: EventCatalog = {
       'chosen_rank', 'input_tokens', 'cached_input_tokens', 'usage_reported',
       'ttft_ms', 'duration_ms', 'output_tokens', 'finish_reason', 'estimated_cost_micro_usd',
       'client_retry', 'video_action', 'seller_ttft_ms', 'failed_attempts_ms', 'rate_limited', 'routing_version',
+      'translation', 'seller_protocol', 'reasoning_tokens_bucket', 'reasoning_items_received', 'reasoning_items_replayed',
+      'reasoning_items_dropped', 'tool_calls_bucket', 'text_only_reply', 'max_stream_gap_bucket', 'traffic',
     ),
     values: {
       protocol: REQUEST_PROTOCOLS,
@@ -108,6 +122,15 @@ export const CLI_EVENT_CATALOG: EventCatalog = {
       finish_reason: FINISH_REASONS,
       video_action: VIDEO_ACTIONS,
       routing_version: ROUTING_VERSIONS,
+      translation: TRANSLATIONS,
+      seller_protocol: REQUEST_PROTOCOLS,
+      reasoning_tokens_bucket: REASONING_TOKEN_BUCKETS,
+      reasoning_items_received: SMALL_COUNT_BUCKETS,
+      reasoning_items_replayed: SMALL_COUNT_BUCKETS,
+      reasoning_items_dropped: SMALL_COUNT_BUCKETS,
+      tool_calls_bucket: SMALL_COUNT_BUCKETS,
+      max_stream_gap_bucket: STREAM_GAP_BUCKETS,
+      traffic: TRAFFIC_TAGS,
     },
     patterns: { request_id: RANDOM_REQUEST_ID_PATTERN, public_model_id: PUBLIC_MODEL_ID_PATTERN, seller_id: SELLER_ID_PATTERN },
     ranges: {
@@ -128,7 +151,7 @@ export const CLI_EVENT_CATALOG: EventCatalog = {
     keys: set(
       'request_id', 'attempt_number', 'seller_id', 'seller_tier', 'protocol', 'public_model_id', 'route_mode',
       'client_tool', 'routing_version', 'outcome', 'failure_reason', 'http_status', 'empty_answer', 'streamed',
-      'duration_ms', 'seller_ttft_ms',
+      'duration_ms', 'seller_ttft_ms', 'traffic',
     ),
     values: {
       seller_tier: SELLER_TIERS,
@@ -138,6 +161,7 @@ export const CLI_EVENT_CATALOG: EventCatalog = {
       routing_version: ROUTING_VERSIONS,
       outcome: OUTCOMES,
       failure_reason: ATTEMPT_FAILURE_REASONS,
+      traffic: TRAFFIC_TAGS,
     },
     patterns: { request_id: RANDOM_REQUEST_ID_PATTERN, public_model_id: PUBLIC_MODEL_ID_PATTERN, seller_id: SELLER_ID_PATTERN },
     ranges: {

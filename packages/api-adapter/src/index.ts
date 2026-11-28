@@ -12,6 +12,7 @@ export {
 } from './request-transform.js';
 
 export {
+  errorEventStreamAsJson,
   transformResponse,
   type ServiceApiResponseTransformOptions,
 } from './response-transform.js';
@@ -58,6 +59,9 @@ export {
   type SpeechRequestFacts,
   toNonNegativeInt,
   isEncryptedReasoning,
+  isReasoningUsageProtocol,
+  reportedReasoningTokens,
+  type ReasoningUsageProtocol,
   type StreamingResponseAdapter,
 } from './utils.js';
 
