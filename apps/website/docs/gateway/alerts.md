@@ -29,7 +29,7 @@ Each alert goes out once when its condition starts. A recovery goes out once whe
 
 ## Destinations
 
-Add as many destinations as you need, up to 20 per workspace. For each one, choose which alerts it gets: **Credits**, **Spend limits** and **Spend tracking**. Use **Send a test alert** in a destination's menu to check that it works. **Recent deliveries** lists every alert sent, including retries. A failed delivery is retried three times over about 12 minutes. A retry is dropped once its condition ends, starts again or is alerted again, so an old low-credit alert never arrives after its recovery.
+Add as many destinations as you need, up to 20 per workspace. For each one, choose which alerts it gets: **Credits**, **Spend limits** and **Spend tracking**. Use **Send a test alert** in a destination's menu to check that it works. **Recent deliveries** lists every alert sent, including retries. A failed delivery is retried three times over about 12 minutes. A retry is dropped once its condition ends, once a newer alert or recovery for it is sent, or once the destination no longer takes that alert, so an old alert never arrives after a newer one.
 
 ### Webhook
 

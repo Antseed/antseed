@@ -208,7 +208,15 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
     balance: (name) => keyWallet.balance(name),
     walletAddress: identityAddress,
     spendFeedState: () => spendFeed.state,
-    anyBudgets: () => store.listKeys().some((key) => key.status === 'active' && accounting.hasBudgets(key)),
+    anyBudgets: () => {
+      // Each member and workspace is read once per check, not once per key.
+      const members = new Map(store.listMembers().map((member) => [member.id, member]))
+      const workspaces = new Map(store.listWorkspaces().map((workspace) => [workspace.id, workspace]))
+      return store.listKeys().some((key) => key.status === 'active' && accounting.hasBudgets(key, {
+        member: key.ownerMemberId ? members.get(key.ownerMemberId) ?? null : null,
+        workspace: workspaces.get(key.workspaceId) ?? null,
+      }))
+    },
     consoleUrl: () => readConsoleLocation(store)?.publicUrl ?? null,
     emptyRecoveryUsdc: parseBaseUnits(config.payments?.maxPerRequestUsdc ?? DEFAULT_MAX_PER_REQUEST_USDC),
     ...(options.onLog ? { log: options.onLog } : {}),

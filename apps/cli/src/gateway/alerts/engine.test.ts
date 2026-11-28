@@ -338,6 +338,45 @@ test('a resend still waiting when its incident closes or opens again is dropped'
   assert.deepEqual(types(), ['balance.ok', 'balance.low', 'balance.low'], 'no recovery after credits dropped again')
 })
 
+test('a recovery superseded by the next alert stays dropped after the incident closes again', async () => {
+  alerts = makeAlerts({ retryDelaysMs: [30] })
+  destination(['balance'])
+  store.setAlertSettings(workspaceId(), { lowBalanceUsdc: 10 * USD, topupTargetUsdc: null, limitWarnPercent: null, repeatMinutes: null })
+  const low = { available: '1.000000', wallet: null, stale: false }
+  const topped = { available: '60.000000', wallet: null, stale: false }
+  balance = low
+  await alerts.tick()
+  await settle()
+  // The recovery fails to go out; credits drop and come back again before its resend is due.
+  failures = 1
+  balance = topped
+  await alerts.tick()
+  await settle()
+  for (const next of [low, topped]) {
+    balance = next
+    await alerts.tick()
+    await settle()
+  }
+  await new Promise((resolve) => setTimeout(resolve, 60))
+  await settle()
+  assert.deepEqual(types(), ['balance.low', 'balance.low', 'balance.ok'], 'only the newest recovery')
+})
+
+test('a resend is dropped when its destination stops taking that alert', async () => {
+  alerts = makeAlerts({ retryDelaysMs: [30] })
+  const dest = destination(['balance'])
+  store.setAlertSettings(workspaceId(), { lowBalanceUsdc: 10 * USD, topupTargetUsdc: null, limitWarnPercent: null, repeatMinutes: null })
+  balance = { available: '1.000000', wallet: null, stale: false }
+  failures = 1
+  await alerts.tick()
+  await settle()
+  store.updateAlertDestination(dest.id, { events: ['limits'] })
+  await new Promise((resolve) => setTimeout(resolve, 60))
+  await settle()
+  assert.deepEqual(types(), [])
+  assert.equal(store.listAlertDeliveries(workspaceId()).length, 1, 'only the failed first attempt')
+})
+
 test('a disabled destination gets nothing; a test goes to one destination', async () => {
   const off = destination(['balance'])
   store.updateAlertDestination(off.id, { enabled: false })

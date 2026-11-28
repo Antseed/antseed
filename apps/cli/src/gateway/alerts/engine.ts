@@ -4,8 +4,9 @@
  * open, when set), with a recovery alert when it closes after one was sent.
  * Conditions are found by a poll (credits, spend limits, spend tracking) and
  * by the request path (a cap refusing a request, the buyer out of credits).
- * A failed delivery is retried a few times, unless its incident closed, opened
- * again or was alerted again since; every attempt is logged.
+ * A failed delivery is retried a few times, unless its incident has closed,
+ * opened again or been alerted again since, or its destination no longer takes
+ * it; every attempt is logged.
  */
 import { effectiveKeyLimits } from '../accounting.js'
 import { errorMessage } from '../errors.js'
@@ -64,9 +65,26 @@ export function limitIncident(kind: 'near' | 'reached', level: BudgetLevel, id: 
   return `limit.${kind}:${level}:${id}:${period}:${periodStart(period, now)}`
 }
 
+/**
+ * One alert or recovery sent for some incidents. Superseded (`current` false,
+ * for good) by the next one about any of them or by the incident closing, so a
+ * resend still waiting is dropped.
+ */
+interface Dispatch {
+  keys: string[]
+  current: boolean
+  /** Destinations whose delivery has not finished, resends included. */
+  pending: number
+}
+
 /** One incident of one workspace, as a map key. */
 function incidentKey(workspaceId: string, incident: string): string {
   return `${workspaceId}\n${incident}`
+}
+
+/** Whether a destination is on and subscribed to `group` (to any group when undefined). */
+function takes(destination: AlertDestinationRecord, group: AlertEventGroup | undefined): boolean {
+  return destination.enabled && (group === undefined ? destination.events.length > 0 : destination.events.includes(group))
 }
 
 /** Parses a decimal USD string ("12.500000", "-0.100000") into base units; null when it is not one. */
@@ -90,9 +108,8 @@ export class GatewayAlerts {
   private _stopped = false
   private readonly _lastBalanceRead = new Map<string, number>()
   private _spendTrackingDownSince: number | null = null
-  /** The latest alert dispatched for each open incident (see `incidentKey`), by a number never reused: a resend of an older one is dropped. */
-  private readonly _latestAlerts = new Map<string, number>()
-  private _alertSequence = 0
+  /** The latest dispatch about each incident (see `incidentKey`), kept while its deliveries are pending. */
+  private readonly _dispatches = new Map<string, Dispatch>()
 
   constructor(private readonly _options: GatewayAlertsOptions) {
     this._store = _options.store
@@ -115,6 +132,7 @@ export class GatewayAlerts {
     this._timer = null
     for (const timer of this._retries) clearTimeout(timer)
     this._retries.clear()
+    this._dispatches.clear()
     await this._ticking?.catch(() => undefined)
   }
 
@@ -287,8 +305,7 @@ export class GatewayAlerts {
   }
 
   private _destinations(workspaceId: string, group?: AlertEventGroup): AlertDestinationRecord[] {
-    return this._store.listAlertDestinations(workspaceId)
-      .filter((destination) => destination.enabled && (group === undefined ? destination.events.length > 0 : destination.events.includes(group)))
+    return this._store.listAlertDestinations(workspaceId).filter((destination) => takes(destination, group))
   }
 
   /**
@@ -304,10 +321,7 @@ export class GatewayAlerts {
       if (!open || !this._reminderDue(workspace.id, open.lastSentAt)) return
     }
     this._store.touchAlertIncident(workspace.id, incident)
-    const key = incidentKey(workspace.id, incident)
-    const sequence = ++this._alertSequence
-    this._latestAlerts.set(key, sequence)
-    this._dispatch(destinations, event, () => this._latestAlerts.get(key) === sequence)
+    this._dispatch(destinations, event, [incident])
   }
 
   /** Whether an open incident last alerted at `lastSentAt` is due its `repeatMinutes` reminder. */
@@ -325,35 +339,55 @@ export class GatewayAlerts {
     }
     if (!alerted) return
     const event = build()
-    // The recovery is resent only while none of its incidents is alerted again.
-    const keys = incidents.map((incident) => incidentKey(workspace.id, incident))
-    this._dispatch(this._destinations(workspace.id, event.group ?? undefined), event, () => keys.every((key) => !this._latestAlerts.has(key)))
+    this._dispatch(this._destinations(workspace.id, event.group ?? undefined), event, incidents)
   }
 
-  /** Closes an incident; resends of its alerts still waiting are dropped. */
+  /** Closes an incident; resends still waiting for its last alert or recovery are dropped. */
   private _close(workspaceId: string, incident: string): AlertIncidentRecord | null {
-    this._latestAlerts.delete(incidentKey(workspaceId, incident))
+    const key = incidentKey(workspaceId, incident)
+    const previous = this._dispatches.get(key)
+    if (previous) previous.current = false
+    this._dispatches.delete(key)
     return this._store.closeAlertIncident(workspaceId, incident)
   }
 
-  /** Delivers `event` to each destination; a failed one is resent while `current` holds. */
-  private _dispatch(destinations: AlertDestinationRecord[], event: AlertEvent, current: () => boolean): void {
-    for (const destination of destinations) void this._deliverWithRetry(destination.id, event, 0, current)
+  /** Delivers `event` about `incidents` to each destination; it supersedes what was sent about them before. */
+  private _dispatch(destinations: AlertDestinationRecord[], event: AlertEvent, incidents: string[]): void {
+    if (destinations.length === 0) return
+    const dispatch: Dispatch = { keys: incidents.map((incident) => incidentKey(event.workspace.id, incident)), current: true, pending: destinations.length }
+    for (const key of dispatch.keys) {
+      const previous = this._dispatches.get(key)
+      if (previous) previous.current = false
+      this._dispatches.set(key, dispatch)
+    }
+    for (const destination of destinations) void this._deliverWithRetry(destination.id, event, dispatch, 0)
   }
 
-  private async _deliverWithRetry(destinationId: string, event: AlertEvent, attempt: number, current: () => boolean): Promise<void> {
-    if (this._stopped || !current()) return
+  private async _deliverWithRetry(destinationId: string, event: AlertEvent, dispatch: Dispatch, attempt: number): Promise<void> {
+    const done = await this._attempt(destinationId, event, dispatch)
+    if (!done && attempt < this._retryDelays.length && !this._stopped) {
+      const timer = setTimeout(() => {
+        this._retries.delete(timer)
+        void this._deliverWithRetry(destinationId, event, dispatch, attempt + 1)
+      }, this._retryDelays[attempt])
+      timer.unref?.()
+      this._retries.add(timer)
+      return
+    }
+    dispatch.pending -= 1
+    if (dispatch.pending > 0) return
+    for (const key of dispatch.keys) {
+      if (this._dispatches.get(key) === dispatch) this._dispatches.delete(key)
+    }
+  }
+
+  /** One delivery attempt; true when nothing is left to resend (delivered, superseded, or the destination no longer takes it). */
+  private async _attempt(destinationId: string, event: AlertEvent, dispatch: Dispatch): Promise<boolean> {
+    if (this._stopped || !dispatch.current) return true
     // Read again on every attempt: a destination edited, disabled or deleted since gets the change.
     const destination = this._store.getAlertDestination(destinationId)
-    if (!destination || !destination.enabled) return
-    const result = await this._deliver(destination, event)
-    if (result.ok || attempt >= this._retryDelays.length || this._stopped) return
-    const timer = setTimeout(() => {
-      this._retries.delete(timer)
-      void this._deliverWithRetry(destinationId, event, attempt + 1, current)
-    }, this._retryDelays[attempt])
-    timer.unref?.()
-    this._retries.add(timer)
+    if (!destination || !takes(destination, event.group ?? undefined)) return true
+    return (await this._deliver(destination, event)).ok
   }
 
   private async _deliver(destination: AlertDestinationRecord, event: AlertEvent): Promise<{ ok: boolean; error: string | null }> {
