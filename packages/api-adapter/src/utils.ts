@@ -41,12 +41,38 @@ export function openAIResponsesMessageId(responseId: string): string {
 }
 
 /**
- * Marks a `reasoning` item this adapter made from a chat model's reasoning. The item's
- * `encrypted_content`, which a Responses client keeps and sends back unchanged, holds the marker and
- * the model the request asked for (the seller's label only when the request named none): the
- * reasoning goes back only to a request for that model.
+ * Marks reasoning this adapter made from a chat model's reasoning: a Responses `reasoning` item's
+ * `encrypted_content` and a Messages `thinking` block's `signature`, which a client keeps and sends
+ * back unchanged. Both hold the marker and the model the request asked for (the seller's label only
+ * when the request named none): the reasoning goes back only to a request for that model.
  */
-export const RESPONSES_REASONING_TAG = 'antseed.reasoning.v1:';
+export const ADAPTER_REASONING_TAG = 'antseed.reasoning.v1:';
+
+/**
+ * The `signature` of a `thinking` block this adapter made: the tag, the model, and after a `#` the
+ * answer's id, so that no two blocks share one. Model ids hold `:` and `/`, so the id comes last.
+ * The `.`, `:` and `#` keep it from reading as base64, the form of a real Messages signature.
+ */
+export function adapterThinkingSignature(model: string, responseId: string): string {
+  return `${ADAPTER_REASONING_TAG}${model}#${responseId}`;
+}
+
+/**
+ * The thoughts of a Messages history `thinking` block, when this adapter made the block for a
+ * request for `model` (see `adapterThinkingSignature`). Any other block gives nothing: one with no
+ * signature or another provider's, thoughts for another model (by `sameCanonicalModel`, as for
+ * Responses items), sealed reasoning, and `redacted_thinking`. The model is what stands before the
+ * last `#`, so a response id that itself holds a `#` reads as another model: that block never goes back,
+ * and `withoutAdapterThinkingBlocks` still removes it.
+ */
+export function adapterThinkingTextFor(block: Record<string, unknown>, model: string | null): string {
+  if (block.type !== 'thinking' || typeof block.thinking !== 'string' || model === null) return '';
+  if (typeof block.signature !== 'string' || !block.signature.startsWith(ADAPTER_REASONING_TAG)) return '';
+  const tagged = block.signature.slice(ADAPTER_REASONING_TAG.length);
+  const idStart = tagged.lastIndexOf('#');
+  if (idStart <= 0 || !sameCanonicalModel(tagged.slice(0, idStart), model)) return '';
+  return isEncryptedReasoning(block, block.thinking) ? '' : block.thinking;
+}
 
 /**
  * A chat model's reasoning as a Responses `reasoning` item: the text as `reasoning_text` content,
@@ -58,7 +84,7 @@ export function openAIResponsesReasoningItem(responseId: string, text: string, m
     id: `rs_${responseId}_0`,
     summary: [],
     content: [{ type: 'reasoning_text', text }],
-    encrypted_content: `${RESPONSES_REASONING_TAG}${model}`,
+    encrypted_content: `${ADAPTER_REASONING_TAG}${model}`,
   };
 }
 
@@ -66,7 +92,7 @@ export function openAIResponsesReasoningItem(responseId: string, text: string, m
 export function isAdapterReasoningItem(item: Record<string, unknown>): boolean {
   return item.type === 'reasoning'
     && typeof item.encrypted_content === 'string'
-    && item.encrypted_content.startsWith(RESPONSES_REASONING_TAG);
+    && item.encrypted_content.startsWith(ADAPTER_REASONING_TAG);
 }
 
 /**
@@ -79,7 +105,7 @@ export function isAdapterReasoningItem(item: Record<string, unknown>): boolean {
  */
 export function responsesReasoningTextFor(item: Record<string, unknown>, model: string | null): string {
   if (!isAdapterReasoningItem(item) || !Array.isArray(item.content) || model === null) return '';
-  const author = (item.encrypted_content as string).slice(RESPONSES_REASONING_TAG.length);
+  const author = (item.encrypted_content as string).slice(ADAPTER_REASONING_TAG.length);
   if (!sameCanonicalModel(author, model)) return '';
   return item.content
     .filter((part): part is Record<string, unknown> => Boolean(part) && typeof part === 'object')
@@ -568,6 +594,11 @@ function toStringContentBlock(block: Record<string, unknown>): string {
     return toStringContent(block.content);
   }
   return '';
+}
+
+/** Whether reasoning has anything to show: whitespace alone makes no thinking block or reasoning item. */
+export function hasReasoningText(text: string): boolean {
+  return text.trim().length > 0;
 }
 
 /**

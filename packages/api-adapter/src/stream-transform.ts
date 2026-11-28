@@ -1,8 +1,10 @@
 import type { SerializedHttpResponseChunk, ServiceApiProtocol } from './types.js';
 import {
+  adapterThinkingSignature,
   createChatStreamParser,
   encodeSseEvents,
   extractReportedUsage,
+  hasReasoningText,
   openAIResponsesReasoningItem,
   makeStreamingStartResponse,
   mapFinishReasonToAnthropicStopReason,
@@ -20,7 +22,7 @@ export interface ServiceApiStreamTransformOptions {
   from: ServiceApiProtocol;
   to: ServiceApiProtocol;
   fallbackModel?: string | null;
-  /** A Responses client that keeps reasoning state gets a chat model's reasoning (see `includeReasoning` on transformRequest). */
+  /** The client takes the model's reasoning (see `includeReasoning` on transformRequest). */
   includeReasoning?: boolean;
 }
 
@@ -174,6 +176,9 @@ function createAnthropicStreamNormalizer(options: StreamTransformInternals): Pro
   let responseDone = false;
   const toolBlockIndexes = new Map<number, number>();
   const toolCalls = new Map<number, CanonicalStreamToolCall>();
+  // Thoughts of a later thinking block start on a new line, as a buffered answer joins them.
+  let thoughtsSent = false;
+  let newThinkingBlock = false;
 
   const toolIndexForBlock = (blockIndex: number): number => {
     const existing = toolBlockIndexes.get(blockIndex);
@@ -224,6 +229,7 @@ function createAnthropicStreamNormalizer(options: StreamTransformInternals): Pro
           const block = data.content_block && typeof data.content_block === 'object'
             ? data.content_block as Record<string, unknown>
             : {};
+          if (block.type === 'thinking') newThinkingBlock = thoughtsSent;
           if (block.type === 'tool_use') {
             emitStart(emitted);
             const blockIndex = typeof data.index === 'number' ? data.index : 0;
@@ -240,6 +246,15 @@ function createAnthropicStreamNormalizer(options: StreamTransformInternals): Pro
           const delta = data.delta && typeof data.delta === 'object'
             ? data.delta as Record<string, unknown>
             : {};
+          if (delta.type === 'thinking_delta' && typeof delta.thinking === 'string') {
+            emitStart(emitted);
+            if (delta.thinking.length > 0) {
+              emitted.push({ type: 'reasoning_delta', delta: newThinkingBlock ? `\n${delta.thinking}` : delta.thinking });
+              thoughtsSent = true;
+              newThinkingBlock = false;
+            }
+            continue;
+          }
           if (delta.type === 'text_delta' && typeof delta.text === 'string') {
             emitStart(emitted);
             emitted.push({ type: 'text_delta', delta: delta.text });
@@ -443,6 +458,11 @@ function createChatStreamRenderer(options: StreamTransformInternals): ProtocolSt
           continue;
         }
 
+        if (event.type === 'reasoning_delta') {
+          if (options.includeReasoning) chunks.push(renderChunk({ reasoning_content: event.delta }));
+          continue;
+        }
+
         if (event.type === 'text_delta') {
           chunks.push(renderChunk({ content: event.delta }));
           continue;
@@ -486,8 +506,14 @@ function createChatStreamRenderer(options: StreamTransformInternals): ProtocolSt
 
 function createAnthropicStreamRenderer(options: StreamTransformInternals): ProtocolStreamRenderer {
   let messageStarted = false;
-  let textBlockStarted = false;
-  let hadTextBlock = false;
+  // Each block takes the next index when it first appears, whatever the order: thinking, text, each
+  // tool call, and text again after a call.
+  let nextBlockIndex = 0;
+  // Thoughts open a block only before any other block, so the thinking block takes the first index.
+  let thinking: 'none' | 'open' | 'closed' = 'none';
+  let thinkingIndex = 0;
+  let openTextIndex: number | null = null;
+  const toolBlockIndexes = new Map<number, number>();
   let openToolIndex: number | null = null;
   // The open tool block's arguments so far, and the calls that started while
   // they were still incomplete. Some upstreams interleave parallel calls'
@@ -500,7 +526,24 @@ function createAnthropicStreamRenderer(options: StreamTransformInternals): Proto
   let responseId = '';
   let responseModel = options.fallbackModel ?? 'unknown';
 
-  const toolBlockIndex = (index: number): number => index + (hadTextBlock ? 1 : 0);
+  const closeThinking = (emitted: Array<{ event?: string; data: unknown | string }>): void => {
+    if (thinking !== 'open') return;
+    thinking = 'closed';
+    // A stream with no id of its own still gets a signature no other block has.
+    const answerId = responseId || `${fallbackAnthropicId(options.fallbackModel)}_${Math.random().toString(36).slice(2, 10)}`;
+    const signature = adapterThinkingSignature(options.fallbackModel || responseModel, answerId);
+    emitted.push({
+      event: 'content_block_delta',
+      data: { type: 'content_block_delta', index: thinkingIndex, delta: { type: 'signature_delta', signature } },
+    });
+    emitted.push({ event: 'content_block_stop', data: { type: 'content_block_stop', index: thinkingIndex } });
+  };
+
+  const closeText = (emitted: Array<{ event?: string; data: unknown | string }>): void => {
+    if (openTextIndex === null) return;
+    emitted.push({ event: 'content_block_stop', data: { type: 'content_block_stop', index: openTextIndex } });
+    openTextIndex = null;
+  };
 
   const startMessage = (
     emitted: Array<{ event?: string; data: unknown | string }>,
@@ -542,28 +585,32 @@ function createAnthropicStreamRenderer(options: StreamTransformInternals): Proto
 
   const closeOpenTool = (emitted: Array<{ event?: string; data: unknown | string }>): void => {
     if (openToolIndex === null) return;
-    emitted.push({ event: 'content_block_stop', data: { type: 'content_block_stop', index: toolBlockIndex(openToolIndex) } });
+    emitted.push({ event: 'content_block_stop', data: { type: 'content_block_stop', index: toolBlockIndexes.get(openToolIndex) } });
     openToolIndex = null;
     openToolArguments = '';
   };
 
   const emitToolDelta = (emitted: Array<{ event?: string; data: unknown | string }>, index: number, partialJson: string): void => {
+    const blockIndex = toolBlockIndexes.get(index);
+    if (blockIndex === undefined) return;
     emitted.push({
       event: 'content_block_delta',
       data: {
         type: 'content_block_delta',
-        index: toolBlockIndex(index),
+        index: blockIndex,
         delta: { type: 'input_json_delta', partial_json: partialJson },
       },
     });
   };
 
   const openTool = (emitted: Array<{ event?: string; data: unknown | string }>, event: Extract<CanonicalStreamEvent, { type: 'tool_call_start' }>): void => {
+    const blockIndex = nextBlockIndex++;
+    toolBlockIndexes.set(event.index, blockIndex);
     emitted.push({
       event: 'content_block_start',
       data: {
         type: 'content_block_start',
-        index: toolBlockIndex(event.index),
+        index: blockIndex,
         content_block: {
           type: 'tool_use',
           id: event.id || `toolu_${event.index + 1}`,
@@ -600,31 +647,50 @@ function createAnthropicStreamRenderer(options: StreamTransformInternals): Proto
           continue;
         }
 
-        if (event.type === 'text_delta') {
+        if (event.type === 'reasoning_delta') {
+          if (!options.includeReasoning) continue;
           startMessage(emitted, null);
-          releaseHeldTools(emitted, true);
-          closeOpenTool(emitted);
-          if (!textBlockStarted) {
-            textBlockStarted = true;
-            hadTextBlock = true;
+          // Thoughts that come after the answer began have no place before it: dropped, never reordered.
+          if (thinking === 'closed' || (thinking === 'none' && nextBlockIndex > 0)) continue;
+          if (thinking === 'none') {
+            if (!hasReasoningText(event.delta)) continue;
+            thinking = 'open';
+            thinkingIndex = nextBlockIndex++;
             emitted.push({
               event: 'content_block_start',
-              data: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+              data: { type: 'content_block_start', index: thinkingIndex, content_block: { type: 'thinking', thinking: '', signature: '' } },
             });
           }
           emitted.push({
             event: 'content_block_delta',
-            data: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: event.delta } },
+            data: { type: 'content_block_delta', index: thinkingIndex, delta: { type: 'thinking_delta', thinking: event.delta } },
+          });
+          continue;
+        }
+
+        if (event.type === 'text_delta') {
+          startMessage(emitted, null);
+          closeThinking(emitted);
+          releaseHeldTools(emitted, true);
+          closeOpenTool(emitted);
+          if (openTextIndex === null) {
+            openTextIndex = nextBlockIndex++;
+            emitted.push({
+              event: 'content_block_start',
+              data: { type: 'content_block_start', index: openTextIndex, content_block: { type: 'text', text: '' } },
+            });
+          }
+          emitted.push({
+            event: 'content_block_delta',
+            data: { type: 'content_block_delta', index: openTextIndex, delta: { type: 'text_delta', text: event.delta } },
           });
           continue;
         }
 
         if (event.type === 'tool_call_start') {
           startMessage(emitted, null);
-          if (textBlockStarted) {
-            emitted.push({ event: 'content_block_stop', data: { type: 'content_block_stop', index: 0 } });
-            textBlockStarted = false;
-          }
+          closeThinking(emitted);
+          closeText(emitted);
           if (openToolIndex === event.index || heldTools.has(event.index)) continue;
           if (openToolIndex !== null && (heldTools.size > 0 || !isWholeJson(openToolArguments))) {
             heldTools.set(event.index, { start: event, deltas: [] });
@@ -652,12 +718,10 @@ function createAnthropicStreamRenderer(options: StreamTransformInternals): Proto
 
         if (event.type === 'response_done') {
           startMessage(emitted, null);
+          closeThinking(emitted);
           releaseHeldTools(emitted, true);
           closeOpenTool(emitted);
-          if (textBlockStarted) {
-            emitted.push({ event: 'content_block_stop', data: { type: 'content_block_stop', index: 0 } });
-            textBlockStarted = false;
-          }
+          closeText(emitted);
           emitted.push({
             event: 'message_delta',
             data: {
@@ -840,7 +904,7 @@ function createResponsesStreamRenderer(options: StreamTransformInternals): Proto
           // a tool call has started, more reasoning is dropped.
           if (reasoning === 'closed' || outputStarted || toolCalls.size > 0) continue;
           if (reasoning === 'none') {
-            if (event.delta.trim().length === 0) continue;
+            if (!hasReasoningText(event.delta)) continue;
             reasoning = 'open';
             // Reasoning opens only before any other item, so it always takes output_index 0.
             nextOutputIndex = 1;

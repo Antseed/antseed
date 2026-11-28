@@ -12,7 +12,7 @@ import {
   encodeJson,
   isAdapterReasoningItem,
   openAIResponsesFunctionCallId,
-  RESPONSES_REASONING_TAG,
+  ADAPTER_REASONING_TAG,
   openAIResponsesMessageId,
   parseJsonObject,
 } from './utils.js';
@@ -22,9 +22,12 @@ export interface ServiceApiRequestTransformResult {
   streamRequested: boolean;
   requestedModel: string | null;
   /**
-   * The client keeps reasoning state: a Responses request whose `include` lists
-   * `reasoning.encrypted_content`. Pass it to `createStreamingAdapter` and `transformResponse`, which
-   * then return a chat model's reasoning to it as a `reasoning` item.
+   * The client asked for the model's reasoning: a Responses request whose `include` lists
+   * `reasoning.encrypted_content` (it keeps reasoning state), a Chat Completions request that names a
+   * `reasoning_effort` other than `none`, or a Messages request that switches `thinking` on (`enabled` or
+   * `adaptive`). Pass it to `createStreamingAdapter` and `transformResponse`, which then return the
+   * reasoning as a `reasoning` item, `reasoning_content` or a `thinking` block, and leave out reasoning a
+   * seller wrote on its own for a client that did not ask.
    */
   includeReasoning: boolean;
 }
@@ -57,9 +60,9 @@ const REQUEST_RENDERERS: Partial<Record<ServiceApiProtocol, RequestRenderer>> = 
     {
       toolCallContent: options.from === 'openai-responses' ? null : undefined,
       groupAssistantToolCallsWithPreviousMessage: groupsAssistantToolCalls(options.from),
-      // A model's own earlier reasoning, which a Responses client returns, goes back to it (see
-      // normalizeOpenAIResponsesRequestBody); a plain rendering of the request leaves it out.
-      reasoningContent: options.from === 'openai-responses',
+      // A model's own earlier reasoning, which a Responses or Messages client returns, goes back to it
+      // (see normalizeOpenAIResponsesRequestBody, adapterThinkingTextFor); a plain rendering leaves it out.
+      reasoningContent: true,
     },
   ),
   'openai-responses': (request, options) => renderCanonicalRequestToOpenAIResponsesBody(
@@ -128,7 +131,17 @@ export function transformRequest(
 }
 
 function requestsReasoningState(from: ServiceApiProtocol, body: Record<string, unknown>): boolean {
-  return from === 'openai-responses' && Array.isArray(body.include) && body.include.includes('reasoning.encrypted_content');
+  if (from === 'openai-responses') return Array.isArray(body.include) && body.include.includes('reasoning.encrypted_content');
+  if (from === 'openai-chat-completions') return typeof body.reasoning_effort === 'string' && body.reasoning_effort !== 'none';
+  return requestsThinking(body);
+}
+
+/** Whether a Messages request switches thinking on, with a budget (`enabled`) or without one (`adaptive`). */
+function requestsThinking(body: Record<string, unknown>): boolean {
+  const thinking = body.thinking;
+  if (!thinking || typeof thinking !== 'object' || Array.isArray(thinking)) return false;
+  const type = (thinking as Record<string, unknown>).type;
+  return type === 'enabled' || type === 'adaptive';
 }
 
 /**
@@ -201,21 +214,53 @@ function repairLegacyResponsesItemIds(body: Record<string, unknown>): Record<str
  * them is returned unchanged.
  */
 export function withoutAdapterReasoningItems(request: SerializedHttpRequest): SerializedHttpRequest {
-  if (!new TextDecoder().decode(request.body).includes(RESPONSES_REASONING_TAG)) return request;
+  if (!new TextDecoder().decode(request.body).includes(ADAPTER_REASONING_TAG)) return request;
   const body = parseJsonObject(request.body);
   if (!body || !Array.isArray(body.input)) return request;
   const input = body.input.filter((item) => !isAdapterReasoningInput(item));
   if (input.length === body.input.length) return request;
-  const rewritten = encodeJson({ ...body, input });
+  return withBody(request, { ...body, input });
+}
+
+function isAdapterReasoningInput(item: unknown): boolean {
+  return Boolean(item) && typeof item === 'object' && !Array.isArray(item) && isAdapterReasoningItem(item as Record<string, unknown>);
+}
+
+/**
+ * A Messages request for a Messages seller, without the `thinking` blocks this adapter made from a
+ * chat model's reasoning in earlier turns: their `signature` is the adapter's tag, which that seller
+ * cannot verify. Unsigned and provider-signed blocks stay, an assistant message left with no blocks is
+ * dropped, and a request with none of them is returned unchanged.
+ */
+export function withoutAdapterThinkingBlocks(request: SerializedHttpRequest): SerializedHttpRequest {
+  if (!new TextDecoder().decode(request.body).includes(ADAPTER_REASONING_TAG)) return request;
+  const body = parseJsonObject(request.body);
+  if (!body || !Array.isArray(body.messages)) return request;
+  let removed = false;
+  const messages = body.messages.flatMap((message: unknown) => {
+    if (!message || typeof message !== 'object' || !Array.isArray((message as Record<string, unknown>).content)) return [message];
+    const content = ((message as Record<string, unknown>).content as unknown[]).filter((block) => !isAdapterThinkingBlock(block));
+    if (content.length === ((message as Record<string, unknown>).content as unknown[]).length) return [message];
+    removed = true;
+    return content.length > 0 ? [{ ...message, content }] : [];
+  });
+  return removed ? withBody(request, { ...body, messages }) : request;
+}
+
+function isAdapterThinkingBlock(block: unknown): boolean {
+  if (!block || typeof block !== 'object') return false;
+  const { type, signature } = block as Record<string, unknown>;
+  return type === 'thinking' && typeof signature === 'string' && signature.startsWith(ADAPTER_REASONING_TAG);
+}
+
+/** The request with a new JSON body; a `content-length` follows it. */
+function withBody(request: SerializedHttpRequest, body: Record<string, unknown>): SerializedHttpRequest {
+  const rewritten = encodeJson(body);
   const headers = { ...request.headers };
   for (const name of Object.keys(headers)) {
     if (name.toLowerCase() === 'content-length') headers[name] = String(rewritten.length);
   }
   return { ...request, headers, body: rewritten };
-}
-
-function isAdapterReasoningInput(item: unknown): boolean {
-  return Boolean(item) && typeof item === 'object' && !Array.isArray(item) && isAdapterReasoningItem(item as Record<string, unknown>);
 }
 
 function headersForTargetProtocol(

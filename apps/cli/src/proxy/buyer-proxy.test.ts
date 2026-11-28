@@ -4542,9 +4542,8 @@ const REASONING_TURN = [
   { type: 'function_call_output', call_id: 'call_1', output: '40%' },
 ]
 
-/** The body a pinned peer receives for a non-streamed Responses request for `model`. */
-/** The raw body a pinned peer receives for a non-streamed `POST /v1/responses` with `rawBody`. */
-async function bytesSentToPeer(peer: PeerInfo, rawBody: string): Promise<string> {
+/** The raw body a pinned peer receives for a non-streamed `POST` to `path` (default `/v1/responses`) with `rawBody`. */
+async function bytesSentToPeer(peer: PeerInfo, rawBody: string, path = '/v1/responses'): Promise<string> {
   let captured: string | null = null
   const proxy = makeBuyerProxyWithPeers([peer], [peer])
   ;(proxy as any)._node.sendRequest = async (_peer: PeerInfo, request: { requestId: string; body: Uint8Array }) => {
@@ -4552,7 +4551,7 @@ async function bytesSentToPeer(peer: PeerInfo, rawBody: string): Promise<string>
     return { requestId: request.requestId, statusCode: 500, headers: { 'content-type': 'application/json' }, body: Buffer.from('{"error":{"message":"stop"}}') }
   }
   ;(proxy as any)._node.sendRequestStream = async () => { throw new Error('not streamed') }
-  await invokeProxy(proxy, makeProxyRequest({ path: '/v1/responses', headers: { 'x-antseed-pin-peer': peer.peerId }, rawBody }))
+  await invokeProxy(proxy, makeProxyRequest({ path, headers: { 'x-antseed-pin-peer': peer.peerId }, rawBody }))
   assert.ok(captured !== null, 'the peer got the request')
   return captured
 }
@@ -4664,6 +4663,33 @@ test('a Responses request to a Responses seller loses only the reasoning items t
   // With nothing to drop, the seller gets the client's bytes as sent.
   const raw = `{"model": "example-model",  "input": ${JSON.stringify([user, native, plain, call])}, "store": false}`
   assert.equal(await bytesSentToPeer(peer, raw), raw)
+})
+
+test('a Messages request to a Messages seller loses only the thinking blocks the adapter made', async () => {
+  const peer = makePeer('a', ['anthropic'])
+  peer.providerServiceApiProtocols = { anthropic: { services: { 'example-model': ['anthropic-messages'] } } }
+  const ours = { type: 'thinking', thinking: 'Translated thoughts.', signature: 'antseed.reasoning.v1:example-model#chatcmpl-1' }
+  const unsigned = { type: 'thinking', thinking: 'Unsigned thoughts.' }
+  const signed = { type: 'thinking', thinking: 'Real thoughts.', signature: 'EqQBCkYIBxgCKkA2b3Vy' }
+  const messages = (thinking: unknown[]) => [
+    { role: 'user', content: 'How full is the disk?' },
+    { role: 'assistant', content: [...thinking, { type: 'text', text: '40%.' }] },
+    { role: 'user', content: 'And now?' },
+  ]
+
+  const sent = JSON.parse(await bytesSentToPeer(peer, JSON.stringify({
+    model: 'example-model', max_tokens: 1024, messages: messages([ours, unsigned, signed]),
+  }), '/v1/messages')) as { messages: Array<{ content: unknown }> }
+  assert.deepEqual(sent.messages[1]!.content, [unsigned, signed, { type: 'text', text: '40%.' }])
+
+  // With nothing to drop, the seller gets the client's bytes as sent.
+  const raw = `{"model": "example-model",  "max_tokens": 1024, "messages": ${JSON.stringify(messages([unsigned, signed]))}}`
+  assert.equal(await bytesSentToPeer(peer, raw, '/v1/messages'), raw)
+
+  // The tag in a text block is not one of ours to drop: the bytes still pass as sent.
+  const quoted = { type: 'text', text: `The signature was ${ours.signature}.` }
+  const rawWithTag = `{"model": "example-model",  "max_tokens": 1024, "messages": ${JSON.stringify(messages([unsigned, quoted]))}}`
+  assert.equal(await bytesSentToPeer(peer, rawWithTag, '/v1/messages'), rawWithTag)
 })
 
 test('non-stream transformed responses requests force upstream stream without streaming to client', async () => {
@@ -4814,6 +4840,73 @@ test('accept-sse transformed responses requests stream adapted client events wit
   assert.match(res.body, /event: content_block_delta/)
   assert.match(res.body, /"text":"hi"/)
   assert.doesNotMatch(res.body, /event: response\.completed/)
+})
+
+/** A Messages stream request through the buyer proxy to a Chat Completions seller that writes its own reasoning. */
+async function messagesStreamThroughChatSeller(thinking: Record<string, unknown> | undefined) {
+  const peer = makePeer('a', ['openai'])
+  peer.providerServiceApiProtocols = {
+    openai: { services: { 'example-model': ['openai-chat-completions'] } },
+  }
+  let capturedRequestBody: Record<string, unknown> | null = null
+  const proxy = makeBuyerProxyWithPeers([peer], [peer])
+  ;(proxy as any)._node.sendRequestStream = async (
+    _peer: PeerInfo,
+    request: { requestId: string; body: Uint8Array },
+    callbacks: {
+      onResponseStart: (response: { requestId: string; statusCode: number; headers: Record<string, string>; body: Uint8Array }, metadata: { streaming: boolean }) => void
+      onResponseChunk: (chunk: { requestId: string; data: Uint8Array; done: boolean }) => void
+    },
+  ) => {
+    capturedRequestBody = parseJsonBody(request.body)
+    callbacks.onResponseStart({
+      requestId: request.requestId,
+      statusCode: 200,
+      headers: { 'content-type': 'text/event-stream' },
+      body: new Uint8Array(),
+    }, { streaming: true })
+    const frame = (delta: Record<string, unknown>, finish: string | null = null) =>
+      `data: ${JSON.stringify({ id: 'chatcmpl-1', model: 'example-model', choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`
+    callbacks.onResponseChunk({
+      requestId: request.requestId,
+      data: Buffer.from(
+        frame({ reasoning_content: 'Own thoughts.' }) + frame({ content: 'hi' }) + frame({}, 'stop') + 'data: [DONE]\n\n',
+      ),
+      done: false,
+    })
+    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'text/event-stream' }, body: Buffer.from('') }
+  }
+  const res = await invokeProxy(proxy, makeProxyRequest({
+    path: '/v1/messages',
+    headers: { 'accept': 'text/event-stream', 'x-antseed-pin-peer': peer.peerId },
+    body: {
+      model: 'example-model',
+      max_tokens: 4096,
+      messages: [{ role: 'user', content: 'hello' }],
+      ...(thinking ? { thinking } : {}),
+    },
+  }))
+  return { res, capturedRequestBody: capturedRequestBody as Record<string, unknown> | null }
+}
+
+test('a Messages client that asked for thinking gets the thoughts of a Chat Completions seller as a thinking block', async () => {
+  const { res, capturedRequestBody } = await messagesStreamThroughChatSeller({ type: 'enabled', budget_tokens: 2000 })
+  assert.equal(res.statusCode, 200)
+  assert.equal(capturedRequestBody?.['reasoning_effort'], undefined)
+  assert.match(res.body, /"content_block":\{"type":"thinking"/)
+  assert.match(res.body, /"thinking_delta","thinking":"Own thoughts\."/)
+  assert.match(res.body, /"index":1,"content_block":\{"type":"text"/)
+})
+
+test('a Messages client that did not ask for thinking gets no thinking block, whatever the seller writes', async () => {
+  for (const thinking of [undefined, { type: 'disabled' }]) {
+    const { res, capturedRequestBody } = await messagesStreamThroughChatSeller(thinking)
+    assert.equal(res.statusCode, 200)
+    assert.equal(capturedRequestBody?.['reasoning_effort'], undefined)
+    assert.doesNotMatch(res.body, /thinking/)
+    assert.match(res.body, /"index":0,"content_block":\{"type":"text"/)
+    assert.match(res.body, /"text":"hi"/)
+  }
 })
 
 test('transformed pre-stream seller errors preserve peer guidance', async () => {

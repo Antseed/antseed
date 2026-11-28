@@ -15,7 +15,7 @@ export interface ServiceApiResponseTransformOptions {
   to: ServiceApiProtocol;
   streamRequested?: boolean;
   fallbackModel?: string | null;
-  /** A Responses client that keeps reasoning state gets a chat model's reasoning (see `includeReasoning` on transformRequest). */
+  /** The client takes the model's reasoning (see `includeReasoning` on transformRequest). */
   includeReasoning?: boolean;
 }
 
@@ -177,21 +177,20 @@ function buildAnthropicMessagesStream(
   });
 
   for (const [index, block] of content.entries()) {
-    const isText = block.type === 'text';
-    pushEvent('content_block_start', {
-      type: 'content_block_start',
-      index,
-      content_block: isText
-        ? { type: 'text', text: '' }
-        : { type: 'tool_use', id: block.id, name: block.name, input: {} },
-    });
-    pushEvent('content_block_delta', {
-      type: 'content_block_delta',
-      index,
-      delta: isText
-        ? { type: 'text_delta', text: block.text }
-        : { type: 'input_json_delta', partial_json: JSON.stringify(block.input ?? {}) },
-    });
+    let contentBlock: Record<string, unknown>;
+    const deltas: Record<string, unknown>[] = [];
+    if (block.type === 'thinking') {
+      contentBlock = { type: 'thinking', thinking: '', signature: '' };
+      deltas.push({ type: 'thinking_delta', thinking: block.thinking }, { type: 'signature_delta', signature: block.signature });
+    } else if (block.type === 'text') {
+      contentBlock = { type: 'text', text: '' };
+      deltas.push({ type: 'text_delta', text: block.text });
+    } else {
+      contentBlock = { type: 'tool_use', id: block.id, name: block.name, input: {} };
+      deltas.push({ type: 'input_json_delta', partial_json: JSON.stringify(block.input ?? {}) });
+    }
+    pushEvent('content_block_start', { type: 'content_block_start', index, content_block: contentBlock });
+    for (const delta of deltas) pushEvent('content_block_delta', { type: 'content_block_delta', index, delta });
     pushEvent('content_block_stop', { type: 'content_block_stop', index });
   }
 
@@ -226,6 +225,7 @@ function buildOpenAIChatStream(response: CanonicalLlmResponse): Uint8Array {
 
   pushChunk({ role: 'assistant', content: '' });
 
+  if (response.reasoning) pushChunk({ reasoning_content: response.reasoning });
   let toolCallIndex = 0;
   for (const item of response.output) {
     if (item.type === 'text') {

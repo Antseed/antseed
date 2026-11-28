@@ -1,6 +1,9 @@
 import {
+  adapterThinkingSignature,
+  adapterThinkingTextFor,
   chatReasoningText,
   extractReportedUsage,
+  hasReasoningText,
   mapFinishReasonToAnthropicStopReason,
   openAIResponsesFunctionCallId,
   openAIResponsesMessageId,
@@ -148,7 +151,7 @@ export interface CanonicalLlmResponse {
   output: CanonicalOutputItem[];
   stopReason: string | null;
   endTurn?: boolean;
-  /** Reasoning a chat model returned beside its answer (`reasoning_content`). */
+  /** The model's reasoning beside its answer: a chat model's `reasoning_content`, or a Messages model's `thinking`. */
   reasoning?: string;
   /** The model the reasoning's tag names: the one the request asked for, else the seller's label. */
   reasoningModel?: string;
@@ -439,7 +442,7 @@ export function normalizeAnthropicMessagesRequestBody(body: Record<string, unkno
     const role = message.role === 'assistant' ? 'assistant' : 'user';
 
     if (Array.isArray(message.content)) {
-      const cached = appendAnthropicContentBlocks(request.input, role, message.content);
+      const cached = appendAnthropicContentBlocks(request.input, role, message.content, request.model);
       // Blocks coalesce into items, so the marker lands on the item the
       // message ends with — the position a client's breakpoint means.
       if (cached && request.input.length > 0) breakpoints.inputIndices.push(request.input.length - 1);
@@ -572,24 +575,18 @@ export function normalizeOpenAIResponsesRequestBody(body: Record<string, unknown
   } else if (Array.isArray(input)) {
     // A Responses client sends a reasoning item back before the message and calls it led to. When the
     // requested model wrote it, its text rides on that assistant output; reasoning nothing follows is dropped.
-    let reasoning = '';
-    const takeReasoning = (): { reasoning?: string } => {
-      const taken = reasoning;
-      reasoning = '';
-      return taken.length > 0 ? { reasoning: taken } : {};
-    };
+    const reasoning = pendingReasoning();
     for (const item of input) {
       if (!item || typeof item !== 'object') continue;
       const msg = item as Record<string, unknown>;
       const type = typeof msg.type === 'string' ? msg.type : '';
 
       if (type === 'reasoning') {
-        const text = responsesReasoningTextFor(msg, request.model);
-        if (text.length > 0) reasoning = reasoning.length > 0 ? `${reasoning}\n${text}` : text;
+        reasoning.add(responsesReasoningTextFor(msg, request.model));
         continue;
       }
       // Any other item without a role (a tool output, a built-in tool call) ends the reasoning's turn.
-      if (type !== 'function_call' && typeof msg.role !== 'string') reasoning = '';
+      if (type !== 'function_call' && typeof msg.role !== 'string') reasoning.take();
 
       if (type === 'function_call_output') {
         request.input.push({
@@ -607,7 +604,7 @@ export function normalizeOpenAIResponsesRequestBody(body: Record<string, unknown
             ? msg.call_id : (typeof msg.id === 'string' ? msg.id : ''),
           name: typeof msg.name === 'string' ? msg.name : '',
           arguments: typeof msg.arguments === 'string' ? msg.arguments : JSON.stringify(msg.arguments ?? {}),
-          ...takeReasoning(),
+          ...reasoning.take(),
         });
         continue;
       }
@@ -623,7 +620,7 @@ export function normalizeOpenAIResponsesRequestBody(body: Record<string, unknown
       // text — dropping them avoids injecting empty user messages mid-history.
       if (type !== 'message' && textFromCanonicalContent(content).length === 0) continue;
       const phase = role === 'assistant' ? normalizeResponseMessagePhase(msg.phase) : undefined;
-      const turnReasoning = takeReasoning();
+      const turnReasoning = reasoning.take();
       request.input.push({ type: 'message', role, content, ...(phase ? { phase } : {}), ...(role === 'assistant' ? turnReasoning : {}) });
     }
   }
@@ -694,7 +691,7 @@ export function normalizeOpenAIChatResponseBody(
     output,
     stopReason,
     endTurn: responsesEndTurn(output.filter((item) => item.type === 'function_call').length),
-    ...(reasoning.trim().length > 0 ? { reasoning, reasoningModel: fallbacks.requestedModel || model } : {}),
+    ...(hasReasoningText(reasoning) ? { reasoning, reasoningModel: fallbacks.requestedModel || model } : {}),
     usage,
   };
 }
@@ -753,16 +750,23 @@ function openAIResponsesStopReason(
 
 export function normalizeAnthropicMessagesResponseBody(
   body: Record<string, unknown>,
-  fallbacks: { id: string; model: string },
+  fallbacks: { id: string; model: string; requestedModel?: string | null },
 ): CanonicalLlmResponse {
   const id = typeof body.id === 'string' && body.id.length > 0 ? body.id : fallbacks.id;
   const model = typeof body.model === 'string' && body.model.length > 0 ? body.model : fallbacks.model;
   const output: CanonicalOutputItem[] = [];
+  const thoughts: string[] = [];
 
   const content = Array.isArray(body.content) ? body.content : [];
   for (const blockRaw of content) {
     if (!blockRaw || typeof blockRaw !== 'object') continue;
     const block = blockRaw as Record<string, unknown>;
+    // A `redacted_thinking` block is opaque by design: there is nothing in it to translate.
+    if (block.type === 'thinking') {
+      // Thoughts after the answer began are dropped, as a stream drops them, never moved ahead of it.
+      if (output.length === 0 && typeof block.thinking === 'string' && hasReasoningText(block.thinking)) thoughts.push(block.thinking);
+      continue;
+    }
     if (block.type === 'text') {
       const text = typeof block.text === 'string' ? block.text : '';
       if (text.length > 0) output.push({ type: 'text', text });
@@ -782,7 +786,15 @@ export function normalizeAnthropicMessagesResponseBody(
 
   const usage = extractReportedUsage(body, 'anthropic-messages');
   const stopReason = anthropicStopReasonToOpenAI(body.stop_reason);
-  return { id, model, output, stopReason, usage };
+  const reasoning = thoughts.join('\n');
+  return {
+    id,
+    model,
+    output,
+    stopReason,
+    ...(reasoning.length > 0 ? { reasoning, reasoningModel: fallbacks.requestedModel || model } : {}),
+    usage,
+  };
 }
 
 export function renderCanonicalResponseToOpenAIChatBody(response: CanonicalLlmResponse): Record<string, unknown> {
@@ -808,6 +820,7 @@ export function renderCanonicalResponseToOpenAIChatBody(response: CanonicalLlmRe
       message: {
         role: 'assistant',
         content: text.length > 0 ? text : null,
+        ...(response.reasoning ? { reasoning_content: response.reasoning } : {}),
         ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
       },
       finish_reason: response.stopReason ?? (toolCalls.length > 0 ? 'tool_calls' : 'stop'),
@@ -864,15 +877,23 @@ export function renderCanonicalResponseToOpenAIResponsesBody(response: Canonical
 }
 
 export function renderCanonicalResponseToAnthropicMessagesBody(response: CanonicalLlmResponse): Record<string, unknown> {
-  const content = response.output.map((item) => {
-    if (item.type === 'text') return { type: 'text', text: item.text };
-    return {
+  const content: Record<string, unknown>[] = [];
+  if (response.reasoning) {
+    const signature = adapterThinkingSignature(response.reasoningModel ?? response.model, response.id);
+    content.push({ type: 'thinking', thinking: response.reasoning, signature });
+  }
+  for (const item of response.output) {
+    if (item.type === 'text') {
+      content.push({ type: 'text', text: item.text });
+      continue;
+    }
+    content.push({
       type: 'tool_use',
       id: item.id,
       name: item.name || 'tool',
       input: parseToolArguments(item.arguments),
-    };
-  });
+    });
+  }
 
   return {
     id: response.id,
@@ -1101,17 +1122,39 @@ function hasAnthropicCacheControl(value: unknown): boolean {
   ));
 }
 
+/**
+ * Replayed thoughts waiting for the text or call they led to: `add` joins them on a new line, and
+ * `take` hands them to one item (or drops them) and starts over.
+ */
+function pendingReasoning(): { add(text: string): void; take(): { reasoning?: string } } {
+  let reasoning = '';
+  return {
+    add(text) {
+      if (text.length > 0) reasoning = reasoning.length > 0 ? `${reasoning}\n${text}` : text;
+    },
+    take() {
+      const taken = reasoning;
+      reasoning = '';
+      return taken.length > 0 ? { reasoning: taken } : {};
+    },
+  };
+}
+
 /** Returns whether the message declared a cache breakpoint on any of its blocks. */
 function appendAnthropicContentBlocks(
   input: CanonicalInputItem[],
   role: 'user' | 'assistant',
   blocks: unknown[],
+  model: string | null,
 ): boolean {
   const startLength = input.length;
   let contentParts: CanonicalContentPart[] = [];
+  // Thoughts the adapter made for this model ride on the text or call they led to; thoughts nothing
+  // follows in the message are dropped (see normalizeOpenAIResponsesRequestBody).
+  const reasoning = pendingReasoning();
   const flushMessage = (): void => {
     if (contentParts.length === 0) return;
-    input.push({ type: 'message', role, content: contentParts });
+    input.push({ type: 'message', role, content: contentParts, ...reasoning.take() });
     contentParts = [];
   };
 
@@ -1119,10 +1162,16 @@ function appendAnthropicContentBlocks(
     if (!blockRaw || typeof blockRaw !== 'object') continue;
     const block = blockRaw as Record<string, unknown>;
 
+    if (block.type === 'thinking' || block.type === 'redacted_thinking') {
+      if (role === 'assistant') reasoning.add(adapterThinkingTextFor(block, model));
+      continue;
+    }
+
     if (role === 'assistant' && block.type === 'tool_use') {
       flushMessage();
       input.push({
         type: 'function_call',
+        ...reasoning.take(),
         id: typeof block.id === 'string' && block.id.length > 0 ? block.id : `call_${input.length + 1}`,
         name: typeof block.name === 'string' && block.name.length > 0 ? block.name : 'tool',
         arguments: block.input && typeof block.input === 'object' && !Array.isArray(block.input)

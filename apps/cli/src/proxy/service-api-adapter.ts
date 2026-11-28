@@ -8,6 +8,7 @@ export {
   transformRequest,
   transformResponse,
   withoutAdapterReasoningItems,
+  withoutAdapterThinkingBlocks,
 } from '@antseed/api-adapter'
 
 export type {
