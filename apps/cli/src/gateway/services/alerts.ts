@@ -13,7 +13,7 @@ import type {
 } from '../console-api/types.js'
 import { errorMessage } from '../errors.js'
 import { optionalUsdcToDecimalString, parseUsdToUsdc } from '../money.js'
-import type { AlertDestinationKind, AlertDestinationRecord, AlertEventGroup, AlertSettingsRecord, WorkspaceRecord } from '../store.js'
+import type { AlertDeliveryRecord, AlertDestinationKind, AlertDestinationRecord, AlertEventGroup, AlertSettingsRecord, WorkspaceRecord } from '../store.js'
 import { recordAudit, requiredText, type Actor, type ServiceContext } from './context.js'
 
 export const MAX_ALERT_DESTINATIONS = 20
@@ -46,7 +46,7 @@ export function alertDestinationView(record: AlertDestinationRecord): AlertDesti
   }
 }
 
-export function alertDeliveryView(record: { id: number; destinationId: string; eventType: string; summary: string; ok: boolean; error: string | null; at: number }): AlertDelivery {
+export function alertDeliveryView(record: AlertDeliveryRecord): AlertDelivery {
   return { id: record.id, destinationId: record.destinationId, eventType: record.eventType, summary: record.summary, ok: record.ok, error: record.error, at: record.at }
 }
 

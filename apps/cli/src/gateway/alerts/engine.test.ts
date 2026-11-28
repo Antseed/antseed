@@ -304,6 +304,40 @@ test('a failed delivery is retried and every attempt is logged', async () => {
   assert.ok(after.lastSentAt)
 })
 
+test('a resend still waiting when its incident closes or opens again is dropped', async () => {
+  alerts = makeAlerts({ retryDelaysMs: [30] })
+  destination(['balance'])
+  store.setAlertSettings(workspaceId(), { lowBalanceUsdc: 10 * USD, topupTargetUsdc: 50 * USD, limitWarnPercent: null, repeatMinutes: null })
+  const waitForResends = async () => {
+    await settle()
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    await settle()
+  }
+
+  // Low credits fails to go out; the workspace is topped up before its resend is due.
+  balance = { available: '1.000000', wallet: null, stale: false }
+  failures = 1
+  await alerts.tick()
+  await settle()
+  balance = { available: '60.000000', wallet: null, stale: false }
+  await alerts.tick()
+  await waitForResends()
+  assert.deepEqual(types(), ['balance.ok'], 'no low-credit alert, and no top-up asked for, after the recovery')
+
+  // Low again; its recovery fails to go out, and credits drop again before the recovery's resend is due.
+  balance = { available: '1.000000', wallet: null, stale: false }
+  await alerts.tick()
+  await settle()
+  failures = 1
+  balance = { available: '60.000000', wallet: null, stale: false }
+  await alerts.tick()
+  await settle()
+  balance = { available: '2.000000', wallet: null, stale: false }
+  await alerts.tick()
+  await waitForResends()
+  assert.deepEqual(types(), ['balance.ok', 'balance.low', 'balance.low'], 'no recovery after credits dropped again')
+})
+
 test('a disabled destination gets nothing; a test goes to one destination', async () => {
   const off = destination(['balance'])
   store.updateAlertDestination(off.id, { enabled: false })

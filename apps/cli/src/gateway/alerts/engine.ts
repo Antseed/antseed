@@ -4,13 +4,14 @@
  * open, when set), with a recovery alert when it closes after one was sent.
  * Conditions are found by a poll (credits, spend limits, spend tracking) and
  * by the request path (a cap refusing a request, the buyer out of credits).
- * A failed delivery is retried a few times; every attempt is logged.
+ * A failed delivery is retried a few times, unless its incident closed, opened
+ * again or was alerted again since; every attempt is logged.
  */
 import { effectiveKeyLimits } from '../accounting.js'
 import { errorMessage } from '../errors.js'
 import { cappedPeriods, periodResetsAt, periodStart, type BudgetLevel, type BudgetLimits, type BudgetPeriod, type LimitBreach } from '../limits.js'
 import type { SpendFeedState } from '../spend-feed.js'
-import type { AlertDestinationRecord, AlertEventGroup, AlertSettingsRecord, ApiKeyRecord, BudgetScope, GatewayStore, WorkspaceRecord } from '../store.js'
+import type { AlertDestinationRecord, AlertEventGroup, AlertIncidentRecord, AlertSettingsRecord, ApiKeyRecord, BudgetScope, GatewayStore, WorkspaceRecord } from '../store.js'
 import type { AlertTransport } from './channels.js'
 import {
   balanceEmptyEvent, balanceLowEvent, balanceOkEvent, limitNearEvent, limitReachedEvent,
@@ -63,6 +64,11 @@ export function limitIncident(kind: 'near' | 'reached', level: BudgetLevel, id: 
   return `limit.${kind}:${level}:${id}:${period}:${periodStart(period, now)}`
 }
 
+/** One incident of one workspace, as a map key. */
+function incidentKey(workspaceId: string, incident: string): string {
+  return `${workspaceId}\n${incident}`
+}
+
 /** Parses a decimal USD string ("12.500000", "-0.100000") into base units; null when it is not one. */
 export function decimalToUsdc(value: string | null): number | null {
   if (value === null) return null
@@ -84,6 +90,9 @@ export class GatewayAlerts {
   private _stopped = false
   private readonly _lastBalanceRead = new Map<string, number>()
   private _spendTrackingDownSince: number | null = null
+  /** The latest alert dispatched for each open incident (see `incidentKey`), by a number never reused: a resend of an older one is dropped. */
+  private readonly _latestAlerts = new Map<string, number>()
+  private _alertSequence = 0
 
   constructor(private readonly _options: GatewayAlertsOptions) {
     this._store = _options.store
@@ -134,7 +143,7 @@ export class GatewayAlerts {
         limitUsdc: breach.limitUsdc, spentUsdc: breach.spentUsdc, resetsAt: breach.resetsAt, consoleUrl: this._link('/keys'),
       }
       const now = this._now()
-      await this._raise(workspace, limitIncident('reached', level, scope.id, breach.period, now), () => limitReachedEvent(workspace, facts, now))
+      await this._raise(workspace, limitIncident('reached', level, scope.id, breach.period, now), limitReachedEvent(workspace, facts, now))
     })
   }
 
@@ -149,7 +158,7 @@ export class GatewayAlerts {
       const settings = this._store.getAlertSettings(workspace.id)
       // Unread, the alert still goes out: requests are failing either way.
       const facts = await this._balanceFacts(workspace, settings) ?? { ...this._settingsFacts(settings), walletAddress: null, availableUsdc: 0, walletUsdc: null }
-      await this._raise(workspace, BALANCE_EMPTY, () => balanceEmptyEvent(workspace, facts, this._now()))
+      await this._raise(workspace, BALANCE_EMPTY, balanceEmptyEvent(workspace, facts, this._now()))
     })
   }
 
@@ -189,7 +198,7 @@ export class GatewayAlerts {
     if (this._options.anyBudgets && !this._options.anyBudgets()) return
     const since = this._spendTrackingDownSince
     for (const workspace of workspaces) {
-      await this._safely(() => this._raise(workspace, SPEND_TRACKING, () => spendTrackingDownEvent(workspace, state, since, this._now())))
+      await this._safely(() => this._raise(workspace, SPEND_TRACKING, spendTrackingDownEvent(workspace, state, since, this._now())))
     }
   }
 
@@ -217,17 +226,16 @@ export class GatewayAlerts {
         const incident = limitIncident('reached', row.level, row.id, row.period, now)
         // Reached says everything near would: a near incident of the same period is left out of `open`, so it closes quietly.
         open.add(incident)
-        await this._raise(workspace, incident, () => limitReachedEvent(workspace, facts, this._now()))
+        await this._raise(workspace, incident, limitReachedEvent(workspace, facts, this._now()))
       } else if (settings.limitWarnPercent !== null && row.spent * 100 >= row.limit * settings.limitWarnPercent) {
         const incident = limitIncident('near', row.level, row.id, row.period, now)
         open.add(incident)
-        const percent = settings.limitWarnPercent
-        await this._raise(workspace, incident, () => limitNearEvent(workspace, facts, percent, this._now()))
+        await this._raise(workspace, incident, limitNearEvent(workspace, facts, settings.limitWarnPercent, this._now()))
       }
     }
     // A limit incident of a past period, a raised cap or a removed key is over; limits have no recovery alert.
     for (const incident of this._store.listAlertIncidents(workspace.id)) {
-      if (incident.incident.startsWith('limit.') && !open.has(incident.incident)) this._store.closeAlertIncident(workspace.id, incident.incident)
+      if (incident.incident.startsWith('limit.') && !open.has(incident.incident)) this._close(workspace.id, incident.incident)
     }
   }
 
@@ -247,11 +255,11 @@ export class GatewayAlerts {
     const emptyOver = facts.availableUsdc >= (threshold ?? this._options.emptyRecoveryUsdc)
     if (emptyOpen && !emptyOver) {
       // Still out: its reminder is due on schedule even with no request refused since; it says all low would.
-      await this._raise(workspace, BALANCE_EMPTY, () => balanceEmptyEvent(workspace, facts, this._now()))
+      await this._raise(workspace, BALANCE_EMPTY, balanceEmptyEvent(workspace, facts, this._now()))
       return
     }
     if (threshold !== null && facts.availableUsdc < threshold) {
-      await this._raise(workspace, BALANCE_LOW, () => balanceLowEvent(workspace, { ...facts, thresholdUsdc: threshold }, this._now()))
+      await this._raise(workspace, BALANCE_LOW, balanceLowEvent(workspace, { ...facts, thresholdUsdc: threshold }, this._now()))
       return
     }
     await this._resolve(workspace, emptyOver ? [BALANCE_LOW, BALANCE_EMPTY] : [BALANCE_LOW], () => balanceOkEvent(workspace, facts, this._now()))
@@ -288,8 +296,7 @@ export class GatewayAlerts {
    * once `repeatMinutes` have passed. Nothing opens without a destination for
    * it, so one added later still hears of a condition that is still there.
    */
-  private async _raise(workspace: WorkspaceRecord, incident: string, build: () => AlertEvent): Promise<void> {
-    const event = build()
+  private async _raise(workspace: WorkspaceRecord, incident: string, event: AlertEvent): Promise<void> {
     const destinations = this._destinations(workspace.id, event.group ?? undefined)
     if (destinations.length === 0) return
     if (!this._store.openAlertIncident(workspace.id, incident)) {
@@ -297,7 +304,10 @@ export class GatewayAlerts {
       if (!open || !this._reminderDue(workspace.id, open.lastSentAt)) return
     }
     this._store.touchAlertIncident(workspace.id, incident)
-    this._dispatch(destinations, event)
+    const key = incidentKey(workspace.id, incident)
+    const sequence = ++this._alertSequence
+    this._latestAlerts.set(key, sequence)
+    this._dispatch(destinations, event, () => this._latestAlerts.get(key) === sequence)
   }
 
   /** Whether an open incident last alerted at `lastSentAt` is due its `repeatMinutes` reminder. */
@@ -310,20 +320,29 @@ export class GatewayAlerts {
   private async _resolve(workspace: WorkspaceRecord, incidents: string[], build: () => AlertEvent): Promise<void> {
     let alerted = false
     for (const incident of incidents) {
-      const closed = this._store.closeAlertIncident(workspace.id, incident)
+      const closed = this._close(workspace.id, incident)
       if (closed && closed.lastSentAt !== null) alerted = true
     }
     if (!alerted) return
     const event = build()
-    this._dispatch(this._destinations(workspace.id, event.group ?? undefined), event)
+    // The recovery is resent only while none of its incidents is alerted again.
+    const keys = incidents.map((incident) => incidentKey(workspace.id, incident))
+    this._dispatch(this._destinations(workspace.id, event.group ?? undefined), event, () => keys.every((key) => !this._latestAlerts.has(key)))
   }
 
-  private _dispatch(destinations: AlertDestinationRecord[], event: AlertEvent): void {
-    for (const destination of destinations) void this._deliverWithRetry(destination.id, event, 0)
+  /** Closes an incident; resends of its alerts still waiting are dropped. */
+  private _close(workspaceId: string, incident: string): AlertIncidentRecord | null {
+    this._latestAlerts.delete(incidentKey(workspaceId, incident))
+    return this._store.closeAlertIncident(workspaceId, incident)
   }
 
-  private async _deliverWithRetry(destinationId: string, event: AlertEvent, attempt: number): Promise<void> {
-    if (this._stopped) return
+  /** Delivers `event` to each destination; a failed one is resent while `current` holds. */
+  private _dispatch(destinations: AlertDestinationRecord[], event: AlertEvent, current: () => boolean): void {
+    for (const destination of destinations) void this._deliverWithRetry(destination.id, event, 0, current)
+  }
+
+  private async _deliverWithRetry(destinationId: string, event: AlertEvent, attempt: number, current: () => boolean): Promise<void> {
+    if (this._stopped || !current()) return
     // Read again on every attempt: a destination edited, disabled or deleted since gets the change.
     const destination = this._store.getAlertDestination(destinationId)
     if (!destination || !destination.enabled) return
@@ -331,7 +350,7 @@ export class GatewayAlerts {
     if (result.ok || attempt >= this._retryDelays.length || this._stopped) return
     const timer = setTimeout(() => {
       this._retries.delete(timer)
-      void this._deliverWithRetry(destinationId, event, attempt + 1)
+      void this._deliverWithRetry(destinationId, event, attempt + 1, current)
     }, this._retryDelays[attempt])
     timer.unref?.()
     this._retries.add(timer)
