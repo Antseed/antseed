@@ -22,6 +22,20 @@ test('lifetime usage takes the larger of signed and settled, and counts free and
   assert.deepEqual(buyerLifetimeUsage(channels, points), { requests: 12, spentUsd: '1.95' });
 });
 
+test('a closed video channel counts what it settled, not the fee signed before a create the seller refused', () => {
+  const channels = [
+    // Refused: the fee was signed, the seller released the channel at 0.
+    { channelKind: 'one_off', status: 'settled', cumulativeSigned: '650000', settledAmount: '0', requestCount: 1 },
+    // Accepted and never downloaded: closed at the fee.
+    { channelKind: 'one_off', status: 'settled', cumulativeSigned: '650000', settledAmount: '650000', requestCount: 1 },
+    // Delivered: retired once the price was signed, with no settlement read.
+    { channelKind: 'one_off', status: 'settled', cumulativeSigned: '4200000', settledAmount: null, requestCount: 1 },
+    // Still open: what was signed.
+    { channelKind: 'one_off', status: 'active', cumulativeSigned: '650000', settledAmount: null, requestCount: 1 },
+  ];
+  assert.deepEqual(buyerLifetimeUsage(channels, []), { requests: 4, spentUsd: '5.5' });
+});
+
 test('a channel used before the gateway counts even when it settles or is reconciled after', () => {
   // Every request happened before the switch; the seller settled long after, so the channel was last updated then.
   const settledLater = { channelKind: 'paid', cumulativeSigned: '2500000', settledAmount: '2500000', requestCount: 10, updatedAt: SWITCH + 5_000 };

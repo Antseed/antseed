@@ -225,6 +225,15 @@ interface OneOffChannelState {
   /** The video price: the only amount this channel will ever be asked for. */
   price: bigint;
   cumulative: bigint;
+  /**
+   * What this channel has been reported as spent so far, in memory only. The
+   * serious fee is reported once the seller has taken it, or may have: when
+   * the create is accepted, when it was sent and got no answer, or, for a
+   * refused create, as far as the chain shows it settled. A seller may hold
+   * the fee until its upstream accepts the create and release a refused one
+   * at 0.
+   */
+  reported: bigint;
   confirmed: boolean;
   ackWaiters: Array<(confirmed: boolean) => void>;
 }
@@ -420,12 +429,17 @@ export class BuyerPaymentManager {
       CHANNEL_KIND.ONE_OFF,
     )) {
       if (!channel.oneOffRequestId) continue;
+      const confirmed = channel.reserveAuthPending !== true;
+      const cumulative = BigInt(channel.authMax || '0');
       this._oneOffChannels.set(channel.sessionId, {
         sellerPeerId: channel.peerId,
         requestId: channel.oneOffRequestId,
         price: BigInt(channel.reserveMaxAmount ?? '0'),
-        cumulative: BigInt(channel.authMax || '0'),
-        confirmed: channel.reserveAuthPending !== true,
+        cumulative,
+        // A confirmed channel counts as reported up to what it signed: nothing
+        // stored says otherwise, so a restart never reports it again.
+        reported: confirmed ? cumulative : 0n,
+        confirmed,
         ackWaiters: [],
       });
       this._restoreVideoJob(channel);
@@ -1552,11 +1566,14 @@ export class BuyerPaymentManager {
    * seller `answered` it (an error answer, a 402 the buyer retries). When it
    * did not, the attempt was cut off with nothing the buyer can price: the
    * seller may still bill it, and only the overdraft window pays for that.
+   * `sent` says the attempt reached the wire: only a video create that was
+   * sent and got no answer may have been accepted (and its fee taken).
    */
-  endPaidRequest(sellerPeerId: string, requestId?: string, answered = false): void {
+  endPaidRequest(sellerPeerId: string, requestId?: string, answered = false, sent = false): void {
     if (requestId && !answered && !this._requestLedgers.get(sellerPeerId)?.has(requestId)) {
       this.recordDeliveredResponse(sellerPeerId, requestId, { costUsdc: 0n, cutOff: true });
     }
+    if (requestId && !answered && sent) this._oneOffCreateUnanswered(sellerPeerId, requestId);
     const remaining = (this._inFlightPaidRequests.get(sellerPeerId) ?? 0) - 1;
     if (remaining > 0) this._inFlightPaidRequests.set(sellerPeerId, remaining);
     else this._inFlightPaidRequests.delete(sellerPeerId);
@@ -2465,8 +2482,9 @@ export class BuyerPaymentManager {
    *
    * For a price above the opening reserve, signs the opening ReserveAuth, the
    * contract-required threshold SpendingAuth (the serious fee, credited toward
-   * the price) and the final ReserveAuth together; the seller runs reserve()
-   * and topUp() before acknowledging. Returns the channelId once persisted
+   * the price) and the final ReserveAuth together. The seller runs reserve()
+   * before acknowledging; a seller on an older release also runs topUp()
+   * then, a newer one only once its upstream accepts the create. Returns the channelId once persisted
    * and sent; await `waitForOneOffAck` for the seller's confirmation.
    */
   async openOneOffChannel(
@@ -2516,6 +2534,7 @@ export class BuyerPaymentManager {
       requestId,
       price,
       cumulative: requiredCumulative,
+      reported: 0n,
       confirmed: false,
       ackWaiters: [],
     });
@@ -2562,20 +2581,35 @@ export class BuyerPaymentManager {
     });
   }
 
-  /** Mark the one-off channel confirmed once its full reserve is seen on-chain. */
-  async confirmOneOffChannelOnChain(channelId: string, onChainDeposit: bigint): Promise<void> {
+  /**
+   * Mark the one-off channel confirmed once the chain shows the seller
+   * reserved it: by default its full reserve, or `required` (the opening
+   * reserve, which a seller that tops up only after its upstream accepts the
+   * create shows alone until then).
+   */
+  async confirmOneOffChannelOnChain(channelId: string, onChainDeposit: bigint, required?: bigint): Promise<void> {
     const state = this._oneOffChannels.get(channelId);
-    if (state && onChainDeposit >= state.price) await this._confirmOneOffChannel(channelId, state);
+    if (!state) return;
+    const needed = required != null && required > 0n && required < state.price ? required : state.price;
+    if (onChainDeposit >= needed) await this._confirmOneOffChannel(channelId, state);
   }
 
   /**
    * Forget a one-off channel locally once it is closed or abandoned. If it is
-   * still open on-chain, the buyer can still requestClose() it.
+   * still open on-chain, the buyer can still requestClose() it. With the
+   * amount the chain shows settled, whatever of it was not reported yet is
+   * reported as spent, and the amount is stored on the row.
    */
-  retireOneOffChannel(channelId: string, status: typeof CHANNEL_STATUS[keyof typeof CHANNEL_STATUS] = CHANNEL_STATUS.SETTLED): void {
-    if (!this._oneOffChannels.has(channelId)) return;
+  retireOneOffChannel(
+    channelId: string,
+    status: typeof CHANNEL_STATUS[keyof typeof CHANNEL_STATUS] = CHANNEL_STATUS.SETTLED,
+    settledOnChain?: bigint,
+  ): void {
+    const state = this._oneOffChannels.get(channelId);
+    if (!state) return;
+    if (settledOnChain !== undefined) this._reportOneOffSpendUpTo(state, settledOnChain);
     this.forgetOneOffChannel(channelId);
-    this._channelStore.updateChannelStatus(channelId, status);
+    this._channelStore.updateChannelStatus(channelId, status, settledOnChain?.toString());
   }
 
   /** Drop a one-off channel's in-memory state, failing anyone still waiting for its AuthAck. The store is not touched. */
@@ -2584,6 +2618,52 @@ export class BuyerPaymentManager {
     if (!state) return;
     this._oneOffChannels.delete(channelId);
     for (const waiter of state.ackWaiters.splice(0)) waiter(false);
+  }
+
+  /**
+   * Retire the one-off channel of a create the seller answered without a job.
+   * A seller that holds the serious fee until its upstream accepts releases
+   * the channel at 0; an older one took the fee before the create was sent.
+   * The channel is retired at once; then `readSettled` (one chain read) says
+   * what was settled, which is reported and stored on the row. Without a
+   * read, or when it fails, the fee is reported in full. Never rejects.
+   */
+  async retireRefusedOneOffChannel(channelId: string, readSettled: (() => Promise<bigint>) | null): Promise<void> {
+    const state = this._oneOffChannels.get(channelId);
+    if (!state) return;
+    this.retireOneOffChannel(channelId);
+    let settled: bigint | undefined;
+    if (readSettled) {
+      try {
+        settled = await readSettled();
+      } catch (err) {
+        debugWarn(`[BuyerPayment] Could not read refused one-off channel ${channelId.slice(0, 18)}...; reporting its fee: ${err instanceof Error ? err.message : err}`);
+      }
+    }
+    this._reportOneOffSpendUpTo(state, settled ?? state.cumulative);
+    if (settled !== undefined) this._channelStore.updateChannelStatus(channelId, CHANNEL_STATUS.SETTLED, settled.toString());
+  }
+
+  /**
+   * A create sent on its one-off channel ended with no answer (aborted, timed
+   * out, connection lost). The seller may still have had it accepted and
+   * taken the serious fee, and no later answer will say so: report the fee
+   * now, while the request can still be attributed.
+   */
+  private _oneOffCreateUnanswered(sellerPeerId: string, requestId: string): void {
+    const channelId = this.getOneOffChannelForRequest(sellerPeerId, requestId);
+    const state = channelId ? this._oneOffChannels.get(channelId) : undefined;
+    if (!state?.confirmed) return;
+    this._reportOneOffSpendUpTo(state, state.cumulative);
+  }
+
+  /** Report a one-off channel's spend up to `amount` (never past what the buyer signed), once. */
+  private _reportOneOffSpendUpTo(state: OneOffChannelState, amount: bigint): void {
+    const target = amount < state.cumulative ? amount : state.cumulative;
+    if (target <= state.reported) return;
+    const delta = target - state.reported;
+    state.reported = target;
+    this._reportUnitSpend(state.sellerPeerId, state.requestId, delta);
   }
 
   /**
@@ -2621,12 +2701,11 @@ export class BuyerPaymentManager {
         await this._channelStore.flush?.();
       }
       // Re-checked after the flush: an AuthAck and an on-chain confirmation
-      // can both get here, and only the first may report the fee.
+      // can both get here.
       if (!state.confirmed) {
         state.confirmed = true;
-        // The serious fee counts as spent only once the channel holds it: a
-        // channel the seller never opened (or released at 0) charged nothing.
-        if (state.cumulative > 0n) this._reportUnitSpend(state.sellerPeerId, state.requestId, state.cumulative);
+        // The serious fee is not reported here: the seller may hold it until
+        // its upstream accepts the create, and release the channel at 0 if not.
         debugLog(`[BuyerPayment] One-off channel confirmed: ${channelId.slice(0, 18)}...`);
       }
     }
@@ -2680,8 +2759,10 @@ export class BuyerPaymentManager {
     });
     const spendingAuth = await this._signAndCommitSpendingAuth(channel, state.price, metadata);
     if (typeof spendingAuth === 'string') return;
-    this._reportUnitSpend(sellerPeerId, requestId, state.price - state.cumulative);
+    const delivered = state.price - state.reported;
     state.cumulative = state.price;
+    state.reported = state.price;
+    if (delivered > 0n) this._reportUnitSpend(sellerPeerId, requestId, delivered);
     paymentMux.sendSpendingAuth(spendingAuth);
     this.clearRequestBilling(requestId);
     // The seller closes the channel on receiving this; it pays for nothing else.
@@ -2856,7 +2937,12 @@ export class BuyerPaymentManager {
       createdAtMs: now,
       ...(oneOffChannelId ? { oneOffChannelId } : {}),
     });
-    if (oneOffChannelId) this._persistVideoJob(oneOffChannelId, { protocol, jobId, createdAtMs: now, entry });
+    if (oneOffChannelId) {
+      this._persistVideoJob(oneOffChannelId, { protocol, jobId, createdAtMs: now, entry });
+      // The seller accepted the create, so it keeps the serious fee whatever happens to the job.
+      const state = this._oneOffChannels.get(oneOffChannelId);
+      if (state) this._reportOneOffSpendUpTo(state, state.cumulative);
+    }
     while (this._videoJobs.size > MAX_VIDEO_JOBS) {
       const oldest = this._videoJobs.keys().next().value;
       if (oldest === undefined) break;

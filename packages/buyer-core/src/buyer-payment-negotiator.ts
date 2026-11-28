@@ -499,7 +499,7 @@ export class BuyerPaymentNegotiator {
 
     const pmux = this.getOrCreatePaymentMux(peer.peerId, conn);
     const channelId = existing ?? await this._bpm.openOneOffChannel(peer.peerId, requestId, plan, pmux, peer.metadata);
-    await this._waitForOneOffChannel(channelId, price);
+    await this._waitForOneOffChannel(channelId, price, BigInt(plan.openingReserveAmount));
   }
 
   private _videoRequestCost(
@@ -552,11 +552,14 @@ export class BuyerPaymentNegotiator {
   /**
    * Wait until the seller acknowledges the one-off channel. The chain is read
    * between waits, so a lost AuthAck still confirms once the full reserve has
-   * been visible for ONE_OFF_CHAIN_CONFIRM_GRACE_MS, and a channel the seller
-   * already closed (for example after a reverted topUp) fails fast instead of
-   * waiting out the timeout.
+   * been visible for ONE_OFF_CHAIN_CONFIRM_GRACE_MS, or, at the timeout, with
+   * the opening reserve alone: a seller that tops up only once its upstream
+   * accepts the create never shows more before it. Only at the timeout, so an
+   * older seller, which acknowledges after its topUp, keeps the whole wait. A
+   * channel the seller already closed (for example after a reverted topUp)
+   * fails fast instead of waiting out the timeout.
    */
-  private async _waitForOneOffChannel(channelId: string, price: bigint): Promise<void> {
+  private async _waitForOneOffChannel(channelId: string, price: bigint, openingReserve: bigint): Promise<void> {
     const deadline = Date.now() + ONE_OFF_ACK_TIMEOUT_MS;
     let fundedSince: number | null = null;
     for (;;) {
@@ -578,10 +581,17 @@ export class BuyerPaymentNegotiator {
         return;
       }
       if (channel.status != null && channel.status > 1) {
-        this._bpm.retireOneOffChannel(channelId, CHANNEL_STATUS.SETTLED);
+        this._bpm.retireOneOffChannel(channelId, CHANNEL_STATUS.SETTLED, channel.settled);
         throw buyerFault('Seller closed the video payment channel before the request was sent', 'buyer-session-state');
       }
       if (Date.now() >= deadline) {
+        if (openingReserve < price && channel.deposit >= openingReserve && (channel.status == null || channel.status === 1)) {
+          await this._bpm.confirmOneOffChannelOnChain(channelId, channel.deposit, openingReserve);
+          if (this._bpm.isOneOffChannelConfirmed(channelId)) {
+            debugLog(`[BuyerNegotiator] One-off channel ${channelId.slice(0, 18)}... confirmed on-chain at its opening reserve: deposit=${channel.deposit}`);
+            return;
+          }
+        }
         throw buyerFault(
           `Seller did not open the video payment channel in time (deposit=${formatUsdc(channel.deposit)} USDC, needed ${formatUsdc(price)} USDC)`,
           'buyer-reserve-topup-timeout',
@@ -1187,9 +1197,17 @@ export class BuyerPaymentNegotiator {
           const { observedUnitUsage: _observed, ...entry } = billingEntry;
           this._bpm.trackVideoJob(peer.peerId, video.protocol, jobId, entry, requestId);
         } else if (requestId) {
-          // The seller closes the channel of a create it did not accept.
+          // The seller closes the channel of a create it did not accept, at 0
+          // or, on an older release, at the serious fee it already took. One
+          // chain read says which; the answer does not wait for it.
           const oneOffChannelId = this._bpm.getOneOffChannelForRequest(peer.peerId, requestId);
-          if (oneOffChannelId) this._bpm.retireOneOffChannel(oneOffChannelId);
+          const channels = this._channelsClient;
+          if (oneOffChannelId) {
+            void this._bpm.retireRefusedOneOffChannel(
+              oneOffChannelId,
+              channels ? async () => (await channels.getSession(oneOffChannelId)).settled : null,
+            );
+          }
         }
       }
       return;

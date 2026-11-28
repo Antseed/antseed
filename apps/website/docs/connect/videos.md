@@ -97,7 +97,7 @@ Edits take longer than new videos; Recast can take 15 minutes or more. Recast an
 
 - **Frames** are ordinary image requests, charged per image when they are made. The agent quotes the image model's price before making them.
 - **The video** is charged once, when the finished MP4 is first delivered. Checking a job's status costs nothing, and downloading the same video again does not charge again.
-- **A video that fails** costs nothing when it is priced at $1.00 or less. Above $1.00, a create the seller or upstream refuses, or a job that fails, costs the payment channel's opening fee ($0.65 on Base). A create the buyer refuses itself, such as one above the price limit, costs nothing.
+- **A video that fails** costs nothing when it is priced at $1.00 or less. Above $1.00, a job the upstream accepted that then fails, or is never downloaded, costs the payment channel's opening fee ($0.65 on Base). A create the seller or upstream refuses costs nothing (a seller on an older release keeps the opening fee for it too), and so does a create the buyer refuses itself, such as one above the price limit.
 - **No single video above $5.00.** The buyer refuses it by default (`payments.maxVideoRequestUsdc`). Pick a shorter duration or lower resolution.
 
 The agent sends the create to the cheapest seller that supports your settings, as `<peerId>@<model>`. If that seller fails, it offers the next one from the price list and asks first; it does not switch sellers or models on its own.
@@ -118,7 +118,7 @@ For a video longer than the model's longest clip, the agent plans it as several 
 | `402` | The buyer needs more deposited USDC or payment-channel capacity. See [Payments](/docs/payments). |
 | `402 one_off_channel_required` | Update the buyer; CLI versions before 0.1.171 hit this. |
 | Price above $5.00, or "above the configured limit" | Choose a shorter duration or a lower resolution. |
-| `400` on create | The seller rejected a field, named in the error. Nothing started; the agent fixes the field and asks before trying again. Above $1.00, the opening fee is kept. |
+| `400` on create | The seller rejected a field, named in the error. Nothing started and nothing was charged; the agent fixes the field and asks before trying again. |
 | `422 invalid_video_duration` | An edit's `duration` must be the source's length in whole seconds, rounded down. The agent corrects it and asks before trying again. |
 | `429 one_off_channel_backoff` | Too many of your recent videos on this seller ended unpaid, whatever the reason, or too many are starting at once, so it won't open another payment channel yet. Nothing started and nothing was charged. Wait for the time the error names (also in `Retry-After`), or use another seller. |
 | `429 video_download_busy` | The buyer, or the seller, is already downloading as many finished videos as it allows at once. The job is kept and nothing was charged. Retry the retrieve after the `Retry-After` seconds. The buyer's limit is `buyer.maxVideoDownloads` (default 6). |

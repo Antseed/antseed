@@ -700,12 +700,19 @@ export class SellerRequestHandler {
           });
           return;
         }
-        if (spm.getReserveMax(oneOff.sessionId) < estimatedRequestCost) {
+        // The opening reserve plus the top-up held for this channel, which is sent once the create is accepted.
+        if (!spm.oneOffChannelCovers(oneOff.sessionId, estimatedRequestCost)) {
           this._sendJsonError(mux, request.requestId, 409, 'one_off_channel_mismatch', 'The payment channel opened for this video does not cover its price');
           return;
         }
         if (!spm.claimOneOffChannel(oneOff.sessionId)) {
           this._sendJsonError(mux, request.requestId, 409, 'one_off_channel_used', 'The payment channel opened for this video was already used');
+          return;
+        }
+        // The rest of the price is locked only once the create is accepted: the buyer's deposits must still cover it.
+        if (!(await spm.fundOneOffCreate(oneOff.sessionId))) {
+          this._closeOneOffBestEffort(oneOff.sessionId, 'deposits do not cover the price');
+          this._sendJsonError(mux, request.requestId, 409, 'one_off_channel_unfunded', 'Your deposits no longer cover the price of this video');
           return;
         }
         oneOffChannelId = oneOff.sessionId;
@@ -1503,9 +1510,10 @@ export class SellerRequestHandler {
    * After a video create, save the job's owner and its price (charged later,
    * when the buyer downloads the video) against the job's one-off channel.
    * Returns the reply to send: the provider's reply, or a 503 if the job could
-   * not be saved, so no job is handed out that could never be charged. When
-   * no job was accepted, the one-off channel is closed at once so the buyer
-   * gets back everything but the already-settled serious fee.
+   * not be saved, so no job is handed out that could never be charged. Only
+   * an accepted, recorded job tops up its one-off channel (settling the
+   * serious fee); when no job was accepted, the channel is closed at once at
+   * 0, so the buyer gets back the whole reserve.
    */
   private _acceptVideoCreate(
     route: NativeVideoRoute,
@@ -1530,6 +1538,16 @@ export class SellerRequestHandler {
     const charge: PendingResourceCharge | undefined = billing && channelId && billing.costUsdc > 0n
       ? { channelId, service, amount: billing.costUsdc, billingUsage: billing.billingUsage, ...(durationSeconds ? { durationSeconds } : {}) }
       : undefined;
+    // A channel closed under the running create (a restart, a close elsewhere) could never charge this job.
+    if (charge && this._deps.sellerPaymentManager && !this._deps.sellerPaymentManager.oneOffCreateAcceptable(charge.channelId)) {
+      debugWarn(`[SellerHandler] Video job ${resourceId} accepted on a one-off channel that is no longer open; not handing it out`);
+      return {
+        requestId: request.requestId,
+        statusCode: 503,
+        headers: { 'content-type': 'application/json' },
+        body: new TextEncoder().encode(JSON.stringify({ error: { code: 'one_off_channel_closed', message: 'The payment channel for this video closed before the job started' } })),
+      };
+    }
     try {
       this._deps.resourceOwnershipStore?.recordAcceptedCreate(route.protocol, resourceId, buyerPeerId.toLowerCase(), charge);
       if (charge) this._deps.sellerPaymentManager?.markOneOffCreateAccepted(charge.channelId);

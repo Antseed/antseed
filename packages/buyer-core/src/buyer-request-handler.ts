@@ -278,6 +278,8 @@ export class BuyerRequestHandler {
       : undefined;
 
     let startTime = Date.now();
+    // Whether the latest attempt reached the wire: a create given up before it is sent was never the seller's to accept.
+    let attemptSent = false;
 
     const executeRequest = (): Promise<SerializedHttpResponse> => new Promise<SerializedHttpResponse>((resolve, reject) => {
       const timeoutMs = this._config.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
@@ -504,6 +506,8 @@ export class BuyerRequestHandler {
           });
         },
       );
+      // Only once the send returned: one that throws (a closed connection) never left.
+      attemptSent = true;
     });
 
     // Paid work in flight sizes the buyer's reserve top-ups (see beginPaidRequest).
@@ -519,6 +523,7 @@ export class BuyerRequestHandler {
     const executeCountedRequest = async (): Promise<SerializedHttpResponse> => {
       bpm?.beginPaidRequest(peer.peerId);
       let answered = false;
+      attemptSent = false;
       try {
         const answer = await executeRequest();
         answered = true;
@@ -530,7 +535,7 @@ export class BuyerRequestHandler {
         }
         return answer;
       } finally {
-        bpm?.endPaidRequest(peer.peerId, paidRequestId, answered);
+        bpm?.endPaidRequest(peer.peerId, paidRequestId, answered, attemptSent);
       }
     };
     const response = await executeCountedRequest();

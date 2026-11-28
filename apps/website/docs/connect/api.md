@@ -101,7 +101,7 @@ curl http://localhost:8377/api/v1/video/queue -H 'content-type: application/json
 
 On fal, `duration` is a number (`12`). A request is at most 64 MiB including base64 (about 47 MB of video); Venice sellers accept at most 32.5 MB, images included. Send `resolution` exactly as the seller lists it (`768P` for Recast, `720p` for Kling and Wan).
 
-Sellers do not check the source; the upstream does. Check it first against the model's published limits: fal's schema (`https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=<model>`, `x-fal` on `video_url`) or Venice's model list and docs. The `antseed-videos` skill does this for you. A source or field the upstream refuses, or a job that fails after it started (for example Recast or motion control on a video without a person), is closed at once. A video priced above $1.00 then costs the payment channel's opening fee ($0.65 on Base), a cheaper one nothing.
+Sellers do not check the source; the upstream does. Check it first against the model's published limits: fal's schema (`https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=<model>`, `x-fal` on `video_url`) or Venice's model list and docs. The `antseed-videos` skill does this for you. A source or field the upstream refuses, or a job that fails after it started (for example Recast or motion control on a video without a person), is closed at once. A create the upstream refuses costs nothing, unless the seller runs an older release, which keeps the opening fee for it. A job that fails after it started costs the payment channel's opening fee ($0.65 on Base) when the video is priced above $1.00, and nothing when it is cheaper.
 
 #### Lip-sync a video to audio
 

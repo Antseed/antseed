@@ -180,26 +180,36 @@ describe('Full Payment Flow Integration', () => {
     expect(opening.reserveBatch?.cumulativeAmount).toBe('650000');
     expect(opening.reserveBatch?.maxAmount).toBe('4200000');
 
-    const topUpSpy = vi.spyOn(seller.channelsClient, 'topUp');
-    if (outcome === 'success') topUpSpy.mockResolvedValue('0xtopup');
-    else topUpSpy.mockRejectedValue(new Error('execution reverted: InsufficientBalance'));
+    const topUpSpy = vi.spyOn(seller.channelsClient, 'topUp').mockResolvedValue('0xtopup');
+    // The rest of the price (4.20 - 1.00) is locked only after accept; the seller checks the buyer's deposits cover it.
+    const readAvailable = vi.fn(async () => (outcome === 'success' ? 3_200_000n : 3_199_999n));
+    (seller as unknown as { _config: SellerPaymentConfig })._config.readBuyerAvailableDeposit = readAvailable;
     const closeSpy = vi.mocked(seller.channelsClient.close);
     closeSpy.mockClear();
     const result = await seller.handleSpendingAuth(buyerPeerId, opening, sellerMux);
+    expect(result).toBe('reserved');
     expect(vi.mocked(seller.channelsClient.reserve).mock.calls[0]?.[3]).toBe(1_000_000n);
-    expect(topUpSpy.mock.calls[0]?.[1]).toBe(channelId);
-    expect(topUpSpy.mock.calls[0]?.[2]).toBe(650_000n);
-    expect(topUpSpy.mock.calls[0]?.[5]).toBe(4_200_000n);
+    // Nothing is topped up, and nothing settled, before the create is accepted.
+    expect(topUpSpy).not.toHaveBeenCalled();
     // The session channel is never superseded by the video channel.
     expect(seller.getChannelByPeer(buyerPeerId)?.sessionId).toBe(sessionId);
+    const ack = sellerMux.sentAuthAcks.at(-1)!;
+    expect(ack.channelId).toBe(channelId);
+    await buyer.handleAuthAck(sellerPeerId, ack);
+    expect(buyer.isOneOffChannelConfirmed(channelId)).toBe(true);
+    expect(seller.getReserveMax(channelId)).toBe(1_000_000n);
+    expect(seller.oneOffChannelCovers(channelId, 4_200_000n)).toBe(true);
+    expect(seller.claimOneOffChannel(channelId)).toBe(true);
+    // Checked when the create is claimed, just before it would reach the provider.
+    expect(await seller.fundOneOffCreate(channelId)).toBe(outcome === 'success');
+    expect((readAvailable.mock.calls[0] as unknown as [string])[0].toLowerCase()).toBe(buyerIdentity.wallet.address.toLowerCase());
 
     if (outcome === 'success') {
-      expect(result).toBe('reserved');
-      const ack = sellerMux.sentAuthAcks.at(-1)!;
-      expect(ack.channelId).toBe(channelId);
-      await buyer.handleAuthAck(sellerPeerId, ack);
-      expect(buyer.isOneOffChannelConfirmed(channelId)).toBe(true);
-      expect(seller.claimOneOffChannel(channelId)).toBe(true);
+      seller.markOneOffCreateAccepted(channelId);
+      await vi.waitFor(() => expect(seller.getReserveMax(channelId)).toBe(4_200_000n));
+      expect(topUpSpy.mock.calls[0]?.[1]).toBe(channelId);
+      expect(topUpSpy.mock.calls[0]?.[2]).toBe(650_000n);
+      expect(topUpSpy.mock.calls[0]?.[5]).toBe(4_200_000n);
 
       buyer.trackVideoJob(sellerPeerId, 'venice-video', 'job-1', video, 'video-request');
       expect(buyer.trackVideoRetrieve(sellerPeerId, 'venice-video', 'job-1', 'retrieve-request')).toBe(true);
@@ -222,7 +232,9 @@ describe('Full Payment Flow Integration', () => {
       expect(closeSpy.mock.calls[0]?.[2]).toBe(4_200_000n);
       expect(seller.isOneOffChannel(channelId)).toBe(false);
     } else {
-      expect(result).toBe('rejected');
+      // The handler answers 409 and releases the channel.
+      expect(await seller.closeOneOffChannel(channelId, 'deposits do not cover the price')).toBe(true);
+      expect(topUpSpy).not.toHaveBeenCalled();
       expect(closeSpy.mock.calls[0]?.[1]).toBe(channelId);
       expect(closeSpy.mock.calls[0]?.[2]).toBe(0n);
       expect(seller.getOneOffChannelForRequest(buyerPeerId, 'video-request')).toBeNull();

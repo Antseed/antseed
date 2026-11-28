@@ -2806,6 +2806,7 @@ export class AntseedNode extends EventEmitter {
     // Initialize SellerPaymentManager for seller role
     if (this._config.role === 'seller' && this._identity && this._channelStore &&
         payments.rpcUrl && payments.channelsAddress) {
+      const depositsClient = this._depositsClient;
       const sellerConfig: SellerPaymentConfig = {
         rpcUrl: payments.rpcUrl,
         ...(fallbackRpcUrls ? { fallbackRpcUrls } : {}),
@@ -2819,6 +2820,9 @@ export class AntseedNode extends EventEmitter {
           ? { serveWhileClosePending: payments.serveWhileClosePending }
           : {}),
         onReserveFailed: (failure) => this.emit('payment:reserve-failed', failure),
+        ...(depositsClient
+          ? { readBuyerAvailableDeposit: async (buyerEvmAddr: string) => (await depositsClient.getBuyerBalance(buyerEvmAddr)).available }
+          : {}),
       };
       this._sellerPaymentManager = new SellerPaymentManager(
         this._identity,

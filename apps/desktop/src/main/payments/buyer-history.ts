@@ -44,7 +44,10 @@ function records(value: unknown): Array<Record<string, unknown>> {
  *
  * - `channels`: `GET /_antseed/channels?all=1` (paid and one-off channels).
  *   Spend is the larger of the last amount the buyer signed and what the
- *   seller settled, as the gateway's ledger counts signed charges.
+ *   seller settled, as the gateway's ledger counts signed charges. A closed
+ *   one-off channel whose settlement the buyer read counts what it settled:
+ *   a seller may hold a video's serious fee, signed before the create, and
+ *   release the channel at 0 when its upstream refuses the create.
  * - `usagePoints`: the `channels` of `GET /_antseed/buyer-usage` (paid and
  *   free channels), for request counts, so free requests count too. One-off
  *   requests, which it leaves out, come from `channels`.
@@ -55,7 +58,8 @@ export function buyerLifetimeUsage(channels: unknown, usagePoints: unknown): Key
   for (const channel of records(channels)) {
     const signed = nonNegativeBigInt(channel['cumulativeSigned']);
     const settled = nonNegativeBigInt(channel['settledAmount']);
-    spent += settled > signed ? settled : signed;
+    const closedOneOff = channel['channelKind'] === 'one_off' && channel['status'] !== 'active' && channel['settledAmount'] != null;
+    spent += closedOneOff ? settled : settled > signed ? settled : signed;
     if (channel['channelKind'] === 'one_off') requests += count(channel['requestCount']);
   }
   for (const point of records(usagePoints)) requests += count(point['requestCount']);
