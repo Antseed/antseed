@@ -13,7 +13,8 @@ import { normalized } from './utils.js'
  * in the epoch opens its window and fixes its sellers (the eligible ones it found); later runs only
  * finish those sellers: their retries (`SELLER_FAILURE_ATTEMPTS`, `AUDITOR_FAILURE_ATTEMPTS`, spaced
  * like before) and their close calls' extra questions. A seller that turns up later gets no result
- * this epoch, and one that stops listing the model is given up once its retry is due
+ * this epoch, and one that stops listing the model, or that a run would now skip (priced above the
+ * model's cap, under the reputation floor, without ResponseAuth), is given up once its retry is due
  * (`decideRetryGiveUps`), keeping its result. Once none of the window's sellers has anything left,
  * the window closes and `verifier submit` sends the model's results together; nothing is submitted while it is open, so
  * the epoch's questions are not published before every seller has been asked them.

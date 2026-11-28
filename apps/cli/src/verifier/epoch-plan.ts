@@ -343,8 +343,11 @@ function applyRetryGiveUp(cells: Map<string, EpochCell>, key: string, entry: Ret
 /**
  * What a run changes. With a fresh buyer peer list (`offersModel`), a retry is given up once it could
  * have run (the spacing after its last attempt has passed, so a brief disappearance costs nothing) and
- * the seller doesn't offer the model. Such a give-up ends when the seller lists the model again, unless
- * the model's window has closed: `windowClosed` cells keep theirs, since nothing audits them any more.
+ * the seller doesn't offer the model, or offers it but a run would skip it (`refusal`: priced above the
+ * model's cap, under the reputation floor, without ResponseAuth): no run audits it again, so its retry would
+ * otherwise hold the model's window open to the end of the epoch. Such a give-up ends when the seller offers
+ * the model again and a run would audit it, unless the model's window has closed: `windowClosed` cells keep
+ * theirs, since nothing audits them any more.
  * A close call whose extra questions were published (`extraQuestionsPublished`) is given up for good,
  * whatever the peer list says, like a close call in a closed window. Without a fresh peer list
  * (`offersModel` null) nothing else is given up or restored.
@@ -353,6 +356,8 @@ export function decideRetryGiveUps(input: {
   cells: Iterable<EpochCell>
   nowSeconds: number
   offersModel: ((cell: EpochCell) => boolean) | null
+  /** Why a run would skip the seller although it offers the model, or null when a run would audit it. */
+  refusal?: (cell: EpochCell) => string | null
   windowClosed: (cell: EpochCell) => boolean
   extraQuestionsPublished?: (cell: EpochCell) => boolean
   /** A first look still to be recovered (`recoveringFirstLooks`): given up like a retry when its seller is gone. */
@@ -370,7 +375,8 @@ export function decideRetryGiveUps(input: {
       // A first look gets its retry back only while its window is open; a confirmation is no part of any window, so a
       // returning seller gets its report's retry back whether the model's window has closed or not.
       const windowAllows = cell.confirmationReport !== undefined || !input.windowClosed(cell)
-      if (!cell.givenUp.extraQuestionsPublished && input.offersModel?.(cell) && windowAllows) restored.push(cell.givenUp)
+      const auditable = input.offersModel?.(cell) === true && (input.refusal?.(cell) ?? null) === null
+      if (!cell.givenUp.extraQuestionsPublished && auditable && windowAllows) restored.push(cell.givenUp)
       else entries.push(cell.givenUp)
       continue
     }
@@ -396,7 +402,10 @@ export function decideRetryGiveUps(input: {
     if (cell.action !== 'retry' && cell.action !== 'extend' && !recovery) continue
     if (cell.lastAttemptAt === null) continue
     if (input.nowSeconds < cell.lastAttemptAt + (input.timing?.sellerRetrySpacingSeconds ?? SELLER_RETRY_SPACING_SECONDS)) continue
-    if (input.offersModel(cell)) continue
+    const offers = input.offersModel(cell)
+    const refusal = offers ? input.refusal?.(cell) ?? null : null
+    if (offers && refusal === null) continue
+    const due = cell.action === 'extend' ? 'extra questions were' : recovery ? 'new audit (its result cannot be sent) was' : 'retry was'
     const entry: RetryGiveUpV1 = {
       model: cell.model,
       peerId: cell.peerId,
@@ -405,7 +414,9 @@ export function decideRetryGiveUps(input: {
       lastAttemptAt: cell.lastAttemptAt,
       attempts: cell.attempts,
       givenUpAt: new Date(input.nowSeconds * 1_000).toISOString(),
-      reason: `its ${cell.action === 'extend' ? 'extra questions were' : recovery ? 'new audit (its result cannot be sent) was' : 'retry was'} due and the buyer's peers show it no longer offers ${cell.model}`,
+      reason: refusal === null
+        ? `its ${due} due and the buyer's peers show it no longer offers ${cell.model}`
+        : `its ${due} due and a run would skip it: ${refusal}`,
       ...(recovery ? { recovery: true as const } : {}),
     }
     entries.push(entry)
