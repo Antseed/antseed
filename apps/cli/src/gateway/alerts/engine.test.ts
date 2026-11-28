@@ -6,7 +6,8 @@ import { afterEach, beforeEach, test } from 'node:test'
 import type { SpendFeedState } from '../spend-feed.js'
 import { GatewayStore, type AlertDestinationRecord, type AlertEventGroup } from '../store.js'
 import type { AlertTransport } from './channels.js'
-import { decimalToUsdc, GatewayAlerts, type AlertWalletBalance } from './engine.js'
+import { decimalToUsdc } from '../money.js'
+import { GatewayAlerts, type AlertWalletBalance } from './engine.js'
 import type { AlertEvent } from './events.js'
 
 const DAY = 24 * 60 * 60 * 1000
@@ -90,6 +91,7 @@ test('decimalToUsdc parses the buyer decimal strings, negative included', () => 
   assert.equal(decimalToUsdc('12.5'), 12_500_000)
   assert.equal(decimalToUsdc('-0.100000'), -100_000)
   assert.equal(decimalToUsdc('abc'), null)
+  assert.equal(decimalToUsdc('1.1234567'), null)
   assert.equal(decimalToUsdc(null), null)
 })
 
@@ -360,6 +362,26 @@ test('a recovery superseded by the next alert stays dropped after the incident c
   await new Promise((resolve) => setTimeout(resolve, 60))
   await settle()
   assert.deepEqual(types(), ['balance.low', 'balance.low', 'balance.ok'], 'only the newest recovery')
+})
+
+test('a recovery is still resent after polls that find its condition over', async () => {
+  alerts = makeAlerts({ retryDelaysMs: [40] })
+  destination(['balance'])
+  store.setAlertSettings(workspaceId(), { lowBalanceUsdc: 10 * USD, topupTargetUsdc: null, limitWarnPercent: null, repeatMinutes: null })
+  balance = { available: '1.000000', wallet: null, stale: false }
+  await alerts.tick()
+  await settle()
+  failures = 1
+  balance = { available: '60.000000', wallet: null, stale: false }
+  await alerts.tick()
+  await settle()
+  // Healthy polls before the resend is due.
+  await alerts.tick()
+  await alerts.tick()
+  await settle()
+  await new Promise((resolve) => setTimeout(resolve, 70))
+  await settle()
+  assert.deepEqual(types(), ['balance.low', 'balance.ok'])
 })
 
 test('a resend is dropped when its destination stops taking that alert', async () => {

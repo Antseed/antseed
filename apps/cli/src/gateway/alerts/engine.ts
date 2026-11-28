@@ -11,6 +11,7 @@
 import { effectiveKeyLimits } from '../accounting.js'
 import { errorMessage } from '../errors.js'
 import { cappedPeriods, periodResetsAt, periodStart, type BudgetLevel, type BudgetLimits, type BudgetPeriod, type LimitBreach } from '../limits.js'
+import { decimalToUsdc } from '../money.js'
 import type { SpendFeedState } from '../spend-feed.js'
 import type { AlertDestinationRecord, AlertEventGroup, AlertIncidentRecord, AlertSettingsRecord, ApiKeyRecord, BudgetScope, GatewayStore, WorkspaceRecord } from '../store.js'
 import type { AlertTransport } from './channels.js'
@@ -85,16 +86,6 @@ function incidentKey(workspaceId: string, incident: string): string {
 /** Whether a destination is on and subscribed to `group` (to any group when undefined). */
 function takes(destination: AlertDestinationRecord, group: AlertEventGroup | undefined): boolean {
   return destination.enabled && (group === undefined ? destination.events.length > 0 : destination.events.includes(group))
-}
-
-/** Parses a decimal USD string ("12.500000", "-0.100000") into base units; null when it is not one. */
-export function decimalToUsdc(value: string | null): number | null {
-  if (value === null) return null
-  const match = /^(-)?(\d+)(?:\.(\d{1,6}))?$/.exec(value.trim())
-  if (!match) return null
-  const amount = Number(match[2]) * 1_000_000 + Number((match[3] ?? '').padEnd(6, '0'))
-  if (!Number.isSafeInteger(amount)) return null
-  return match[1] ? -amount : amount
 }
 
 export class GatewayAlerts {
@@ -342,13 +333,18 @@ export class GatewayAlerts {
     this._dispatch(this._destinations(workspace.id, event.group ?? undefined), event, incidents)
   }
 
-  /** Closes an incident; resends still waiting for its last alert or recovery are dropped. */
+  /**
+   * Closes an incident; resends of its alerts still waiting are dropped. Closing one that is not open
+   * changes nothing, so a recovery still being resent is kept through the polls that find it over.
+   */
   private _close(workspaceId: string, incident: string): AlertIncidentRecord | null {
+    const closed = this._store.closeAlertIncident(workspaceId, incident)
+    if (!closed) return null
     const key = incidentKey(workspaceId, incident)
     const previous = this._dispatches.get(key)
     if (previous) previous.current = false
     this._dispatches.delete(key)
-    return this._store.closeAlertIncident(workspaceId, incident)
+    return closed
   }
 
   /** Delivers `event` about `incidents` to each destination; it supersedes what was sent about them before. */

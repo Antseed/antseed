@@ -15,11 +15,11 @@ Alerts tell you about a problem before your requests start failing: a workspace 
 | --- | --- | --- |
 | Credits low (`balance.low`) | The credits the workspace wallet can spend drop below your threshold. The gateway checks every few minutes. | Credits topped up (`balance.ok`) once they are back above it. |
 | Out of credits (`balance.empty`) | The buyer refused a request because the wallet has too few credits. This alert works without a threshold. | Credits topped up (`balance.ok`). |
-| Spend limit near (`limit.near`) | A key, member or workspace spend limit reaches your warning percent for its period. | The next period, or a raised limit. |
-| Spend limit reached (`limit.reached`) | A spend limit is used up, so its requests are refused. | The next period, or a raised limit. |
+| Spend limit near (`limit.near`) | A key, member or workspace spend limit reaches your warning percent for its period. | The next period, a raised limit or a removed key. No recovery alert is sent. |
+| Spend limit reached (`limit.reached`) | A spend limit is used up, so its requests are refused. | The next period, a raised limit or a removed key. No recovery alert is sent. |
 | Spend tracking down (`spend_tracking.down`) | For a few minutes the gateway cannot read spend from its buyer, so keys with a spend limit are refused. | Spend tracking recovered (`spend_tracking.ok`). |
 
-Each alert goes out once when its condition starts. A recovery goes out once when the condition ends. To get reminders, set **Repeat an open alert**; the alert is then sent again on that schedule until it resolves.
+Each alert goes out once when its condition starts. Credits and spend tracking alerts get one recovery when the condition ends; spend limit alerts end quietly. To get reminders, set **Repeat an open alert**; the alert is then sent again on that schedule until it resolves.
 
 ## Thresholds
 
