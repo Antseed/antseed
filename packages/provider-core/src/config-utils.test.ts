@@ -126,6 +126,13 @@ describe('parseServiceUnitBillingModelsJson', () => {
 });
 
 describe('parseServiceCapabilitiesJson', () => {
+  it('preserves seller-defined effort choices and rejects malformed or contradictory values', () => {
+    const capabilities = { model: { reasoning: true, reasoningEfforts: ['adaptive', 'deep-analysis'] } };
+    expect(parseServiceCapabilitiesJson(JSON.stringify(capabilities))).toEqual(capabilities);
+    for (const caps of [{ reasoningEfforts: [''] }, { reasoningEfforts: ['high', 'high'] }, { reasoning: false, reasoningEfforts: ['high'] }]) {
+      expect(() => parseServiceCapabilitiesJson(JSON.stringify({ model: caps }))).toThrow('reasoningEfforts');
+    }
+  });
   it('returns undefined for empty input', () => {
     expect(parseServiceCapabilitiesJson(undefined)).toBeUndefined();
     expect(parseServiceCapabilitiesJson('{}')).toBeUndefined();

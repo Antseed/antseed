@@ -1,5 +1,5 @@
 import type { ServiceCapabilities, ServiceCapabilityModality, SpeechOptions, VideoInputKind, VideoOptions } from "../../peer-metadata.js";
-import { SERVICE_CAPABILITY_MODALITIES, SPEECH_METADATA_VERSION, VIDEO_INPUT_KINDS } from "../../peer-metadata.js";
+import { REASONING_EFFORTS_METADATA_VERSION, SERVICE_CAPABILITY_MODALITIES, SPEECH_METADATA_VERSION, VIDEO_INPUT_KINDS } from "../../peer-metadata.js";
 import type { ProviderField } from "../field.js";
 import { compareCodeUnits, type MetadataReader, type MetadataWriter, serviceMap } from "../wire.js";
 
@@ -22,6 +22,8 @@ const CAP_VAL_STRUCTURED_OUTPUT = 1 << 2;
 const CAP_VAL_VIDEO_OPTIONS = 1 << 3;
 /** v15+: a speech options block follows the video options. */
 const CAP_VAL_SPEECH_OPTIONS = 1 << 4;
+/** v19+: a reasoning effort list follows the speech options. */
+const CAP_VAL_REASONING_EFFORTS = 1 << 5;
 const CAP_VALUE_MASK = CAP_VAL_REASONING | CAP_VAL_TOOL_USE | CAP_VAL_STRUCTURED_OUTPUT
   | CAP_VAL_VIDEO_OPTIONS;
 const SPEECH_HAS_VOICES = 1 << 0;
@@ -149,11 +151,14 @@ function decodeSpeechOptions(reader: MetadataReader): SpeechOptions {
 /**
  * [count:1|2] then [serviceLen:1][service:N][presence:1][contextWindow:4?][maxOutputTokens:4?]
  * [inputs:1?][outputs:1?][valueBits:1][parameterCount:1 + params?][videoOptions?][speechOptions? (v15+)]
+ * [reasoningEffortCount:1 + efforts? (v19+)]. An empty effort list sets its value bit with a zero
+ * count, so "none" stays distinct from "unknown".
  */
 export const serviceCapabilitiesField: ProviderField = {
   key: "serviceCapabilities",
   encode(writer, provider, ctx) {
     const speechAllowed = ctx.version >= SPEECH_METADATA_VERSION;
+    const reasoningEffortsAllowed = ctx.version >= REASONING_EFFORTS_METADATA_VERSION;
     // Code-unit sort, not localeCompare: buyers verify signatures by re-encoding
     // decoded metadata, so entry order must not depend on the verifier's locale.
     const entries = Object.entries(provider.serviceCapabilities ?? {}).sort(([a], [b]) => compareCodeUnits(a, b));
@@ -183,6 +188,10 @@ export const serviceCapabilitiesField: ProviderField = {
         if (!speechAllowed) throw new Error(`Speech capabilities require metadata version ${SPEECH_METADATA_VERSION}`);
         valueBits |= CAP_VAL_SPEECH_OPTIONS;
       }
+      if (caps.reasoningEfforts !== undefined) {
+        if (!reasoningEffortsAllowed) throw new Error(`Reasoning efforts require metadata version ${REASONING_EFFORTS_METADATA_VERSION}`);
+        valueBits |= CAP_VAL_REASONING_EFFORTS;
+      }
       writer.u8(valueBits);
       if (caps.supportedParameters !== undefined) {
         // Code-unit sort for the same reason as the entry sort above.
@@ -195,10 +204,19 @@ export const serviceCapabilitiesField: ProviderField = {
       }
       if (caps.video !== undefined) encodeVideoOptions(writer, caps.video);
       if (caps.speech !== undefined) encodeSpeechOptions(writer, caps.speech);
+      if (caps.reasoningEfforts !== undefined) {
+        // Code-unit sort for the same reason as the entry sort above.
+        const efforts = [...caps.reasoningEfforts].sort(compareCodeUnits);
+        if (efforts.length > 255) throw new Error(`Too many reasoning efforts (${efforts.length})`);
+        writer.u8(efforts.length);
+        for (const effort of efforts) writer.utf8(effort);
+      }
     }
   },
   decode(reader, provider, ctx) {
-    const valueMask = ctx.version >= SPEECH_METADATA_VERSION ? CAP_VALUE_MASK | CAP_VAL_SPEECH_OPTIONS : CAP_VALUE_MASK;
+    let valueMask = CAP_VALUE_MASK;
+    if (ctx.version >= SPEECH_METADATA_VERSION) valueMask |= CAP_VAL_SPEECH_OPTIONS;
+    if (ctx.version >= REASONING_EFFORTS_METADATA_VERSION) valueMask |= CAP_VAL_REASONING_EFFORTS;
     const count = reader.serviceEntryCount(ctx.wideServiceCounts);
     const serviceCapabilities: Record<string, ServiceCapabilities> = serviceMap();
     for (let i = 0; i < count; i += 1) {
@@ -230,6 +248,12 @@ export const serviceCapabilitiesField: ProviderField = {
       }
       if (valueBits & CAP_VAL_VIDEO_OPTIONS) caps.video = decodeVideoOptions(reader);
       if (valueBits & CAP_VAL_SPEECH_OPTIONS) caps.speech = decodeSpeechOptions(reader);
+      if (valueBits & CAP_VAL_REASONING_EFFORTS) {
+        const effortCount = reader.u8();
+        const efforts: string[] = [];
+        for (let e = 0; e < effortCount; e += 1) efforts.push(reader.utf8());
+        caps.reasoningEfforts = efforts;
+      }
       serviceCapabilities[service] = caps;
     }
     if (Object.keys(serviceCapabilities).length > 0) provider.serviceCapabilities = serviceCapabilities;

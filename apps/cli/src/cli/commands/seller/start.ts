@@ -55,6 +55,7 @@ import { AntAgentProvider, loadAntAgent, type AntAgentDefinition } from '@antsee
 import { resolvePluginPackage } from '../../../plugins/registry.js'
 import { startupReachabilityWarning } from './reachability.js'
 import { initializeProvider } from './provider-init.js'
+import { capabilitiesBeforeInit, restoreDivergedCapabilities, type InitializedProvider } from './same-name-capabilities.js'
 import { redact, redactUrlsIn, sharedChainProvider } from '../../../proxy/chain-rpc.js'
 import { rpcUsage, withRpcSource } from '../../../proxy/rpc-sources.js'
 import { DEFAULT_LOW_BALANCE_USD, SellerAlerts } from '../../../seller-alerts/alerts.js'
@@ -660,6 +661,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       await ensurePluginsUpToDate(selectedProviderPackages)
 
       const providers: Provider[] = []
+      const initialized: InitializedProvider[] = []
       for (const providerName of selectedProviderNames) {
         const providerCfg = effectiveSellerConfig.providers[providerName]!
         const packageName = resolvePluginPackage(providerCfg.plugin)
@@ -684,6 +686,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
             ANTSEED_DATA_DIR: globalOpts.dataDir,
           }
           const provider = await plugin.createProvider(pluginConfig)
+          initialized.push({ provider, before: capabilitiesBeforeInit(provider) })
           if (provider.init) {
             spinner.text = `Validating credentials for "${providerName}"...`
             const ready = await initializeProvider(provider, effectiveSellerConfig.healthCheck?.enabled !== false)
@@ -698,6 +701,8 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
           process.exit(1)
         }
       }
+      // Same-name providers whose upstreams filled a shared service differently announce what the config sets.
+      for (const warning of restoreDivergedCapabilities(initialized)) console.log(chalk.yellow(`  ${warning}`))
 
       const bootstrapNodes = config.network.bootstrapNodes.length > 0
         ? toBootstrapConfig(parseBootstrapList(config.network.bootstrapNodes))

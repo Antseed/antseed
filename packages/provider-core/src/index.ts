@@ -29,3 +29,15 @@ export { DEFAULT_MAX_VIDEO_DOWNLOADS, MAX_VIDEO_DOWNLOADS_CONFIG_FIELD, VIDEO_DO
 export { FAL_PLATFORM_URL, FAL_SCHEMA_URL, falEndpointInput, falErrorReason, falUpstreamAccountStatus, isFalEndpointId, readFalAccount, readFalModelStatuses, type FalAccount, type FalEndpointInput, type FalSchemaProperty } from './fal.js';
 export { openAiError } from './openai-error.js';
 export { ANTHROPIC_DEFAULT_VERSION, anthropicMessagesRelay, anthropicRejectedSamplingFields } from './anthropic-messages.js';
+export {
+  REASONING_EFFORT_PROTOCOLS,
+  UPSTREAM_LISTING_MAX_BYTES,
+  UPSTREAM_LISTING_TIMEOUT_MS,
+  fetchUpstreamJson,
+  fillReasoningCapabilities,
+  listingPlace,
+  namesReasoningLevel,
+  servicesAwaitingReasoning,
+  warnUnreadListing,
+  type UpstreamReasoning,
+} from './upstream-reasoning.js';

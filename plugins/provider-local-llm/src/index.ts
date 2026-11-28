@@ -1,5 +1,21 @@
 import type { AntseedProviderPlugin, Provider, ServiceApiProtocol } from '@antseed/node';
-import { BaseProvider, StaticTokenProvider, parseServiceAliasMap, parseServiceCapabilitiesJson, parseServicePricingJson } from '@antseed/provider-core';
+import { BaseProvider, StaticTokenProvider, parseServiceAliasMap, parseServiceCapabilitiesJson, parseServicePricingJson, servicesAwaitingReasoning } from '@antseed/provider-core';
+import { announceLocalReasoning } from './reasoning.js';
+
+/** A relay that reads the local server's model metadata after its token is ready. */
+class LocalLlmProvider extends BaseProvider {
+  constructor(
+    private readonly afterInit: (() => Promise<void>) | undefined,
+    config: ConstructorParameters<typeof BaseProvider>[0],
+  ) {
+    super(config);
+  }
+
+  override async init(): Promise<void> {
+    await super.init();
+    await this.afterInit?.();
+  }
+}
 
 function parseNonNegativeNumber(raw: string | undefined, key: string, fallback: number): number {
   const parsed = raw === undefined ? fallback : Number.parseFloat(raw);
@@ -60,11 +76,25 @@ const plugin: AntseedProviderPlugin = {
       : [];
     const serviceApiProtocols = buildServiceApiProtocols(allowedServices, 'openai-chat-completions');
     const serviceRewriteMap = parseServiceAliasMap(config['ANTSEED_SERVICE_ALIAS_MAP_JSON']);
-    const serviceCapabilities = parseServiceCapabilitiesJson(config['ANTSEED_SERVICE_CAPABILITIES_JSON']);
+    const configuredCapabilities = parseServiceCapabilitiesJson(config['ANTSEED_SERVICE_CAPABILITIES_JSON']);
+    const fillsReasoning = servicesAwaitingReasoning(allowedServices, serviceApiProtocols, configuredCapabilities).length > 0;
+    // Filled in place at init, so the provider holds the object even when the seller configured none.
+    const serviceCapabilities = configuredCapabilities ?? (fillsReasoning ? {} : undefined);
 
     const tokenProvider = apiKey ? new StaticTokenProvider(apiKey) : undefined;
+    // Ollama and llama.cpp list each model's reasoning levels; fill the ones the seller left unset.
+    const announceReasoning = fillsReasoning && serviceCapabilities
+      ? () => announceLocalReasoning(
+          baseUrl,
+          apiKey ? { authorization: `Bearer ${apiKey}` } : {},
+          allowedServices,
+          serviceApiProtocols,
+          serviceCapabilities,
+          (service) => serviceRewriteMap?.[service.trim().toLowerCase()] ?? service,
+        )
+      : undefined;
 
-    return new BaseProvider({
+    return new LocalLlmProvider(announceReasoning, {
       name: 'local-llm',
       services: allowedServices,
       pricing,
