@@ -79,11 +79,15 @@ export interface BuyerCommandHarness {
   dataDir: string;
   seed(...rows: StoredChannel[]): void;
   channel(sessionId: string): StoredChannel | null;
-  /** Run `antseed buyer <args>` against the chain given per channel id (an Error makes that read fail). */
+  /**
+   * Run `antseed buyer <args>` against the chain given per channel id (an Error makes that read fail).
+   * The buyer is its own authorized wallet unless `authorizedWallet` names another (zero address: none set).
+   */
   run(
     register: (buyerCmd: Command) => void,
     args: string[],
     chain: Record<string, ChannelInfo | Error>,
+    options?: { authorizedWallet?: string },
   ): Promise<{ stdout: string; stderr: string }>;
 }
 
@@ -107,7 +111,7 @@ export async function buyerCommandHarness(context: TestContext): Promise<BuyerCo
     dataDir,
     seed: (...rows) => withStore((store) => rows.forEach((row) => store.upsertChannel(row))),
     channel: (sessionId) => withStore((store) => store.getChannel(sessionId)),
-    async run(register, args, chain) {
+    async run(register, args, chain, options = {}) {
       context.mock.method(ChannelsClient.prototype, 'getSession', async (channelId: string) => {
         const state = chain[channelId] ?? new Error(`no chain state stubbed for ${channelId}`);
         if (state instanceof Error) throw state;
@@ -116,6 +120,7 @@ export async function buyerCommandHarness(context: TestContext): Promise<BuyerCo
       context.mock.method(DepositsClient.prototype, 'getBuyerBalance', async () => {
         throw new Error('deposits are not stubbed');
       });
+      context.mock.method(DepositsClient.prototype, 'getOperator', async () => options.authorizedWallet ?? identity.wallet.address);
       const log = context.mock.method(console, 'log', () => {});
       const warn = context.mock.method(console, 'warn', () => {});
       const error = context.mock.method(console, 'error', () => {});

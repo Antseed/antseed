@@ -279,6 +279,7 @@ export class GatewayServer {
   private _server: http.Server | null = null
   private _port = 0
   private _retentionTimer: ReturnType<typeof setInterval> | null = null
+  private _backfilling: Promise<void> | null = null
   private _pruning: Promise<number> | null = null
   private readonly _exporter: OtlpExporter
 
@@ -304,10 +305,46 @@ export class GatewayServer {
       this._server!.listen(this._options.listenPort ?? 0, this._options.listenHost ?? '127.0.0.1', () => resolve())
     })
     this._port = (this._server.address() as AddressInfo).port
+    this._maintain()
+    this._backfillUsageRollup()
     void this.pruneRequestLog()
-    this._retentionTimer = setInterval(() => { void this.pruneRequestLog() }, RETENTION_SWEEP_MS)
+    this._retentionTimer = setInterval(() => {
+      this._maintain()
+      void this.pruneRequestLog()
+    }, RETENTION_SWEEP_MS)
     this._retentionTimer.unref?.()
     return this._port
+  }
+
+  /** The store's housekeeping (the rollup's planner statistics and empty rows); never fatal. */
+  private _maintain(): void {
+    try {
+      this._options.store.runMaintenance()
+    } catch (error) {
+      this._log(`gateway could not maintain its database: ${errorMessage(error)}`)
+    }
+  }
+
+  /**
+   * Rolls up usage recorded before the hourly rollup existed, in the
+   * background, one chunk per event-loop turn; usage reads use the request log
+   * and the ledger until it is done. Stops with the gateway (the next start
+   * resumes it), then applies the retention it held back.
+   */
+  private _backfillUsageRollup(): void {
+    const store = this._options.store
+    if (this._backfilling || store.usageRollupReady()) return
+    const startedAt = Date.now()
+    this._log('gateway is rolling up the usage recorded so far; usage pages read the request log until it is done')
+    this._backfilling = store.backfillUsageRollup({ shouldStop: () => this._server === null })
+      .then((done) => {
+        if (!done) return
+        this._log(`gateway rolled up the usage recorded so far in ${Math.round((Date.now() - startedAt) / 1000)} s`)
+        void this.pruneRequestLog()
+      }, (error: unknown) => {
+        this._log(`gateway could not roll up usage: ${errorMessage(error)}`)
+      })
+      .finally(() => { this._backfilling = null })
   }
 
   /**
@@ -337,6 +374,8 @@ export class GatewayServer {
     this._port = 0
     if (this._retentionTimer) clearInterval(this._retentionTimer)
     this._retentionTimer = null
+    // The backfill sees the gateway stopping and ends after its current chunk.
+    await this._backfilling
     // No retry can reach a stopping gateway: cancel the streams waiting for one. Streams a client is
     // reading finish through the drain below, like any other request in flight.
     const streamResume = this._options.streamResume ?? null
@@ -819,8 +858,11 @@ export class GatewayServer {
         }
         try {
           const error = status >= 400 ? gatewayError ?? parseErrorBody(Buffer.concat(errorChunks), status) : null
-          store.finishRequest(tag, { status, buyerRequestId, error })
-          if (usage) store.recordResponseUsage(tag, usage)
+          // The outcome and its tokens in one commit.
+          store.transaction(() => {
+            store.finishRequest(tag, { status, buyerRequestId, error })
+            if (usage) store.recordResponseUsage(tag, usage)
+          })
           if (observability.logContent) store.recordRequestContent(tag, { requestBody: requestContent, responseBody: responseContent })
         } catch (error) {
           this._log(`gateway could not record request ${tag}: ${errorMessage(error)}`)

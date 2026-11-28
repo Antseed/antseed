@@ -16,6 +16,8 @@ import { postUnix } from './unix-http.js'
 const DEFAULT_DSTACK_SOCKETS = ['/var/run/dstack.sock', '/run/dstack.sock']
 const DSTACK_REQUEST = { timeoutMs: 20_000, timeoutMessage: 'dstack request timed out' }
 
+const appComposeBySocket = new Map<string, Promise<string | undefined>>()
+
 function msg(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
@@ -36,8 +38,21 @@ export async function generateDstackQuote(reportData: Uint8Array, socketPath?: s
   return (await generateDstackAttestation(reportData, socketPath)).quote
 }
 
-/** The app-compose.json the CVM was measured with (tcb_info.app_compose of the agent's Info), if available. */
-async function readAppCompose(socketPath: string): Promise<string | undefined> {
+/** Share the Info request and retain the compose measured at boot once it is available. */
+function readAppCompose(socketPath: string): Promise<string | undefined> {
+  const cached = appComposeBySocket.get(socketPath)
+  if (cached) return cached
+
+  const pending = fetchAppCompose(socketPath).then((compose) => {
+    if (compose === undefined) appComposeBySocket.delete(socketPath)
+    return compose
+  })
+  appComposeBySocket.set(socketPath, pending)
+  return pending
+}
+
+/** The app-compose.json from tcb_info.app_compose of the agent's Info, if available. */
+async function fetchAppCompose(socketPath: string): Promise<string | undefined> {
   try {
     const { status, body } = await postUnix(socketPath, '/Info', '{}', DSTACK_REQUEST)
     if (status !== 200) return undefined

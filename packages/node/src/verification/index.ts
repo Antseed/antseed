@@ -15,5 +15,6 @@ export {
   type ResponseAuthSampleInput,
   type StoredVerificationSample,
   type VerificationSampleConfig,
+  type VerificationSamplePruneResult,
 } from './samples.js';
-export { VerificationStorage, type StoredResponseAuth } from './storage.js';
+export { VerificationStorage, type PruneResponseAuthsOptions, type StoredResponseAuth } from './storage.js';

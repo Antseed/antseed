@@ -1,39 +1,30 @@
 import type {JSX} from 'react';
-import {Section, SectionHead} from '../../components';
-import {PixelAxis} from './PixelAxis';
-import {TYPEFACES, type Typeface} from './typefaces';
+import clsx from 'clsx';
+import {Section} from '../../components';
+import {Files, Head, kit} from './Kit';
 import styles from './Type.module.css';
 
-function Specimen({face}: {face: Typeface}): JSX.Element {
-  return (
-    <li className={styles.row} data-rv="">
-      <div className={styles.meta}>
-        <h3 className={styles.name}>{face.name}</h3>
-        <p className={styles.use}>{face.use}</p>
-        <p className={styles.detail}><code>{face.token}</code> · {face.weights}</p>
-      </div>
-      <div className={styles.specimen}>
-        {face.specimen === 'pixel'
-          ? <PixelAxis />
-          : <p className={styles[face.specimen]}>{face.sample}</p>}
-      </div>
-    </li>
-  );
-}
-
-/** The four faces, each with a specimen; Geist Pixel with its ELSH axis. */
+/** The two faces, as one big letter each. */
 export default function Type(): JSX.Element {
   return (
-    <Section cmp="brand/type" id="type" labelledBy="type-title" pad="all">
-      <SectionHead
-        eyebrow="Type"
-        id="type-title"
-        title={['Letters and dots,', 'one family.']}
-        sub="Titles are set in a face made of round dots. Everything people read is Geist, controls are Instrument Sans, and code is Geist Mono. Sentence case everywhere, two weights only: 400 and 500."
-      />
-      <ul className={styles.rows}>
-        {TYPEFACES.map((f) => <Specimen key={f.name} face={f} />)}
-      </ul>
+    <Section cmp="brand/type" id="type" labelledBy="type-title" railClassName={kit.rail}>
+      <Head eyebrow="Type" id="type-title" title={['Letters and dots,', 'one family.']} />
+      <div className={kit.pair}>
+        <div className={clsx(kit.cell, kit.lineTop, styles.face)}>
+          <div className={clsx(styles.letters, styles.pixel)} aria-hidden="true">Aa</div>
+          <div className={kit.cap}>
+            <div><p className={kit.capTitle}>Geist Pixel</p><p className={kit.meta}>Titles</p></div>
+            <Files items={[{label: 'TTF', href: '/brand/downloads/fonts/GeistPixel-VariableFont_ELSH.ttf'}]} />
+          </div>
+        </div>
+        <div className={clsx(kit.cell, kit.lineTop, kit.lineLeft, styles.face)}>
+          <div className={clsx(styles.letters, styles.sans)} aria-hidden="true">Aa</div>
+          <div className={kit.cap}>
+            <div><p className={kit.capTitle}>Geist</p><p className={kit.meta}>Everything else</p></div>
+            <span className={styles.external}><a href="https://fonts.google.com/specimen/Geist" target="_blank" rel="noopener noreferrer">Google Fonts&nbsp;↗</a></span>
+          </div>
+        </div>
+      </div>
     </Section>
   );
 }

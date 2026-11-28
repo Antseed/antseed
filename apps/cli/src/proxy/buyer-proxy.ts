@@ -1,7 +1,7 @@
 import { nativeVideoRoute, type NativeVideoProtocol } from '@antseed/api-adapter'
 import { ResourceRoutes } from './resource-routes.js'
 import { prepareVideoRequest, recordVideoAcceptance } from './native-video-proxy.js'
-import { downloadVideo } from './video-download.js'
+import { downloadVideo, VideoDownloadSlots } from './video-download.js'
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http'
 import { BUYER_SHUTDOWN_DRAIN_MS } from '../shutdown-timeouts.js'
 import { randomUUID } from 'node:crypto'
@@ -81,6 +81,7 @@ import {
   type StreamingResponseAdapter,
   transformRequest,
   transformResponse,
+  withoutAdapterReasoningItems,
 } from './service-api-adapter.js'
 import {
   DEBUG,
@@ -176,6 +177,7 @@ import { ChainReadCache } from './chain-read-cache.js'
 import { isClientCredentialHeader } from './credential-headers.js'
 import { nonLocalRequestReason } from './local-request-guard.js'
 import { loadConfig } from '../config/loader.js'
+import { DEFAULT_BUYER_MAX_VIDEO_DOWNLOADS } from '../config/defaults.js'
 import { InvalidRouterOptionsError, ModelRoutingClient, routingClientAdapter, routingProtocolOfTarget, validateRouterOptions, type ModelRoutingClientApi } from '@antseed/router-core'
 import {
   GATEWAY_CONTROL_HEADER,
@@ -294,6 +296,8 @@ export interface BuyerProxyConfig {
   settingOverrides?: string[]
   /** Anonymous request telemetry (docs/telemetry.md); absent sends nothing. */
   telemetry?: BuyerTelemetry
+  /** `buyer.maxVideoDownloads`: finished videos streamed to clients at once. Default 6. */
+  maxVideoDownloads?: number
 }
 
 /** The DepositsClient reads `GET /_antseed/balances` needs. */
@@ -1464,6 +1468,7 @@ export class BuyerProxy {
 
   private _stateWriteChain: Promise<void> = Promise.resolve()
   private readonly _resourceRoutes = new ResourceRoutes()
+  private readonly _videoDownloadSlots: VideoDownloadSlots
   /** Retrieves of one video job run one at a time, so a job retired as failed cannot be delivered by a retrieve already under way. */
   private readonly _videoJobQueues = new Map<string, Promise<void>>()
   /** Jobs whose retirement is being saved: left out of the saved routes, still routable in memory until the save succeeds. */
@@ -1550,6 +1555,7 @@ export class BuyerProxy {
   private readonly _restartAllowedAt: number
 
   constructor(config: BuyerProxyConfig) {
+    this._videoDownloadSlots = new VideoDownloadSlots(config.maxVideoDownloads ?? DEFAULT_BUYER_MAX_VIDEO_DOWNLOADS)
     this._minPeerReputation = config.minPeerReputation ?? null
     this._maxPricing = config.maxPricing ? { ...config.maxPricing } : null
     this._maxReserveAmountUsdc = config.maxReserveAmountUsdc ?? null
@@ -5752,12 +5758,14 @@ export class BuyerProxy {
           to: strategy.from,
           streamRequested: transformed.streamRequested,
           fallbackModel: transformed.requestedModel,
+          includeReasoning: transformed.includeReasoning,
         }) ?? response
       if (transformed.streamRequested) {
         streamResponseAdapter = createStreamingAdapter({
           from: strategy.to,
           to: strategy.from,
           fallbackModel: transformed.requestedModel,
+          includeReasoning: transformed.includeReasoning,
         })
         if (!streamResponseAdapter) {
           res.writeHead(502, { 'content-type': 'text/plain' })
@@ -5765,6 +5773,10 @@ export class BuyerProxy {
           return { done: true }
         }
       }
+    } else if (requestProtocol === 'openai-responses') {
+      // Earlier turns of the thread may have been translated from a chat seller. A Responses seller cannot
+      // resolve the reasoning items the adapter made there, so they are dropped; nothing else changes.
+      requestForPeer = withoutAdapterReasoningItems(requestForPeer)
     }
 
     if (DEBUG()) {
@@ -5795,7 +5807,7 @@ export class BuyerProxy {
           },
         }, {
           signal, pinned: true, ...(buyerIdentity ? { buyerIdentity } : {}), ...(teeBinding ? { channelBinding: teeBinding } : {}),
-        }), requestSignal, () => this._retireVideoJob(protocol, resourceId), (by) => {
+        }), requestSignal, this._videoDownloadSlots, () => this._retireVideoJob(protocol, resourceId), (by) => {
           // On the trace, not in the result: telemetry only. The result feeds routing, which a video does not change.
           const trace = traceFor(res)
           if (trace) trace.interrupted = by

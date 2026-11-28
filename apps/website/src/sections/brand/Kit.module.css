@@ -1,0 +1,56 @@
+/* The page's grammar: one big asset per section, ruled in dotted lines that run under the content, so a line never crosses a colour or a painting. */
+.rail { padding-top: 96px; }
+.head { padding-bottom: 56px; }
+
+.cell { composes: dots from '../../components/dots.module.css'; }
+.cell::before { z-index: -1; }
+.lineTop { --dots-top: 2px; }
+.lineLeft { --dots-left: 2px; }
+
+.pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+.bar {
+  composes: dots from '../../components/dots.module.css';
+  --dots-top: 2px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px 24px;
+  min-height: 64px;
+  padding: 0 32px 0 var(--site-pad);
+}
+.bar::before { z-index: -1; }
+
+.meta { margin: 0; font: 400 14px/20px var(--site-font); color: var(--site-text-small); }
+.files { display: flex; flex: none; align-items: center; gap: 16px; font: 500 14px/20px var(--site-font); }
+.files a { color: var(--site-accent); }
+.files a:hover { color: var(--site-accent); text-decoration: underline; text-underline-offset: 3px; }
+
+/* a caption under an asset */
+.cap {
+  position: relative;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  min-height: 48px;
+  padding: 20px 32px;
+  background: radial-gradient(circle at 1px 1px, var(--site-dot) .85px, #0000 1.25px) 0 0 / 8px 2px repeat-x;
+}
+.capTitle { margin: 0; font: 400 22px/28px var(--site-font-pixel); font-variation-settings: 'ELSH' 40; color: var(--site-text); }
+
+/* what shows by day, what shows by night */
+.night { display: none; }
+:global(:root[data-theme='dark']) .day { display: none; }
+:global(:root[data-theme='dark']) .night { display: contents; }
+
+@media (max-width: 899px) {
+  .pair { grid-template-columns: minmax(0, 1fr); }
+  .bar { padding: 12px 16px; }
+  .cap { padding: 16px; }
+}
+@media (max-width: 760px) {
+  .rail { padding-top: 72px; }
+  .head { padding-bottom: 40px; }
+  .bar { flex-wrap: wrap; }
+}

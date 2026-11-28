@@ -8,6 +8,7 @@ import { TeeVerification } from './tee-verification.js';
 const peer = { peerId: 'a'.repeat(40), capabilities: ['verifier.antseed-verifier'] };
 const strict = { require: true, prefer: ['antseed-verifier'] };
 const pass: VerifyOutcome = { ok: true, verified: true, sellerNodeVerified: true, sdk: 'antseed-verifier' };
+const failAttestation = async () => ({ ok: false, verified: false, reason: 'Display failure' });
 
 test('display checks reuse successful evidence for 24 hours without extending it on reads', async () => {
   let now = 100;
@@ -80,6 +81,51 @@ test('display failures keep the short TTL and capability changes discard day-lon
   service.close();
   assert.deepEqual(service.snapshot([changed]).evidence, []);
   assert.equal((await service.verifyForDisplay(changed, run)).ok, false);
+});
+
+test('routing and display share failure backoff up to one hour', async () => {
+  const schedules = [[0.5, [5, 10, 20, 40, 60]], [0, [5, 8]], [1, [5, 12]]] as const;
+  for (const [random, delays] of schedules) {
+    let now = 100;
+    const service = new TeeVerification(strict, () => now, () => random);
+    for (const minutes of delays) {
+      await service.verifyForDisplay(peer, failAttestation);
+      now += minutes * 60_000 - 1;
+      assert.equal(service.snapshot([peer]).evidence[0]?.expiresAt, now + 1);
+      assert.equal((await service.verify(peer, strict, async () => pass)).ok, false);
+      now += 1;
+    }
+  }
+});
+
+test('a display failure stays in date after a newer identity failure expires', async () => {
+  let now = 100;
+  const service = new TeeVerification(strict, () => now, () => 0.5);
+  await service.verifyForDisplay(peer, failAttestation);
+  now += TEE_MAX_AGE_MS;
+  await service.verifyForDisplay(peer, async () => ({ ok: false, verified: false, transient: true }));
+  await service.verifyForDisplay(peer, failAttestation);
+  assert.equal(service.snapshot([peer]).evidence[0]?.expiresAt, now + 2 * TEE_MAX_AGE_MS);
+  now += 1;
+  await service.verify(peer, strict, async () => ({ ok: false, verified: false, reason: 'Identity failure' }), false, 'identity-1');
+  assert.equal(service.teeFailure(peer), 'Identity failure');
+  now += TEE_MAX_AGE_MS;
+  assert.equal(service.teeFailure(peer), 'Display failure');
+});
+
+test('a seller-node pass resets backoff and a generic pass expires in five minutes', async () => {
+  let now = 100;
+  const service = new TeeVerification(strict, () => now);
+  await service.verify(peer, strict, failAttestation);
+  now += TEE_MAX_AGE_MS;
+  await service.verify(peer, strict, async () => pass);
+  now += TEE_MAX_AGE_MS;
+  await service.verify(peer, strict, failAttestation);
+  assert.equal(service.snapshot([peer]).evidence[0]?.expiresAt, now + TEE_MAX_AGE_MS);
+  now += TEE_MAX_AGE_MS;
+  await service.verify(peer, strict, async () => ({ ...pass, sellerNodeVerified: false }));
+  now += TEE_MAX_AGE_MS;
+  assert.equal((await service.verify(peer, strict, failAttestation)).ok, false);
 });
 
 test('evidence cache never reuses an optional routing allowance as required verification', async () => {

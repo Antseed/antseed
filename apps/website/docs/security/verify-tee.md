@@ -105,7 +105,7 @@ The desktop app runs a gateway, so it has no verification setting of its own: op
 
 1. After a seller is selected and before any payment negotiation, the buyer challenges it on the reserved route `/_antseed/attest/<verifier-id>` over the existing encrypted connection. Attestation is never metered or charged.
 2. The check has a 30-second timeout.
-3. Routing reuses a seller's evidence for at most five minutes. Failures are not cached as routing verdicts.
+3. Routing reuses a passing check for at most five minutes. An initial failed TEE check is cached for five minutes, and each consecutive failure doubles the base retry delay, with some randomness and a limit of one hour.
 4. On failure, best-effort mode routes anyway and logs `did not pass ... (optional — routing anyway)`. Required mode fails the request with `502` and the failed claims.
 
 ## The trust boundary

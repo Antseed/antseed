@@ -712,6 +712,36 @@ test('a seller still listed but no longer offering the model is given up, and on
   })
 }))
 
+test('a seller still listing the model but refused by the run (priced above its cap) is given up, and its window closes', LANE_TIMEOUT, () => withScenario(async (scenario) => {
+  await firstRunFails(scenario, [FAILING])
+  await afterRetrySpacing(async () => {
+    // It raised its price after its first look: the planner skips it, so no run would ever audit it again.
+    scenario.snapshots = [snapshot([seller(FAILING, ['model-a'], ['model-a'])])]
+    scenario.audit = async () => undefined
+    await scenario.run()
+
+    assert.deepEqual(scenario.log, [])
+    const [entry, ...rest] = await readRetryGiveUps(scenario.evidenceDir, EPOCH)
+    assert.equal(rest.length, 0)
+    assert.equal(entry?.peerId, FAILING)
+    assert.match(entry!.reason, /a run would skip it: refused/)
+    assert.equal((await readAuditWindow(scenario.evidenceDir, EPOCH, 'model-a'))?.state, 'closed')
+  })
+}))
+
+test('a refused seller\'s give-up is not taken back while it is still refused', LANE_TIMEOUT, () => withScenario(async (scenario) => {
+  await firstRunFails(scenario, [FAILING, STILL_LEFT])
+  await afterRetrySpacing(async () => {
+    // The other seller fails again, so its retry keeps the window open.
+    scenario.snapshots = [snapshot([seller(FAILING, ['model-a'], ['model-a']), seller(STILL_LEFT, ['model-a'])])]
+    await scenario.run()
+    await scenario.run()
+    assert.deepEqual((await readRetryGiveUps(scenario.evidenceDir, EPOCH)).map((entry) => entry.peerId), [FAILING])
+    assert.equal((await readAuditWindow(scenario.evidenceDir, EPOCH, 'model-a'))?.state, 'open')
+    assert.ok(!(await events(scenario)).some((entry) => entry.type === 'retry-restored'))
+  })
+}))
+
 test('a seller gone before its retry is due keeps the retry and the window', LANE_TIMEOUT, () => withScenario(async (scenario) => {
   await firstRunFails(scenario, [FAILING])
   scenario.snapshots = [snapshot([seller('aa'.repeat(20), ['model-a'])])]
@@ -744,14 +774,14 @@ test('a stale peer list gives nothing up', LANE_TIMEOUT, () => withScenario(asyn
 test('a seller listed again before the window closes is audited as normal', LANE_TIMEOUT, () => withScenario(async (scenario) => {
   await firstRunFails(scenario, [FAILING, STILL_LEFT])
   await afterRetrySpacing(async () => {
-    // The other seller is listed but refused, so its retry keeps the window open.
-    const refused = seller(STILL_LEFT, ['model-a'], ['model-a'])
-    scenario.snapshots = [snapshot([refused])]
+    // The other seller fails again, so its retry keeps the window open (and is not due in the next run).
+    const failsAgain = seller(STILL_LEFT, ['model-a'])
+    scenario.snapshots = [snapshot([failsAgain])]
     await scenario.run()
     assert.equal((await readRetryGiveUps(scenario.evidenceDir, EPOCH)).length, 1)
     assert.equal((await readAuditWindow(scenario.evidenceDir, EPOCH, 'model-a'))?.state, 'open')
 
-    scenario.snapshots = [snapshot([refused, seller(FAILING, ['model-a'])])]
+    scenario.snapshots = [snapshot([failsAgain, seller(FAILING, ['model-a'])])]
     fakeHolder.laneFakes.loadBuyerProxySnapshot = (async () => scenario.snapshots[0]!) as Fakes[string]
     scenario.audit = async () => undefined
     await scenario.run()

@@ -16,8 +16,12 @@ type Common = {
   children: ReactNode;
 };
 
-/** A link, or a faded button with nothing to click yet. */
-type Props = Common & ({href: string; onClick?: MouseEventHandler<HTMLAnchorElement>; disabled?: false} | {disabled: true; href?: never; onClick?: never});
+/** A link, an action on the page (a native button), or a faded button with nothing to click yet. */
+type Props = Common & (
+  | {href: string; onClick?: MouseEventHandler<HTMLAnchorElement>; type?: never; disabled?: false}
+  | {type: 'button'; onClick: MouseEventHandler<HTMLButtonElement>; href?: never; disabled?: false}
+  | {disabled: true; href?: never; onClick?: never; type?: never}
+);
 
 /** A button as data, for lists of actions. */
 export type ActionLink = {href: string; label: string; variant?: 'primary' | 'ghost'};
@@ -32,10 +36,11 @@ const SIZE_CLASS: Record<ButtonSize, string | undefined> = {
 
 const isExternal = (href: string) => /^https?:\/\//.test(href);
 
-/** The site's button: green (primary) or ghost. External links open in a new tab. */
+/** The site's button: green (primary) or ghost. External links open in a new tab; `type="button"` makes an action on the page. */
 export function Button({variant = 'primary', size = 'default', className, children, ...target}: Props): JSX.Element {
   const cls = clsx(styles.button, variant === 'ghost' ? styles.ghost : styles.primary, SIZE_CLASS[size], target.disabled && styles.disabled, className);
   if (target.disabled) return <span className={cls} aria-disabled="true">{children}</span>;
+  if (target.type === 'button') return <button type="button" className={cls} onClick={target.onClick}>{children}</button>;
   const {href, onClick} = target;
   return isExternal(href)
     ? <a className={cls} href={href} target="_blank" rel="noopener noreferrer" onClick={onClick}>{children}</a>

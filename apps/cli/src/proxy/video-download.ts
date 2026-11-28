@@ -3,7 +3,23 @@ import type { ServerResponse } from 'node:http'
 import { VIDEO_DELIVERED_HEADER, VIDEO_DELIVERY_UNRECORDED, VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_JOB_RETIRED_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION, VIDEO_DOWNLOAD_MAX_BYTES, type RequestStreamCallbacks, type SerializedHttpRequest, type SerializedHttpResponse } from '@antseed/node'
 
 type SendDownload = (request: SerializedHttpRequest, callbacks: RequestStreamCallbacks, signal: AbortSignal) => Promise<SerializedHttpResponse>
-let activeDownloads = 0
+
+/** Seconds a client is told to wait when every download slot is taken; a slot frees when a transfer ends. */
+export const VIDEO_DOWNLOAD_BUSY_RETRY_AFTER_SECONDS = 5
+
+/** The finished videos one buyer streams at once (`buyer.maxVideoDownloads`), shared by every client of the buyer. */
+export class VideoDownloadSlots {
+  private active = 0
+  constructor(readonly max: number) {}
+  take(): boolean {
+    if (this.active >= this.max) return false
+    this.active += 1
+    return true
+  }
+  release(): void {
+    this.active -= 1
+  }
+}
 
 /** Seller error codes safe to pass to clients, so they can tell a temporary failure from a lasting one. */
 const SELLER_ERROR_CODES = new Set([
@@ -82,12 +98,15 @@ function sellerErrorCode(body: Uint8Array): string | null {
  * destroyed, so telemetry reports it for what it was: `cancelled` when the
  * client left, `buyer` when the file was good but this buyer could not save
  * its delivery, `seller` otherwise.
+ * A download holds one of `slots` for the whole transfer; with none free it is
+ * answered 429 `video_download_busy` with Retry-After, and the job is kept.
  */
 export async function downloadVideo(
   request: SerializedHttpRequest,
   response: ServerResponse,
   send: SendDownload,
   clientSignal: AbortSignal,
+  slots: VideoDownloadSlots,
   retire: () => Promise<boolean> = async () => true,
   onInterrupted: (by: 'seller' | 'buyer' | 'cancelled') => void = () => {},
 ): Promise<void> {
@@ -98,8 +117,11 @@ export async function downloadVideo(
   const error = (httpStatus: number, code: string) => reply(httpStatus, { error: { code, message: 'Video download unavailable' } })
   const pending = (httpStatus: number, status: 'unknown' | 'seller_unreachable', code: string, message: string) =>
     reply(httpStatus, { status, retryable: true, error: { code, message } })
-  if (activeDownloads >= 2) { error(429, 'video_download_busy'); return }
-  activeDownloads += 1
+  if (!slots.take()) {
+    reply(429, { retryable: true, error: { code: 'video_download_busy', message: 'This buyer is downloading as many videos as it allows at once; retry shortly' } },
+      { 'retry-after': String(VIDEO_DOWNLOAD_BUSY_RETRY_AFTER_SECONDS) })
+    return
+  }
   const signal = AbortSignal.any([clientSignal, AbortSignal.timeout(5 * 60_000)])
   const headers = Object.fromEntries(Object.entries(request.headers).filter(([key]) => !['range', 'if-range', 'content-length', 'accept-encoding'].includes(key.toLowerCase())))
   let length: number | null = null
@@ -180,6 +202,6 @@ export async function downloadVideo(
     else if (sellerAnswered) error(502, 'video_download_failed')
     else pending(signal.aborted ? 504 : 502, 'seller_unreachable', 'video_download_failed', 'The seller holding this video job could not be reached; the job is kept, poll again later')
   } finally {
-    activeDownloads -= 1
+    slots.release()
   }
 }

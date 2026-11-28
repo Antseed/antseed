@@ -1,44 +1,35 @@
 import type {JSX} from 'react';
 import clsx from 'clsx';
-import {Section, SectionHead} from '../../components';
-import {FeatureList} from '../../parts/FeatureList';
-import {LOGO_PLATES, LOGO_RULES, type LogoPlate} from './logos';
+import {Section, ThemedImg} from '../../components';
+import {Bar, Files, Head, kit} from './Kit';
+import {logoFiles, logoSrc, type LogoKind} from './logos';
 import styles from './Logo.module.css';
 
-const LOGO_SIZE = {width: 191, height: 66};
-const MARK_SIZE = 61;
-
-function Plate({plate}: {plate: LogoPlate}): JSX.Element {
+function Plate({kind, name, width, height}: {kind: LogoKind; name: string; width: number; height: number}): JSX.Element {
   return (
-    <figure className={styles.plate} data-rv="">
-      <div className={clsx(styles.ground, plate.ground === 'night' && styles.night)}>
-        <img className={styles.logo} src={plate.logo} {...LOGO_SIZE} alt={`The Antseed logo, ${plate.ground === 'night' ? 'near-white' : 'black'}`} loading="lazy" decoding="async" />
-        <img className={styles.mark} src={plate.mark} width={MARK_SIZE} height={MARK_SIZE} alt="The Antseed mark" loading="lazy" decoding="async" />
+    <div className={clsx(kit.cell, kit.lineTop, kind === 'mark' && kit.lineLeft, styles.plate)}>
+      <div className={styles.stage}>
+        <ThemedImg className={styles[kind]} day={logoSrc(kind, 'black')} night={logoSrc(kind, 'white')} width={width} height={height} alt={`Antseed ${name.toLowerCase()}`} />
       </div>
-      <figcaption className={styles.caption}>
-        <span className={styles.title}>{plate.title}</span>
-        <span className={styles.files}>
-          {plate.files.map((f) => <a key={f.href} href={f.href} download>{f.label}</a>)}
-        </span>
-      </figcaption>
-    </figure>
+      <div className={kit.cap}>
+        <p className={kit.capTitle}>{name}</p>
+        <span className={kit.day}><Files items={logoFiles(kind, 'black')} /></span>
+        <span className={kit.night}><Files items={logoFiles(kind, 'white')} /></span>
+      </div>
+    </div>
   );
 }
 
-/** The logo on its two grounds, its files, and the three rules for placing it. */
+/** The logo and the mark, side by side, each with the file for the current theme. */
 export default function Logo(): JSX.Element {
   return (
-    <Section cmp="brand/logo" id="logo" labelledBy="logo-title" pad="all" className={styles.section}>
-      <SectionHead
-        eyebrow="Logo"
-        id="logo-title"
-        title={['Black on light,', 'near-white on dark.']}
-        sub="One lockup: the ant and the wordmark. It has no colour of its own. At night it is the black logo inverted by 93%."
-      />
-      <div className={styles.plates}>
-        {LOGO_PLATES.map((p) => <Plate key={p.ground} plate={p} />)}
+    <Section cmp="brand/logo" id="logo" labelledBy="logo-title" railClassName={kit.rail}>
+      <Head eyebrow="Logo" id="logo-title" title={['Black on light,', 'near-white on dark.']} />
+      <div className={kit.pair}>
+        <Plate kind="logo" name="Logo" width={191} height={66} />
+        <Plate kind="mark" name="Mark" width={61} height={61} />
       </div>
-      <FeatureList items={LOGO_RULES} className={styles.rules} />
+      <Bar note="Leave the height of the capitals clear all around. Never stretch it, recolour it or set it on a painting." />
     </Section>
   );
 }

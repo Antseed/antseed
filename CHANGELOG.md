@@ -10,6 +10,113 @@ This project uses selective package publishing. Each release entry lists the pub
 
 - Gateway alerts: each workspace can get a signed webhook, a Telegram message (through its own bot) or an email (through the host's SMTP server, `ANTSEED_GATEWAY_SMTP_URL` and `ANTSEED_GATEWAY_SMTP_FROM`) when its credits drop below a threshold or run out, when a key, member or workspace spend limit is near or reached, or when spend tracking stops. Low-credit alerts carry the wallet address and a suggested top-up amount, so a webhook can automate deposits. Set them up under **Alerts** in the Gateway Console; see the Alerts guide.
 
+### Changed
+
+- Website: the `/brand/` page is rebuilt in the site's design, with sections for the logo, colour, type, the ant (its full spec and the $ANTS coin), example pieces, backgrounds and the watercolour prompt, and new downloads (ant examples, a profile picture, the pixel font and a one-file brand summary). The repo gains a brand kit for agents making Antseed pages and pictures outside the site: `apps/website/brand-kit/`, starting at `DESIGN.md`, with a starter page that renders whole on its own.
+
+### Fixed
+
+- CLI (`antseed verifier run`, `watch`): a model's audit window no longer stays open to the end of the epoch because one seller's retry can never run. A seller whose first look failed and that a run now skips although it still lists the model (it raised its price above the model's cap, fell under the reputation floor or lost ResponseAuth) is given up once its retry is due, like a seller that stopped listing the model, and keeps its result. Before, the planner skipped it every run while its retry kept the window open, so the model's other results were held back and the model passed to a stand-in auditor at the halfway point. The retry comes back if the seller is auditable again before the window closes.
+- Buyer proxy (`@antseed/api-adapter`, CLI, gateway, desktop): a `POST /v1/responses` request with tools, sent to a seller that speaks only OpenAI Chat Completions, now reaches the model as the client sent it. An assistant message and the tool calls that follow it become one chat assistant message with `content` and `tool_calls`, and assistant messages no longer carry `name: "commentary"`. Before, each preamble went as a separate assistant reply ahead of its call, which reads as a turn that ended without acting. The adapter no longer adds a `final_answer` tool or its own system instructions, and a tool the client named `final_answer` is no longer dropped from answers, streamed or not, for Responses and Messages clients alike. A translated answer's `end_turn` is now `true` when it makes no tool call and `false` when it makes one, streamed and buffered alike; before, a streamed answer always said `true` and a buffered one said `false` unless the model called the added `final_answer` tool.
+- Buyer proxy (`@antseed/api-adapter`, CLI, gateway, desktop): a chat model's reasoning now reaches `POST /v1/responses` clients served by a Chat Completions seller, and goes back to the model it came from. When the request's `include` lists `reasoning.encrypted_content`, as Codex does, the `reasoning_content` (or `reasoning`) an answer carries becomes a `reasoning` item ahead of the message and tool calls, with the text as `reasoning_text` content and, in `encrypted_content`, the model it came from. That item comes first in `output`, so read `output_text` or find items by type, not `output[0]`. A request that does not ask gets the same answer as before. Encrypted reasoning a seller passes through (`reasoning_encrypted: true`, or text starting `__ENCRYPTED_REASONING__`) is neither sent to the client nor replayed. In a stream it arrives as it is written (`response.reasoning_text.delta`), so a client no longer sees a silent stream while the model thinks; Codex gave up on such a stream after 5 minutes and sent the turn again. When the client sends the item back in a request for the same model (by the rule routing uses, so `kimi-k3.1-pro`, `kimi-k3-1-pro` and `moonshotai/Kimi-K3.1-Pro` are one model while `kimi-k3-fast` is another), the text goes to the seller as `reasoning_content` on the assistant message it led to, which models such as Kimi K3 need in tool-call loops: without it Kimi K3 stopped thinking for the rest of the loop. Reasoning from another model, and reasoning items the adapter did not make, are not sent to a chat seller. Requests passed through to a Responses seller now have the adapter's own reasoning items removed, since no provider can resolve them; nothing else in those requests changes.
+
+## 2026-11-27 — CLI 0.1.266, Desktop 0.2.100
+
+### Packages
+
+- `@antseed/cli@0.1.266`
+
+### Desktop
+
+- `@antseed/desktop@0.2.100`
+
+### Fixed
+
+- Gateway (`@antseed/cli`): usage pages no longer slow down, or stall the whole gateway, as its history grows. The console's Overview, Activity, Keys and Network pages, `GET /v1/key` and `GET /v1/key/savings` summed the entire request log and ledger on every load. On a gateway with millions of requests a page took tens of seconds, and meanwhile the gateway answered nothing else: API requests failed, and capped keys were refused while the spend feed read as unreachable. Usage now comes from hourly totals that the gateway keeps as it records each request and spend, so these reads stay fast however long the history grows. After the upgrade the gateway rolls up the usage it recorded before in the background; usage pages read the log as before until that finishes, and request-log retention waits for it. The Network page's latency, first-token and speed medians now come from the day's newest 20,000 requests. In `/v1/key/savings`, `matched_requests` counts each billed request once, and requests pruned from the log keep the tokens their responses reported.
+
+## 2026-11-27 — CLI 0.1.265, Node 0.2.195, Desktop 0.2.99
+
+### Packages
+
+- `@antseed/cli@0.1.265`
+- `@antseed/node@0.2.195`
+- `@antseed/antseed-verifier@0.1.12`
+- `@antseed/payments@0.1.122`
+- `@antseed/ants@0.1.80`
+
+### Desktop
+
+- `@antseed/desktop@0.2.99`
+
+### Fixed
+
+- Buyer (`@antseed/node`, and the CLI, desktop and gateway through it): the buyer's verification data no longer grows without limit. Every seller-signed response receipt in `verification.db` and every evidence sample in `verification_samples` was kept forever, so a busy buyer slowly filled its disk. The buyer now prunes both in the background, shortly after it starts and then every hour: receipts after 24 hours, and evidence samples after 7 days or, oldest first, once they pass 1 GiB or 10,000 samples in total. Samples whose write never finished are removed after an hour. An `AntseedNode` embedder can change the limits with `responseAuthRetentionMs`, `sampleRetentionMs`, `maxTotalSampleBytes` and `maxSampleCount` in its `verification` config, where `0` turns a limit off. An existing `verification.db` stops growing but keeps its file size, because SQLite reuses the freed space instead of returning it to the disk.
+- TEE attestation (`@antseed/antseed-verifier`): buyers accept TEE sellers on the dstack 0.6.5 production OS. Its OS image hash joins the approved list (`dstack 0.6.1`–`0.6.5`); before, a seller on 0.6.5 failed `seller-node-tee-genuine` with "the CVM OS image hash is not an approved dstack release". Buyers get it with the CLI release that pins the new verifier.
+
+## 2026-11-27 — CLI 0.1.264, Node 0.2.194, Desktop 0.2.98
+
+### Packages
+
+- `@antseed/cli@0.1.264`
+- `@antseed/node@0.2.194`
+- `@antseed/buyer-core@0.1.57`
+- `@antseed/antseed-verifier@0.1.11`
+- `@antseed/web-sdk@0.1.51`
+- `@antseed/payments@0.1.121`
+- `@antseed/ants@0.1.79`
+
+### Desktop
+
+- `@antseed/desktop@0.2.98`
+
+### Fixed
+
+- CLI (`@antseed/cli`): `antseed buyer channels request-close`, `antseed buyer channels withdraw` and `antseed buyer withdraw` now check the buyer's authorized wallet before sending. Closing a channel on chain and withdrawing deposits only accept the authorized wallet, and these commands sign with the buyer wallet. A buyer who had never set one got a bare `NotAuthorized` revert and no way forward. Now the command sends nothing and says what to do: with no authorized wallet set, run `antseed buyer set-authorized-wallet --self`; with a different wallet authorized, send the transaction from that wallet.
+- TEE sellers (`@antseed/antseed-verifier`): dstack attestation reuses the app compose from the first successful lookup on each guest-agent socket for the life of the seller process, avoiding a second TDX quote on later rounds.
+- CLI (`@antseed/cli`): the buyer waits longer to retry repeated TEE attestation failures during discovery and routing, with a retry delay capped at one hour.
+- Buyer (`@antseed/buyer-core`, and the CLI, desktop, gateway and web SDK through it): a buyer no longer gets stuck on a seller after a replacement payment channel failed to open. When the seller's reserve for the new channel timed out, the seller kept serving the old channel and the buyer kept retrying it, so every request to that seller failed with `payment_negotiation_failed` ("The seller is still waiting for payment of earlier requests on this channel") until the buyer restarted. The buyer now sends the new channel's reserve again, so the seller closes the old channel and opens the new one. A new channel that can't be re-sent is replaced with a fresh one.
+
+## 2026-11-26 — CLI 0.1.263, Desktop 0.2.97
+
+### Packages
+
+- `@antseed/cli@0.1.263`
+- `@antseed/provider-core@0.2.71`
+- `@antseed/provider-alibaba-video@0.1.17`
+- `@antseed/provider-anthropic@0.1.65`
+- `@antseed/provider-claude-code@0.1.65`
+- `@antseed/provider-claude-oauth@0.1.71`
+- `@antseed/provider-fal-image@0.1.13`
+- `@antseed/provider-fal-video@0.1.29`
+- `@antseed/provider-local-llm@0.1.65`
+- `@antseed/provider-openai@0.2.64`
+- `@antseed/provider-openai-responses@0.1.58`
+- `@antseed/provider-typesafe@0.1.17`
+- `@antseed/provider-venice-video@0.1.30`
+
+### Desktop
+
+- `@antseed/desktop@0.2.97`
+
+### Changed
+
+- Video sellers (`@antseed/provider-fal-video`, `@antseed/provider-alibaba-video`, `@antseed/provider-venice-video`, `@antseed/provider-core`): a provider now streams up to 6 finished videos to buyers at the same time instead of 2, and `ANTSEED_MAX_VIDEO_DOWNLOADS` sets the limit. With only 2 slots, a seller with several buyers downloading at once turned extra retrieves away with HTTP 429 `video_download_busy`.
+- Buyer and gateway (`@antseed/cli`): the buyer now downloads up to 6 finished videos at once for its clients instead of 2, and `buyer.maxVideoDownloads` in the config (or `ANTSEED_BUYER_MAX_VIDEO_DOWNLOADS`) sets the limit. A gateway sends every key's downloads through its one buyer, so with several clients polling finished jobs most retrieves were turned away. A retrieve past the limit still gets 429 `video_download_busy`, now with `Retry-After` and `retryable: true`, so clients know to try again; the job is kept and nothing is charged.
+
+## 2026-11-26 — CLI 0.1.262, Desktop 0.2.96
+
+### Packages
+
+- `@antseed/cli@0.1.262`
+
+### Desktop
+
+- `@antseed/desktop@0.2.96`
+
+### Fixed
+
+- Gateway (`@antseed/cli`): opening one request in the console's request log no longer stalls the whole gateway for seconds on a database that has never been analyzed. The read of a request's details and the request log list looked up the charge of a video job's delivery by scanning every ledger entry, for every request and not only for videos. While it ran the gateway answered nothing, so a busy gateway returned slow or failed responses to unrelated requests. Now it reads only the ledger entries of the delivery in question. Which charge a video create shows, and every figure on every request, are unchanged.
+
 ## 2026-11-26 — CLI 0.1.261, Node 0.2.193
 
 ### Packages

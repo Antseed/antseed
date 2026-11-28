@@ -10,6 +10,7 @@ import pkg from '../../../../package.json' with { type: 'json' }
 import { watchForUpdates } from '../../../update/watch.js'
 import { loadConfig } from '../../../config/loader.js'
 import { networkNodeOptions } from '../../../config/network.js'
+import { DEFAULT_BUYER_MAX_VIDEO_DOWNLOADS } from '../../../config/defaults.js'
 import { AntseedNode, DepositRelayClient, DepositsClient, getInstance, peerRelaysSweeps, resolveChainConfig } from '@antseed/node'
 import type { Identity, NodePaymentsConfig } from '@antseed/node'
 import { OFFICIAL_BOOTSTRAP_NODES, parseBootstrapList, toBootstrapConfig } from '@antseed/node/discovery'
@@ -435,6 +436,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
       console.log(chalk.dim(`  metadata fetch timeout: ${effectiveBuyerConfig.metadataFetchTimeoutMs}ms`))
       console.log(chalk.dim(`  request timeout: ${effectiveBuyerConfig.requestTimeoutMs}ms`))
       console.log(chalk.dim(`  max stream duration: ${effectiveBuyerConfig.maxStreamDurationMs}ms`))
+      console.log(chalk.dim(`  max video downloads at once: ${effectiveBuyerConfig.maxVideoDownloads ?? DEFAULT_BUYER_MAX_VIDEO_DOWNLOADS}`))
       console.log(chalk.dim(`  metadata v2 service opt-out: ${effectiveBuyerConfig.disableMetadataV2Services ? 'enabled' : 'disabled'}`))
       if (logFilter.length > 0) {
         console.log(chalk.dim(`  debug log filter: ${logFilter}`))
@@ -615,6 +617,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
         maxReserveAmountUsdc: config.payments?.maxReserveAmountUsdc ?? '1000000',
         settingOverrides: buyerSettingOverrides({ buyerOverrides: runtimeOverrides, verifierFlags }),
         backgroundRefreshIntervalMs: effectiveBuyerConfig.peerRefreshIntervalMs,
+        ...(effectiveBuyerConfig.maxVideoDownloads !== undefined ? { maxVideoDownloads: effectiveBuyerConfig.maxVideoDownloads } : {}),
         ...(verifierPolicy ? { verifier: verifierPolicy } : {}),
         ...(chainReader ? { balanceReader: chainReader } : {}),
         ...(isSupervisedProcess()

@@ -6,6 +6,7 @@ export { detectNativeVideoProtocol, nativeVideoRoute, nativeVideoAcceptance, nat
 export {
   renderRequestBodyAsOpenAIChat,
   transformRequest,
+  withoutAdapterReasoningItems,
   type ServiceApiRequestTransformOptions,
   type ServiceApiRequestTransformResult,
 } from './request-transform.js';
@@ -56,6 +57,7 @@ export {
   speechAudioDelivered,
   type SpeechRequestFacts,
   toNonNegativeInt,
+  isEncryptedReasoning,
   type StreamingResponseAdapter,
 } from './utils.js';
 
