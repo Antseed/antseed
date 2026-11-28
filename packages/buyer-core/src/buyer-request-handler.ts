@@ -532,7 +532,6 @@ export class BuyerRequestHandler {
         // against this. A 402 the buyer retries leaves nothing to charge.
         if (negotiator && !isFreeService && !startsPaymentNegotiation(answer)) {
           this._estimatePaidCost(negotiator, peer, req, answer, requestedService);
-          if (videoRoute?.action === 'create') await negotiator.oneOffRefusalReported(req.requestId);
         }
         return answer;
       } finally {

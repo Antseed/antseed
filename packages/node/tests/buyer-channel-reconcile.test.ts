@@ -264,7 +264,7 @@ describe('buyer channel reconcile against the chain', () => {
     expect([1, 2, 3, 4].map((n) => status(channelId(n)))).toEqual(Array(4).fill(CHANNEL_STATUS.ACTIVE));
     expect(readIds()).toEqual([channelId(1), channelId(2), channelId(3)]);
     expect(onChainReadFailure).toHaveBeenCalledTimes(1);
-    expect(result).toEqual({ retired: [], unchecked: 2, openOneOffs: [], readError: 'rpc unreachable' });
+    expect(result).toEqual({ retired: [], unchecked: 2, readError: 'rpc unreachable' });
   });
 
   it('reads every active channel in one pass, so a closed channel behind many open ones is retired', async () => {
@@ -279,7 +279,7 @@ describe('buyer channel reconcile against the chain', () => {
     const result = await negotiator.reconcileChannelsWithChain();
 
     expect(readIds()).toEqual(ids.map(channelId));
-    expect(result).toEqual({ retired: [{ channelId: channelId(70), peerId: sellerPeer(70), status: CHANNEL_STATUS.SETTLED }], unchecked: 0, openOneOffs: [] });
+    expect(result).toEqual({ retired: [{ channelId: channelId(70), peerId: sellerPeer(70), status: CHANNEL_STATUS.SETTLED }], unchecked: 0 });
   });
 
   it('keeps a closed channel the chain says belongs to another buyer', async () => {
@@ -655,11 +655,11 @@ describe('buyer channel reconcile against the chain', () => {
 
     reachable = false;
     startBuyer();
-    expect(await negotiator.reconcileChannelsWithChain()).toEqual({ retired: [], unchecked: 2, openOneOffs: [] });
+    expect(await negotiator.reconcileChannelsWithChain()).toEqual({ retired: [], unchecked: 2 });
 
     reachable = true;
     startBuyer({ channelsClient: false });
-    expect(await negotiator.reconcileChannelsWithChain()).toEqual({ retired: [], unchecked: 2, openOneOffs: [] });
+    expect(await negotiator.reconcileChannelsWithChain()).toEqual({ retired: [], unchecked: 2 });
 
     expect(getSession).not.toHaveBeenCalled();
     expect(onChainReadFailure).not.toHaveBeenCalled();

@@ -1538,7 +1538,7 @@ export class SellerRequestHandler {
     const charge: PendingResourceCharge | undefined = billing && channelId && billing.costUsdc > 0n
       ? { channelId, service, amount: billing.costUsdc, billingUsage: billing.billingUsage, ...(durationSeconds ? { durationSeconds } : {}) }
       : undefined;
-    // A channel closed under the running create (its deposits fell short, a restart) could never charge this job.
+    // A channel closed under the running create (a restart, a close elsewhere) could never charge this job.
     if (charge && this._deps.sellerPaymentManager && !this._deps.sellerPaymentManager.oneOffCreateAcceptable(charge.channelId)) {
       debugWarn(`[SellerHandler] Video job ${resourceId} accepted on a one-off channel that is no longer open; not handing it out`);
       return {

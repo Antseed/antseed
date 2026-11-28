@@ -215,8 +215,6 @@ export class BuyerPaymentNegotiator {
   private _firstSignCapValue: bigint | null = null;
   /** Serializes one-off channel openings per request so a request never opens two channels. */
   private readonly _oneOffLocks = new Map<string, Promise<unknown>>();
-  /** A refused create's chain read, by request: the answer waits for it, so its fee is reported before the caller sees the refusal. */
-  private readonly _oneOffRefusals = new Map<string, Promise<void>>();
   /** Peers that have sent their first request after session establishment. */
   private readonly _firstRequestSent = new Set<string>();
   /** Per-peer last response cost, raw content, and latency from the seller. */
@@ -1200,21 +1198,15 @@ export class BuyerPaymentNegotiator {
           this._bpm.trackVideoJob(peer.peerId, video.protocol, jobId, entry, requestId);
         } else if (requestId) {
           // The seller closes the channel of a create it did not accept, at 0
-          // or, on an older release, at the serious fee it already took.
+          // or, on an older release, at the serious fee it already took. One
+          // chain read says which; the answer does not wait for it.
           const oneOffChannelId = this._bpm.getOneOffChannelForRequest(peer.peerId, requestId);
           const channels = this._channelsClient;
           if (oneOffChannelId) {
-            const retiring = this._bpm.retireRefusedOneOffChannel(
+            void this._bpm.retireRefusedOneOffChannel(
               oneOffChannelId,
-              channels ? async () => {
-                const session = await channels.getSession(oneOffChannelId);
-                return { settled: session.settled, status: Number(session.status ?? 0) };
-              } : null,
-            ).catch((err) => debugWarn(`[BuyerNegotiator] Could not retire refused one-off channel: ${err instanceof Error ? err.message : err}`));
-            this._oneOffRefusals.set(requestId, retiring);
-            void retiring.finally(() => {
-              if (this._oneOffRefusals.get(requestId) === retiring) this._oneOffRefusals.delete(requestId);
-            });
+              channels ? async () => (await channels.getSession(oneOffChannelId)).settled : null,
+            );
           }
         }
       }
@@ -1446,11 +1438,6 @@ export class BuyerPaymentNegotiator {
     this._lastResponseCost.delete(peerId);
   }
 
-  /** Resolves once a refused video create's fee, if any, has been reported. */
-  async oneOffRefusalReported(requestId: string): Promise<void> {
-    await this._oneOffRefusals.get(requestId);
-  }
-
   /**
    * Retire this buyer's stored channels the chain shows can never move money
    * again, for every seller. A seller with payment work in flight (a 402, a
@@ -1484,14 +1471,9 @@ export class BuyerPaymentNegotiator {
           this._bpm.cleanupSession(peerId);
           this._forgetSellerSession(peerId);
         },
-        oneOffEnded: (channelId, closure) => this._bpm.forgetOneOffChannel(
-          channelId,
-          closure.status === CHANNEL_STATUS.GHOST ? undefined : closure.settledAmount,
-        ),
+        oneOffEnded: (channelId) => this._bpm.forgetOneOffChannel(channelId),
       },
     });
-    // Rows another process retired, and fees of channels this pass read still open that nothing else will report.
-    this._bpm.sweepOneOffChannels(result.openOneOffs ?? []);
     if (result.readError !== undefined) this._onChainReadFailure?.();
     return result;
   }

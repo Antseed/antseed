@@ -39,8 +39,8 @@ export interface LivePaymentSessions {
   mayEndSession(peerId: string, closure: ChannelClosure): boolean;
   /** The seller's current row was retired and it has no active row left: drop its in-memory state. */
   sessionEnded(peerId: string): void;
-  /** A one-off row was retired, with how the chain says it ended: drop its in-memory state. */
-  oneOffEnded(channelId: string, closure: ChannelClosure): void;
+  /** A one-off row was retired: drop its in-memory state. */
+  oneOffEnded(channelId: string): void;
 }
 
 export interface ReconcileStoredChannelsOptions {
@@ -53,8 +53,6 @@ export interface ReconcileStoredChannelsOptions {
 
 export interface ChannelReconcileResult {
   retired: ReadonlyArray<{ channelId: string; peerId: string; status: ChannelClosure['status'] }>;
-  /** One-off rows this pass read as still open on-chain. */
-  openOneOffs?: ReadonlyArray<string>;
   /** Active rows this pass did not read or could not trust. They stay active. */
   unchecked: number;
   /** Why a chain read failed. The pass stopped reading there. */
@@ -121,15 +119,11 @@ function applyReadings(o: ReconcileStoredChannelsOptions, readings: Map<string, 
     retired.push({ channelId: row.sessionId, peerId: row.peerId, status: closure.status });
   };
 
-  const openOneOffs: string[] = [];
   for (const row of activeRows(o, CHANNEL_KIND.ONE_OFF)) {
     const closure = closureOf(row);
-    if (!closure) {
-      if (readings.get(row.sessionId)?.state.status === CHANNEL_STATUS.ACTIVE) openOneOffs.push(row.sessionId);
-      continue;
-    }
+    if (!closure) continue;
     retire(row, closure);
-    o.sessions?.oneOffEnded(row.sessionId, closure);
+    o.sessions?.oneOffEnded(row.sessionId);
   }
 
   const paidByPeer = new Map<string, StoredChannel[]>();
@@ -162,7 +156,7 @@ function applyReadings(o: ReconcileStoredChannelsOptions, readings: Map<string, 
     o.sessions?.sessionEnded(peerId);
   }
 
-  return { retired, unchecked, openOneOffs };
+  return { retired, unchecked };
 }
 
 /**
