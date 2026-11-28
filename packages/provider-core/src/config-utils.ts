@@ -158,6 +158,7 @@ export function parseServiceCapabilitiesJson(raw: string | undefined, key = 'ANT
     }
     if (caps.inputs !== undefined) normalized.inputs = caps.inputs as ServiceCapabilities['inputs'];
     if (caps.outputs !== undefined) normalized.outputs = caps.outputs as ServiceCapabilities['outputs'];
+    if (caps.reasoningEfforts !== undefined) normalized.reasoningEfforts = caps.reasoningEfforts as ServiceCapabilities['reasoningEfforts'];
     for (const field of ['reasoning', 'toolUse', 'structuredOutput'] as const) {
       if (caps[field] !== undefined) normalized[field] = caps[field] as boolean;
     }
